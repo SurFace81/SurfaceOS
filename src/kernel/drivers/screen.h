@@ -21,12 +21,20 @@ typedef struct {
     UINT32 NumberOfSymbols;
 } SYSTEM_SCREEN;
 
-SYSTEM_SCREEN Screen;
+extern SYSTEM_SCREEN Screen;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Functions
 void clear_screen();
 void putChar(char chr);
 void set_text_color(UINT32);
 void set_cursor_position(UINT32 x, UINT32 y);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

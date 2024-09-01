@@ -1,2 +1,12 @@
 # Temp folder
 tmp
+bin
+disk
+
+# Temp files
+mem.dmp
+surfaceos.img
+
+# Unnecessary folders
+.vscode
+.VSCodeCounter

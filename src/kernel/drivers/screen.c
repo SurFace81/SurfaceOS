@@ -1,5 +1,7 @@
 #include "screen.h"
 
+SYSTEM_SCREEN Screen;
+
 void putChar(char chr) {
     unsigned int offsetX = Screen.CursorPositionX;
     unsigned int offsetY = Screen.CursorPositionY;

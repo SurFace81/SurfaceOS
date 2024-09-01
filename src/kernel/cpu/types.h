@@ -15,6 +15,8 @@ typedef          char           SINT8;
 
 #define NULL (void*)0
 
+#ifndef __cplusplus
 typedef enum {false, true} bool;
+#endif
 
 #endif

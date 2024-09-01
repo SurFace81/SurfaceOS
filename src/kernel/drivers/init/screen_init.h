@@ -4,6 +4,10 @@
 #include "../../kernel.h"
 #include "../screen.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void initScreen(SYSTEM_SCREEN* Screen, SURFOS_BOOT_HEADER* Header) {
     Screen->BufferAddress = Header->FrameBufferAddress;
     Screen->BufferSize = Header->FrameBufferSize;
@@ -20,5 +24,9 @@ void initScreen(SYSTEM_SCREEN* Screen, SURFOS_BOOT_HEADER* Header) {
 
     clear_screen();
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

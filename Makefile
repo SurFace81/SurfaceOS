@@ -6,6 +6,7 @@ MFLAGS		= -m64 -ffreestanding -Wall -Werror
 LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e efi_main
 
 GCC			= x86_64-elf-gcc
+GPP			= x86_64-elf-g++
 CCFLAGS		= -c -m64 -ffreestanding -nostdlib -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
@@ -48,6 +49,9 @@ bin/kernel/drivers/%.o: src/kernel/drivers/%.c
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.c
 	$(GCC) $(CCFLAGS) -o $@ $^
 
+bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
+	$(GPP) $(CCFLAGS) -o $@ $^
+
 bin/kernel/cpu/%.o: src/kernel/cpu/%.c
 	$(GCC) $(CCFLAGS) -o $@ $^
 
@@ -59,7 +63,7 @@ bin/kernel/cpu/gdt_asm.o: src/kernel/cpu/gdt.asm
 bin/kernel/kentry.o: src/kernel/kentry.asm
 	$(NASM) -f elf64 -g -o $@ $<
 
-bin/kernel/kernel.o: src/kernel/kernel.c
+bin/kernel/kernel.o: src/kernel/kernel.cpp
 	$(GCC) $(CCFLAGS) -o $@ $^
 
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
@@ -98,3 +102,4 @@ clean:
 	@rm -rf bin/boot/efi/*.EFI
 	@rm -rf disk/EFI/Boot/*.EFI
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
+	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
