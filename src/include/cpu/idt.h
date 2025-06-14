@@ -72,39 +72,6 @@ void set_idt_entry(int index, UINT64 handler, UINT16 selector, UINT8 flags);
 // extern void divide_by_zero_handler(void);
 // extern void generic_exception_handler(void);
 
-#define EXCEPTION_DIVIDE_ERROR          0   // #DE
-#define EXCEPTION_DEBUG                 1   // #DB
-#define EXCEPTION_NMI                   2   // NMI
-#define EXCEPTION_BREAKPOINT            3   // #BP
-#define EXCEPTION_OVERFLOW              4   // #OF
-#define EXCEPTION_BOUND_RANGE           5   // #BR
-#define EXCEPTION_INVALID_OPCODE        6   // #UD
-#define EXCEPTION_DEVICE_NOT_AVAILABLE  7   // #NM
-#define EXCEPTION_DOUBLE_FAULT          8   // #DF
-#define EXCEPTION_COPROCESSOR_OVERRUN   9   // (obsolete)
-#define EXCEPTION_INVALID_TSS           10  // #TS
-#define EXCEPTION_SEGMENT_NOT_PRESENT   11  // #NP
-#define EXCEPTION_STACK_SEGMENT_FAULT   12  // #SS
-#define EXCEPTION_GENERAL_PROTECTION    13  // #GP
-#define EXCEPTION_PAGE_FAULT            14  // #PF
-#define EXCEPTION_RESERVED_15           15  // Reserved
-#define EXCEPTION_X87_FPU               16  // #MF
-#define EXCEPTION_ALIGNMENT_CHECK       17  // #AC
-#define EXCEPTION_MACHINE_CHECK         18  // #MC
-#define EXCEPTION_SIMD_FPU              19  // #XM
-#define EXCEPTION_VIRTUALIZATION        20  // #VE
-#define EXCEPTION_CONTROL_PROTECTION    21  // #CP
-#define EXCEPTION_RESERVED_22           22  // Reserved
-#define EXCEPTION_RESERVED_23           23  // Reserved
-#define EXCEPTION_RESERVED_24           24  // Reserved
-#define EXCEPTION_RESERVED_25           25  // Reserved
-#define EXCEPTION_RESERVED_26           26  // Reserved
-#define EXCEPTION_RESERVED_27           27  // Reserved
-#define EXCEPTION_HV_INJECTION          28  // #HV
-#define EXCEPTION_VMM_COMMUNICATION     29  // #VC
-#define EXCEPTION_SECURITY              30  // #SX
-#define EXCEPTION_RESERVED_31           31  // Reserved
-
 // Exception handlers (declared in asm file)
 extern void exception_handler_0(void);   // Divide Error
 extern void exception_handler_1(void);   // Debug

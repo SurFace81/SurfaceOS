@@ -1,11 +1,12 @@
 # Temp folder
-tmp
-bin
-disk
+./tmp
+./bin
+.disk
 
 # Temp files
-mem.dmp
-surfaceos.img
+./mem.dmp
+./surfaceos.img
+./uart.log
 
 # Unnecessary folders
 .vscode

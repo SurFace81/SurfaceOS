@@ -35,16 +35,5 @@ extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
         }
     }
 
-    //int a = 10 / 0;
-
-    //print("\n#DE Exception\n");
-
-    asm volatile("int $16");
-    asm volatile("int $0");
-    asm volatile("int $7");
-    asm volatile("int $2");
-
-    print("\nINTs were be sended!");
-
     while (1);
 }
