@@ -12,8 +12,8 @@ typedef struct {
     UINT64 BufferSize;
     UINT32 PixelsPerScanLine;
 
-    UINT32 CursorPositionX;
-    UINT32 CursorPositionY;
+    UINT32 CursorPosX;
+    UINT32 CursorPosY;
 
     void* FontPtr;
     UINT16 SymbolSizeX;
@@ -27,7 +27,6 @@ extern SYSTEM_SCREEN Screen;
 extern "C" {
 #endif
 
-// Functions
 void clear_screen();
 void putChar(char chr);
 void set_text_color(UINT32);
@@ -37,4 +36,4 @@ void set_cursor_position(UINT32 x, UINT32 y);
 }
 #endif
 
-#endif
+#endif  // SCREEN_H

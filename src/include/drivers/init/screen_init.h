@@ -1,18 +1,18 @@
 #ifndef SCREEN_INIT_H
 #define SCREEN_INIT_H
 
-#include "../../kernel.h"
+#include "../../../kernel/kernel.h"
 #include "../screen.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-void initScreen(SYSTEM_SCREEN* Screen, SURFOS_BOOT_HEADER* Header) {
-    Screen->BufferAddress = Header->FrameBufferAddress;
+void initScreen(SYSTEM_SCREEN* Screen, SFOS_BOOT_HEADER* Header) {
+    Screen->BufferAddress = (void*)0x600000;
     Screen->BufferSize = Header->FrameBufferSize;
-    Screen->CursorPositionX = 0;
-    Screen->CursorPositionY = 0;
+    Screen->CursorPosX = 0;
+    Screen->CursorPosY = 0;
     Screen->FontPtr = Header->StandartFontBuffer;
     Screen->Height = Header->ScreenHeight;
     Screen->Width = Header->ScreenWidth;
@@ -29,4 +29,4 @@ void initScreen(SYSTEM_SCREEN* Screen, SURFOS_BOOT_HEADER* Header) {
 }
 #endif
 
-#endif
+#endif  // SCREEN_INIT_H

@@ -7,24 +7,28 @@ LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e ef
 
 GCC			= x86_64-elf-gcc
 GPP			= x86_64-elf-g++
-CCFLAGS		= -c -m64 -ffreestanding -nostdlib -I./src/kernel
+CCFLAGS		= -c -m64 -g -ffreestanding -nostdlib -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
 # pmemsave XXXX - YYYY mem.dmp 	-	dump of phys memory
-QEMU_UEFI	= qemu-system-x86_64 -monitor stdio -m 64M -bios uefi64.bin -cpu qemu64 -no-reboot -no-shutdown # -d int,cpu_reset
-QEMU_BIOS	= qemu-system-x86_64 -monitor stdio -m 128M -cpu qemu64 # -no-reboot -no-shutdown
+QEMU_UEFI	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 128M -bios uefi64.bin -cpu qemu64 -no-reboot -no-shutdown # -d int,cpu_reset
+QEMU_BIOS	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 64M -cpu qemu64 # -no-reboot -no-shutdown
 DISK_IMG	= surfaceos.img
 
 SOURCES		=  	bin/kernel/kernel.o \
+				bin/kernel/cpu/gdt.o \
+				bin/kernel/cpu/gdt.asm.o \
+				bin/kernel/cpu/memory.o \
+				bin/kernel/cpu/paging.o \
+				bin/kernel/cpu/ports.o \
+				bin/kernel/cpu/pci.o \
+				bin/kernel/cpu/uart.o \
 				bin/kernel/drivers/screen.o \
 				bin/kernel/stdlib/stdio.o \
 				bin/kernel/stdlib/string.o \
-				bin/kernel/cpu/gdt.o \
-				bin/kernel/cpu/gdt_asm.o \
-				bin/kernel/cpu/memory.o \
-				bin/kernel/cpu/paging.o \
-
+				bin/kernel/cpu/idt.o \
+				bin/kernel/cpu/idt.asm.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -55,16 +59,19 @@ bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
 bin/kernel/cpu/%.o: src/kernel/cpu/%.c
 	$(GCC) $(CCFLAGS) -o $@ $^
 
-bin/kernel/cpu/gdt_asm.o: src/kernel/cpu/gdt.asm
-	$(NASM) -f elf64 -g -o $@ $<
+bin/kernel/cpu/gdt.asm.o: src/kernel/cpu/gdt.asm
+	$(NASM) -f elf64 -o $@ $<
+
+bin/kernel/cpu/idt.asm.o: src/kernel/cpu/idt.asm
+	$(NASM) -f elf64 -o $@ $<
 
 
 # Kernel
 bin/kernel/kentry.o: src/kernel/kentry.asm
-	$(NASM) -f elf64 -g -o $@ $<
+	$(NASM) -f elf64 -o $@ $<
 
 bin/kernel/kernel.o: src/kernel/kernel.cpp
-	$(GCC) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	$(LD) $(LDFLAGS) -o $@ $^
@@ -94,7 +101,7 @@ run: $(DISK_IMG)
 
 create_disk:
 	@rm -rf $(DISK_IMG)
-	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=60
+	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=8
 
 clean:
 	@rm -rf bin/boot/bios/*.bin
@@ -102,4 +109,5 @@ clean:
 	@rm -rf bin/boot/efi/*.EFI
 	@rm -rf disk/EFI/Boot/*.EFI
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
+	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o

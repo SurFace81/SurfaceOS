@@ -1,58 +1,50 @@
 #include "kernel.h"
-#include "./drivers/init/screen_init.h"
-#include "./stdlib/stdio.h"
-#include "./stdlib/string.h"
-#include "./cpu/gdt.h"
-#include "./cpu/memory.h"
-#include "./cpu/paging.h"
+#include "../include/cpu/gdt.h"
+#include "../include/cpu/memory.h"
+#include "../include/cpu/paging.h"
+#include "../include/cpu/pci.h"
+#include "../include/cpu/uart.h"
+#include "../include/drivers/init/screen_init.h"
+#include "../include/stdlib/stdio.h"
+#include "../include/cpu/idt.h"
 
-
-void testPrint(SURFOS_BOOT_HEADER* BootHeader) {
-    print("Memory info:\t");
-    print(getMemorySize());
-    print("\t");
-    print((UINT64)BootHeader->FreeMemorySize / 1024);
-    print(" KB\t");
-    print((UINT64)BootHeader->MemoryMapEntriesNumber);
-    print("\n\n\r");
-
-    print("Memory Map:\n\r");
-    MEMORY_MAP_ENTRY* entry = (MEMORY_MAP_ENTRY*)BootHeader->MemoryMapAddress;
-    for (unsigned int i = 1; i <= BootHeader->MemoryMapEntriesNumber; i++) {
-        print((UINT64)entry->Start, 16);
-        print(" - ");
-        print((UINT64)entry->End, 16);
-        print("\tSize: ");
-        print((UINT64)entry->MemSize / 1024);
-        print(" KB\tType: ");
-        print((UINT32)entry->Type);
-        print("\n\r");
-
-        entry = (MEMORY_MAP_ENTRY*)(BootHeader->MemoryMapAddress + i * BootHeader->MemoryMapEntrySize);
-    }
-    print("\n\r");
-
-    print("FrameBuffer info:\t");
-    print((UINT64)BootHeader->FrameBufferAddress, 16);
-    print(" ");
-    print((UINT64)BootHeader->FrameBufferSize, 16);
-    print(" ");
-    print((int)BootHeader->ScreenHeight);
-    print(" ");
-    print((int)BootHeader->ScreenWidth);
-    print(" ");
-    print((UINT64)BootHeader->StandartFontBuffer, 16);
-}
-
-extern "C" void kmain(SURFOS_BOOT_HEADER* BootHeader) {
+extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
+{
+    asm volatile("movq $0x200000, %rsp"); // move stack
     setMemorySize(BootHeader->TotalMemorySize);
-    
-    // init CPU
+
     initGDT();
-    //initPaging((void*)0x300000);
-    
-    // init Hardware
+    initPaging((void *)0x300000);
+    init_idt();
+    initUART(COM1);
+
+    memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
+
     initScreen(&Screen, BootHeader);
 
-    testPrint(BootHeader);
+    for (unsigned int i = 0; i < 128; i++) {
+        char buffer[2];
+        buffer[0] = (char)i;
+        buffer[1] = '\0';
+        print(buffer);
+
+        if ((i + 1) % 16 == 0) {
+            print("\n\r");
+        } else {
+            print(" ");
+        }
+    }
+
+    //int a = 10 / 0;
+
+    //print("\n#DE Exception\n");
+
+    asm volatile("int $16");
+    asm volatile("int $0");
+    asm volatile("int $7");
+    asm volatile("int $2");
+
+    print("\nINTs were be sended!");
+
+    while (1);
 }

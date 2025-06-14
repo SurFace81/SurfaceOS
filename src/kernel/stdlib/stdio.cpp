@@ -1,28 +1,24 @@
-#include "stdio.h"
-#include "string.h"
-#include "../cpu/types.h"
-#include "../drivers/screen.h"
+#include "../../include/stdlib/stdio.h"
 
 void print(const char* str)
 {
     unsigned int i = 0;
     while(str[i] != '\0') {
         if (str[i] == '\n') {
-            //Screen.CursorPositionX = 0;
-            Screen.CursorPositionY += Screen.SymbolSizeY;
+            Screen.CursorPosY += Screen.SymbolSizeY;
         } else if (str[i] == '\r') {
-            Screen.CursorPositionX = 0;
+            Screen.CursorPosX = 0;
         } else if (str[i] == '\t') {
-            Screen.CursorPositionX += 4 * Screen.SymbolSizeX;
+            Screen.CursorPosX += 4 * Screen.SymbolSizeX;
         } else {
             putChar((char)str[i]);
-            Screen.CursorPositionX += Screen.SymbolSizeX;
+            Screen.CursorPosX += Screen.SymbolSizeX;
         }
         i++;
 
-        if (Screen.CursorPositionX + 8 > Screen.PixelsPerScanLine) {
-            Screen.CursorPositionX = 0;
-            Screen.CursorPositionY += Screen.SymbolSizeY;
+        if (Screen.CursorPosX + 8 > Screen.PixelsPerScanLine) {
+            Screen.CursorPosX = 0;
+            Screen.CursorPosY += Screen.SymbolSizeY;
         }
     }
 }

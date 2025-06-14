@@ -1,4 +1,4 @@
-#include "gdt.h"
+#include "../../include/cpu/gdt.h"
 
 __attribute__((aligned(0x1000)))
 GDT_t DefaultGDT = {
@@ -10,7 +10,8 @@ GDT_t DefaultGDT = {
     {0, 0, 0, 0xF2, 0xC0, 0}, // User Data
 };
 
-initGDT() {
+void initGDT() 
+{
     gdt_ptr_t gdtPtr;
     gdtPtr.limit = sizeof(GDT_t) - 1;
     gdtPtr.base = (UINT64)&DefaultGDT;

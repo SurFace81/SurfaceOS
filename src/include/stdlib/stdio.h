@@ -1,10 +1,12 @@
 #ifndef STDIO_H
 #define STDIO_H
 
+#include "string.h"
 #include "../cpu/types.h"
+#include "../drivers/screen.h"
 
 void print(const char*);
 void print(int);
 void print(UINT64, UINT64 size);
 
-#endif
+#endif  // STDIO_H

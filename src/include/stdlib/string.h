@@ -19,4 +19,4 @@ int strcmp(char s1[], char s2[]);
 }
 #endif
 
-#endif
+#endif  // STRING_H

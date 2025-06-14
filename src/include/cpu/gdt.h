@@ -49,4 +49,4 @@ void initGDT();
 }
 #endif
 
-#endif
+#endif  // GDT_H

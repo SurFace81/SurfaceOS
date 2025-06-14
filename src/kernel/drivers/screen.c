@@ -1,10 +1,10 @@
-#include "screen.h"
+#include "../../include/drivers/screen.h"
 
 SYSTEM_SCREEN Screen;
 
 void putChar(char chr) {
-    unsigned int offsetX = Screen.CursorPositionX;
-    unsigned int offsetY = Screen.CursorPositionY;
+    unsigned int offsetX = Screen.CursorPosX;
+    unsigned int offsetY = Screen.CursorPosY;
 
     const unsigned int BBP = 4;
 
@@ -26,8 +26,7 @@ void clear_screen() {
         bufferPtr[i] = 0x00;
     }
 
-    Screen.CursorPositionX = 0;
-    Screen.CursorPositionY = 0;
+    set_cursor_position(0, 0);
 }
 
 void set_text_color(UINT32 newColor) {
@@ -35,6 +34,6 @@ void set_text_color(UINT32 newColor) {
 }
 
 void set_cursor_position(UINT32 x, UINT32 y) {
-    Screen.CursorPositionX = x;
-    Screen.CursorPositionY = y;
+    Screen.CursorPosX = x;
+    Screen.CursorPosY = y;
 }

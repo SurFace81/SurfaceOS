@@ -1,7 +1,7 @@
 #ifndef KERNEL_H
 #define KERNEL_H
 
-#include "./cpu/types.h"
+#include "../include/cpu/types.h"
 
 typedef struct {
     // Framebuffer
@@ -26,7 +26,7 @@ typedef struct {
     UINT64 KernelSize;
     UINT64 StartDataAddress;
     UINT64 StartDataSize;
-} SURFOS_BOOT_HEADER;
+} SFOS_BOOT_HEADER;
 
 typedef struct {
     UINT64 Start;

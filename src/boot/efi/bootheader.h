@@ -26,7 +26,7 @@ typedef struct {
     UINT64 KernelSize;
     UINT64 StartDataAddress;
     UINT64 StartDataSize;
-} SURFOS_BOOT_HEADER;
+} SFOS_BOOT_HEADER;
 
 #pragma pack(push, 1)
 typedef struct {

@@ -12,7 +12,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     SystemTable->BootServices->SetWatchdogTimer(0, 0, 0, NULL);
 
     // BootHeader
-    SURFOS_BOOT_HEADER BootHeader;
+    SFOS_BOOT_HEADER BootHeader;
 
     // Reset screen and disbale cursor
     {
@@ -119,7 +119,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     BootHeader.ScreenPixelsPerScanLine = newBuffer->PixelsPerScanLine;
 
     // Load STDFont and set STDFont entry in BootHeader
-    UINT64 FontAddress = 0x102000;
+    UINT64 FontAddress = 0x4000;
     LoadFile(u"font.fnt", SystemTable, Volume, FontAddress, NULL);
     BootHeader.StandartFontBuffer = (void*)FontAddress;
     BootHeader.FontSymbolSizeX = 8;
@@ -147,10 +147,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     }
 
     // Call kernel
-    void (__attribute__((sysv_abi)) *Start)(SURFOS_BOOT_HEADER*) = ((__attribute__((sysv_abi)) void (*)(SURFOS_BOOT_HEADER*) ) BootHeader.KernelAddress);
+    void (__attribute__((sysv_abi)) *Start)(SFOS_BOOT_HEADER*) = ((__attribute__((sysv_abi)) void (*)(SFOS_BOOT_HEADER*) ) BootHeader.KernelAddress);
 
     SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
-    Start((SURFOS_BOOT_HEADER*)BootHeaderAddress);
+    Start((SFOS_BOOT_HEADER*)BootHeaderAddress);
 
     while(1) {}
 
