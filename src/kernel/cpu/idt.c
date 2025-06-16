@@ -107,14 +107,21 @@ void handle_exception(int exception_number, UINT64* stack_frame) {
         "Security Exception (#SX)",             // 30 - Security-related
         "Reserved"                              // 31 - Intel reserved
     };
-    
-    // Skip the faulting instruction for most exceptions
-    // Note: Some exceptions like #PF might need special handling
-    if (exception_number != 8 && exception_number != 18) { // Don't skip for Double Fault or Machine Check
-        uart_write("\n");
-        uart_write(exception_names[exception_number]);
-        uart_write("\n");
-    } else {
-        while (1) asm volatile("hlt");
+
+    switch (exception_number) {
+        case 0:
+            stack_frame[0] += 2;    // Increase RIP
+            break;
+        default:
+            uart_write("\n");
+            uart_write(exception_names[exception_number]);
+            uart_write("\n");
+
+            while (1) asm volatile ("hlt");            
+            break;
     }
+
+    uart_write("\n");
+    uart_write(exception_names[exception_number]);
+    uart_write("\n");
 }
