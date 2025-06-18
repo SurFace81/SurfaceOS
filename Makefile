@@ -23,7 +23,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/paging.o \
 				bin/kernel/cpu/ports.o \
 				bin/kernel/cpu/pci.o \
-				bin/kernel/cpu/uart.o \
+				bin/kernel/drivers/uart.o \
 				bin/kernel/drivers/screen.o \
 				bin/kernel/stdlib/stdio.o \
 				bin/kernel/stdlib/string.o \
@@ -34,9 +34,11 @@ SOURCES		=  	bin/kernel/kernel.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
+	mkdir -p $(dir $@)
 	$(NASM) $(NFLAGS) -o $@ $<
 
 bin/boot/efi/%.o: src/boot/efi/%.c
+	mkdir -p $(dir $@)
 	$(MINGW) $(MFLAGS) -c $< -o $@
 
 bin/boot/efi/BOOTX64.EFI: bin/boot/efi/main_efi.o
@@ -45,40 +47,51 @@ bin/boot/efi/BOOTX64.EFI: bin/boot/efi/main_efi.o
 
 # Data files
 bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
+	mkdir -p $(dir $@)
 	$(NASM) $(NFLAGS) -o $@ $<
 
 
 # Other files
 bin/kernel/drivers/%.o: src/kernel/drivers/%.c
+	mkdir -p $(dir $@)
 	$(GCC) $(CCFLAGS) -o $@ $^
 
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.c
+	mkdir -p $(dir $@)
 	$(GCC) $(CCFLAGS) -o $@ $^
 
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
+	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/cpu/%.o: src/kernel/cpu/%.c
+	mkdir -p $(dir $@)
 	$(GCC) $(CCFLAGS) -o $@ $^
 
 bin/kernel/cpu/gdt.asm.o: src/kernel/cpu/gdt.asm
+	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
 bin/kernel/cpu/idt.asm.o: src/kernel/cpu/idt.asm
+	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
 bin/kernel/cpu/irq.asm.o: src/kernel/cpu/irq.asm
+	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
 
 # Kernel
 bin/kernel/kentry.o: src/kernel/kentry.asm
+	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
 bin/kernel/kernel.o: src/kernel/kernel.cpp
+	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
+	mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 
@@ -86,6 +99,7 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt
 	mkfs.fat -F32 $(DISK_IMG)
 
+	mkdir -p ./disk/EFI/Boot
 	cp bin/boot/efi/BOOTX64.EFI ./disk/EFI/Boot
 
 	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync

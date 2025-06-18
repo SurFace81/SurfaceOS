@@ -2,7 +2,7 @@
 #define IDT_H
 
 #include "types.h"
-#include "uart.h"
+#include "../drivers/uart.h"
 
 // IDT descriptor
 struct interrupt_descriptor {
@@ -63,6 +63,7 @@ extern "C" {
 #endif
 
 void initIDT(void);
+void set_idt_entry(int index, UINT64 handler, UINT8 flags);
 
 #ifdef __cplusplus
 }

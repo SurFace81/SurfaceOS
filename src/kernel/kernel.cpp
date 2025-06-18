@@ -3,7 +3,7 @@
 #include "../include/cpu/memory.h"
 #include "../include/cpu/paging.h"
 #include "../include/cpu/pci.h"
-#include "../include/cpu/uart.h"
+#include "../include/drivers/uart.h"
 #include "../include/drivers/init/screen_init.h"
 #include "../include/stdlib/stdio.h"
 #include "../include/cpu/idt.h"

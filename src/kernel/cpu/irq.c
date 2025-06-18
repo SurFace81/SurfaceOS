@@ -2,6 +2,11 @@
 #include "../../include/cpu/idt.h"
 #include "../../include/cpu/ports.h"
 
+void irq_enable(int irq);
+void irq_disable(int irq);
+void irq_mask_all(void);
+void irq_unmask_all(void);
+
 static irq_handler_t irq_handlers[16] = {0};
 
 // Remap the PIC controllers
