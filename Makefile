@@ -28,9 +28,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/stdlib/stdio.o \
 				bin/kernel/stdlib/string.o \
 				bin/kernel/cpu/idt.o \
-				bin/kernel/cpu/idt.asm.o \
 				bin/kernel/cpu/irq.o \
-				bin/kernel/cpu/irq.asm.o \
+				bin/kernel/cpu/interrupts.asm.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -72,11 +71,7 @@ bin/kernel/cpu/gdt.asm.o: src/kernel/cpu/gdt.asm
 	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
-bin/kernel/cpu/idt.asm.o: src/kernel/cpu/idt.asm
-	mkdir -p $(dir $@)
-	$(NASM) -f elf64 -o $@ $<
-
-bin/kernel/cpu/irq.asm.o: src/kernel/cpu/irq.asm
+bin/kernel/cpu/interrupts.asm.o: src/kernel/cpu/interrupts.asm
 	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
