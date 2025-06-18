@@ -24,7 +24,7 @@ void port_word_out(UINT16 port, UINT16 data)
     asm volatile("out %%ax, %%dx" : : "a"(data), "d"(port));
 }
 
-void io_delay()
+void io_wait()
 {
-    asm volatile("nop\nnop\nnop\nnop");
+    port_byte_out(0x80, 0);
 }

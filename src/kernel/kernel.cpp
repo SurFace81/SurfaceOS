@@ -7,6 +7,15 @@
 #include "../include/drivers/init/screen_init.h"
 #include "../include/stdlib/stdio.h"
 #include "../include/cpu/idt.h"
+#include "../include/cpu/irq.h"
+
+extern "C" void timer_handler(void) {
+    UINT8 scan_code = port_byte_in(0x60);
+
+    if (scan_code < 0x80) {
+        print_str(".");
+    }
+}
 
 extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
 {
@@ -15,7 +24,8 @@ extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
 
     initGDT();
     initPaging((void *)0x300000);
-    init_idt();
+    initIDT();
+    initIRQ();
     initUART(COM1);
 
     memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
@@ -26,14 +36,16 @@ extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
         char buffer[2];
         buffer[0] = (char)i;
         buffer[1] = '\0';
-        print(buffer);
+        print_str(buffer);
 
         if ((i + 1) % 16 == 0) {
-            print("\n\r");
+            print_str("\n\r");
         } else {
-            print(" ");
+            print_str(" ");
         }
     }
+
+    irq_install_handler(IRQ1_KEYBOARD, timer_handler);
 
     while (1);
 }

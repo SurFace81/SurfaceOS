@@ -62,8 +62,7 @@ struct idtr {
 extern "C" {
 #endif
 
-void init_idt(void);
-void set_idt_entry(int index, UINT64 handler, UINT16 selector, UINT8 flags);
+void initIDT(void);
 
 #ifdef __cplusplus
 }
