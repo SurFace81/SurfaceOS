@@ -8,14 +8,8 @@
 #include "../include/stdlib/stdio.h"
 #include "../include/cpu/idt.h"
 #include "../include/cpu/irq.h"
+#include "../include/drivers/keyboard.h"
 
-extern "C" void timer_handler(void) {
-    UINT8 scan_code = port_byte_in(0x60);
-
-    if (scan_code < 0x80) {
-        print_str(".");
-    }
-}
 
 extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
 {
@@ -45,7 +39,7 @@ extern "C" void kmain(SFOS_BOOT_HEADER *BootHeader)
         }
     }
 
-    irq_install_handler(IRQ1_KEYBOARD, timer_handler);
+    irq_install_handler(IRQ1_KEYBOARD, keyboard_handler);
 
     while (1);
 }

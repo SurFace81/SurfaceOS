@@ -30,6 +30,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/idt.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
+				bin/kernel/drivers/keyboard.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -67,11 +68,7 @@ bin/kernel/cpu/%.o: src/kernel/cpu/%.c
 	mkdir -p $(dir $@)
 	$(GCC) $(CCFLAGS) -o $@ $^
 
-bin/kernel/cpu/gdt.asm.o: src/kernel/cpu/gdt.asm
-	mkdir -p $(dir $@)
-	$(NASM) -f elf64 -o $@ $<
-
-bin/kernel/cpu/interrupts.asm.o: src/kernel/cpu/interrupts.asm
+bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
