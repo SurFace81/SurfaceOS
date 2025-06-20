@@ -13,15 +13,9 @@
 #define PAGE_DIRTY      (1 << 6)
 #define PAGE_SIZE       (1 << 7)
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void initPaging(void*);
-void allocate_pages(UINT64 virt, UINT64 phys, UINT64 size);
-
-#ifdef __cplusplus
+namespace paging {
+    void init(UINT64*);
+    void allocate_pages(UINT64 virt, UINT64 phys, UINT64 size);
 }
-#endif
 
 #endif  // PAGING_H

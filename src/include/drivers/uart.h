@@ -13,19 +13,13 @@
 #define COM7 0x5E8
 #define COM8 0x4E8
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-int initUART(UINT16 port);
-void uart_write(const char *str);
-char uart_read();
-void uart_log_uint16(UINT16 num);
-void uart_log_uint64_hex(UINT64 num);
-void uart_log_uint64_dec(UINT64 num);
-
-#ifdef __cplusplus
+namespace uart {
+    int  init(UINT16 port);
+    void write(const char *str);
+    char read(void);
+    void log_uint16(UINT16 num);
+    void log_uint64_hex(UINT64 num);
+    void log_uint64_dec(UINT64 num);
 }
-#endif
 
 #endif // UART_H

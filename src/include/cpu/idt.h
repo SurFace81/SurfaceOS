@@ -2,6 +2,7 @@
 #define IDT_H
 
 #include "types.h"
+#include "../stdlib/stdio.h"
 #include "../drivers/uart.h"
 
 // IDT descriptor
@@ -58,52 +59,44 @@ struct idtr {
 #define EXCEPTION_SECURITY              30  // #SX
 #define EXCEPTION_RESERVED_31           31  // Reserved
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void initIDT(void);
-void set_idt_entry(int index, UINT64 handler, UINT8 flags);
-
-#ifdef __cplusplus
+// Functions
+namespace idt {
+    void init(void);
+    void set_entry(int index, UINT64 handler, UINT8 flags);
 }
-#endif
 
-// extern void divide_by_zero_handler(void);
-// extern void generic_exception_handler(void);
-
-// Exception handlers (declared in asm file)
-extern void exception_handler_0(void);   // Divide Error
-extern void exception_handler_1(void);   // Debug
-extern void exception_handler_2(void);   // NMI
-extern void exception_handler_3(void);   // Breakpoint
-extern void exception_handler_4(void);   // Overflow
-extern void exception_handler_5(void);   // Bound Range Exceeded
-extern void exception_handler_6(void);   // Invalid Opcode
-extern void exception_handler_7(void);   // Device Not Available
-extern void exception_handler_8(void);   // Double Fault
-extern void exception_handler_9(void);   // Coprocessor Segment Overrun
-extern void exception_handler_10(void);  // Invalid TSS
-extern void exception_handler_11(void);  // Segment Not Present
-extern void exception_handler_12(void);  // Stack Segment Fault
-extern void exception_handler_13(void);  // General Protection Fault
-extern void exception_handler_14(void);  // Page Fault
-extern void exception_handler_15(void);  // Reserved
-extern void exception_handler_16(void);  // x87 FPU Error
-extern void exception_handler_17(void);  // Alignment Check
-extern void exception_handler_18(void);  // Machine Check
-extern void exception_handler_19(void);  // SIMD FPU Exception
-extern void exception_handler_20(void);  // Virtualization Exception
-extern void exception_handler_21(void);  // Control Protection Exception
-extern void exception_handler_22(void);  // Reserved
-extern void exception_handler_23(void);  // Reserved
-extern void exception_handler_24(void);  // Reserved
-extern void exception_handler_25(void);  // Reserved
-extern void exception_handler_26(void);  // Reserved
-extern void exception_handler_27(void);  // Reserved
-extern void exception_handler_28(void);  // Hypervisor Injection Exception
-extern void exception_handler_29(void);  // VMM Communication Exception
-extern void exception_handler_30(void);  // Security Exception
-extern void exception_handler_31(void);  // Reserved
+// Exception handlers
+extern "C" void exception_handler_0(void);   // Divide Error
+extern "C" void exception_handler_1(void);   // Debug
+extern "C" void exception_handler_2(void);   // NMI
+extern "C" void exception_handler_3(void);   // Breakpoint
+extern "C" void exception_handler_4(void);   // Overflow
+extern "C" void exception_handler_5(void);   // Bound Range Exceeded
+extern "C" void exception_handler_6(void);   // Invalid Opcode
+extern "C" void exception_handler_7(void);   // Device Not Available
+extern "C" void exception_handler_8(void);   // Double Fault
+extern "C" void exception_handler_9(void);   // Coprocessor Segment Overrun
+extern "C" void exception_handler_10(void);  // Invalid TSS
+extern "C" void exception_handler_11(void);  // Segment Not Present
+extern "C" void exception_handler_12(void);  // Stack Segment Fault
+extern "C" void exception_handler_13(void);  // General Protection Fault
+extern "C" void exception_handler_14(void);  // Page Fault
+extern "C" void exception_handler_15(void);  // Reserved
+extern "C" void exception_handler_16(void);  // x87 FPU Error
+extern "C" void exception_handler_17(void);  // Alignment Check
+extern "C" void exception_handler_18(void);  // Machine Check
+extern "C" void exception_handler_19(void);  // SIMD FPU Exception
+extern "C" void exception_handler_20(void);  // Virtualization Exception
+extern "C" void exception_handler_21(void);  // Control Protection Exception
+extern "C" void exception_handler_22(void);  // Reserved
+extern "C" void exception_handler_23(void);  // Reserved
+extern "C" void exception_handler_24(void);  // Reserved
+extern "C" void exception_handler_25(void);  // Reserved
+extern "C" void exception_handler_26(void);  // Reserved
+extern "C" void exception_handler_27(void);  // Reserved
+extern "C" void exception_handler_28(void);  // Hypervisor Injection Exception
+extern "C" void exception_handler_29(void);  // VMM Communication Exception
+extern "C" void exception_handler_30(void);  // Security Exception
+extern "C" void exception_handler_31(void);  // Reserved
 
 #endif // IDT_H

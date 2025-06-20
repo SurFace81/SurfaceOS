@@ -2,6 +2,8 @@
 #define IRQ_H
 
 #include "types.h"
+#include "idt.h"
+#include "ports.h"
 
 // IRQ numbers (hardware interrupts)
 #define IRQ0_TIMER          0
@@ -56,37 +58,31 @@ struct interrupt_frame {
 };
 
 // Functions
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void initIRQ(void);
-void irq_install_handler(int irq, irq_handler_t handler);
-void irq_uninstall_handler(int irq);
-
-#ifdef __cplusplus
+namespace irq {
+    void init(void);
+    void install_handler(int irq, irq_handler_t handler);
+    void uninstall_handler(int irq);
 }
-#endif
 
-// Assembly interrupt stubs (defined in irq.asm)
-extern void irq0(void);
-extern void irq1(void);
-extern void irq2(void);
-extern void irq3(void);
-extern void irq4(void);
-extern void irq5(void);
-extern void irq6(void);
-extern void irq7(void);
-extern void irq8(void);
-extern void irq9(void);
-extern void irq10(void);
-extern void irq11(void);
-extern void irq12(void);
-extern void irq13(void);
-extern void irq14(void);
-extern void irq15(void);
+// Assembly interrupt stubs (defined in interrupts.asm)
+extern "C" void irq0(void);
+extern "C" void irq1(void);
+extern "C" void irq2(void);
+extern "C" void irq3(void);
+extern "C" void irq4(void);
+extern "C" void irq5(void);
+extern "C" void irq6(void);
+extern "C" void irq7(void);
+extern "C" void irq8(void);
+extern "C" void irq9(void);
+extern "C" void irq10(void);
+extern "C" void irq11(void);
+extern "C" void irq12(void);
+extern "C" void irq13(void);
+extern "C" void irq14(void);
+extern "C" void irq15(void);
 
 // Common IRQ handler (called from assembly)
-void irq_handler(struct interrupt_frame *frame);
+extern "C" void irq_handler(struct interrupt_frame *frame);
 
 #endif // IRQ_H

@@ -10,11 +10,13 @@ GDT_t DefaultGDT = {
     {0, 0, 0, 0xF2, 0xC0, 0}, // User Data
 };
 
-void initGDT() 
-{
-    gdt_ptr_t gdtPtr;
-    gdtPtr.limit = sizeof(GDT_t) - 1;
-    gdtPtr.base = (UINT64)&DefaultGDT;
+namespace gdt {
+    void init() 
+    {
+        gdt_ptr_t gdtPtr;
+        gdtPtr.limit = sizeof(GDT_t) - 1;
+        gdtPtr.base = (UINT64)&DefaultGDT;
 
-    LoadGDT(&gdtPtr);
-}
+        LoadGDT(&gdtPtr);
+    }
+} // namespace

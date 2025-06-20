@@ -2,6 +2,9 @@
 #define KEYBOARD_H
 
 #include "../cpu/types.h"
+#include "../cpu/ports.h"
+#include "screen.h"
+#include "../stdlib/stdio.h"
 
 #define KEYBOARD_DATA_PORT      0x60
 #define KEYBOARD_STATUS_PORT    0x64
@@ -38,17 +41,11 @@ typedef struct {
     UINT8 extended_code;
 } keyboard_state_t;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void keyboard_init(void);
-void keyboard_handler(void);
-char keyboard_getchar(void);
-UINT8 keyboard_scancode_to_ascii(UINT8 scancode);
-
-#ifdef __cplusplus
+namespace keyboard {
+    void  init(void);
+    void  handler(void);
+    char  getchar(void);
+    UINT8 scancode_to_ascii(UINT8 scancode);
 }
-#endif
 
 #endif

@@ -7,7 +7,7 @@ LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e ef
 
 GCC			= x86_64-elf-gcc
 GPP			= x86_64-elf-g++
-CCFLAGS		= -c -m64 -g -ffreestanding -nostdlib -I./src/kernel
+CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
@@ -22,7 +22,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/memory.o \
 				bin/kernel/cpu/paging.o \
 				bin/kernel/cpu/ports.o \
-				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/uart.o \
 				bin/kernel/drivers/screen.o \
 				bin/kernel/stdlib/stdio.o \
@@ -52,9 +51,9 @@ bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
 
 
 # Other files
-bin/kernel/drivers/%.o: src/kernel/drivers/%.c
+bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
 	mkdir -p $(dir $@)
-	$(GCC) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.c
 	mkdir -p $(dir $@)
@@ -64,9 +63,9 @@ bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
-bin/kernel/cpu/%.o: src/kernel/cpu/%.c
+bin/kernel/cpu/%.o: src/kernel/cpu/%.cpp
 	mkdir -p $(dir $@)
-	$(GCC) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	mkdir -p $(dir $@)

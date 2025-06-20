@@ -3,10 +3,6 @@
 
 #include "types.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 // GDT pointers
 struct gdt_ptr_struct {
     UINT16 limit;
@@ -42,11 +38,10 @@ typedef struct GDT GDT_t;
 
 // Functions
 extern GDT_t DefaultGDT;
-extern void LoadGDT(gdt_ptr_t* gdtDescriptor);
-void initGDT();
+extern "C" void LoadGDT(gdt_ptr_t* gdtDescriptor);
 
-#ifdef __cplusplus
+namespace gdt {
+    void init();
 }
-#endif
 
 #endif  // GDT_H

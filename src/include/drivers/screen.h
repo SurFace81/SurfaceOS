@@ -2,20 +2,21 @@
 #define SCREEN_H
 
 #include "../cpu/types.h"
+#include "../../kernel/kernel.h"
 
 typedef struct {
     UINT32 Width;
     UINT32 Height;
     UINT32 TextColor;
 
-    void* BufferAddress;
+    UINT8* BufferAddress;
     UINT64 BufferSize;
     UINT32 PixelsPerScanLine;
 
     UINT32 CursorPosX;
     UINT32 CursorPosY;
 
-    void* FontPtr;
+    char* FontPtr;
     UINT16 SymbolSizeX;
     UINT16 SymbolSizeY;
     UINT32 NumberOfSymbols;
@@ -23,17 +24,12 @@ typedef struct {
 
 extern SYSTEM_SCREEN Screen;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-void clear_screen();
-void putChar(char chr);
-void set_text_color(UINT32);
-void set_cursor_position(UINT32 x, UINT32 y);
-
-#ifdef __cplusplus
+namespace screen {
+    void init(SYSTEM_SCREEN* Screen, SFOS_BOOT_HEADER* Header);
+    void clear();
+    void putChar(char chr);
+    void set_text_color(UINT32);
+    void set_cursor_position(UINT32 x, UINT32 y);
 }
-#endif
 
 #endif  // SCREEN_H
