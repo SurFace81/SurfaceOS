@@ -30,6 +30,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
+				bin/kernel/drivers/console.o
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -54,10 +55,6 @@ bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
 bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
-
-bin/kernel/stdlib/%.o: src/kernel/stdlib/%.c
-	mkdir -p $(dir $@)
-	$(GCC) $(CCFLAGS) -o $@ $^
 
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
 	mkdir -p $(dir $@)

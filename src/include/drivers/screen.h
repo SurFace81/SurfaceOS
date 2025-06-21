@@ -26,7 +26,7 @@ extern SYSTEM_SCREEN Screen;
 
 namespace screen {
     void init(SYSTEM_SCREEN* Screen, SFOS_BOOT_HEADER* Header);
-    void clear();
+    void clear(void);
     void putChar(char chr);
     void set_text_color(UINT32);
     void set_cursor_position(UINT32 x, UINT32 y);

@@ -1,6 +1,7 @@
 #include "../../include/drivers/screen.h"
 
 SYSTEM_SCREEN Screen;
+const unsigned int BBP = 4;
 
 namespace screen {
     void init(SYSTEM_SCREEN* Screen, SFOS_BOOT_HEADER* Header) {
@@ -24,8 +25,6 @@ namespace screen {
         unsigned int offsetX = Screen.CursorPosX;
         unsigned int offsetY = Screen.CursorPosY;
 
-        const unsigned int BBP = 4;
-
         char* charPtr = Screen.FontPtr + chr * Screen.SymbolSizeY;
 
         for (unsigned int y = offsetY; y < offsetY + 16; y++) {
@@ -38,8 +37,8 @@ namespace screen {
         }
     }
 
-    void clear() {
-        UINT64* bufferPtr = (UINT64*)Screen.BufferAddress;
+    void clear(void) {
+        UINT8* bufferPtr = (UINT8*)Screen.BufferAddress;
         for (int i = 0; i < Screen.BufferSize; i++) {
             bufferPtr[i] = 0x00;
         }

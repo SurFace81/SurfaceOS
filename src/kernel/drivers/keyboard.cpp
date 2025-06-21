@@ -1,8 +1,10 @@
 #include "../../include/drivers/keyboard.h"
 
 namespace keyboard {
-    static keyboard_buffer_t kb_buffer = {0};
-    static keyboard_state_t  kb_state  = {0};
+    UINT8 scancode_to_ascii(UINT8 scancode);
+    UINT8 extended_scancode_to_ascii(UINT8 scancode);
+
+    static keyboard_state_t kb_state  = {0};
 
     static const char scancode_to_ascii_en[] = {
         0,  0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
@@ -26,35 +28,37 @@ namespace keyboard {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
 
-    static void wait_input(void) {
-        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x02);
+    static keyboard_callback_t user_callback = nullptr;
+
+    void set_keyboard_callback(keyboard_callback_t callback) {
+        user_callback = callback;
     }
 
-    static void wait_output(void) {
-        while (!(port::byte_in(KEYBOARD_STATUS_PORT) & 0x01));
+    void del_keyboard_callback(void) {
+        user_callback = nullptr;
     }
 
     static void send_command(UINT8 command) {
-        wait_input();
+        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x02);
         port::byte_out(KEYBOARD_COMMAND_PORT, command);
     }
 
     static void send_data(UINT8 data) {
-        wait_input();
+        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x02);     // in
         port::byte_out(KEYBOARD_DATA_PORT, data);
     }
 
     static UINT8 read_data(void) {
-        wait_output();
+        while (!(port::byte_in(KEYBOARD_STATUS_PORT) & 0x01));  // out
         return port::byte_in(KEYBOARD_DATA_PORT);
     }
 
     static void set_leds(void) {
         UINT8 led_state = 0;
         
-        if (kb_state.caps_lock) led_state |= 0x04;
-        if (kb_state.num_lock) led_state |= 0x02;
-        if (kb_state.scroll_lock) led_state |= 0x01;
+        if (kb_state.caps_lock)     led_state |= 0x04;
+        if (kb_state.num_lock)      led_state |= 0x02;
+        if (kb_state.scroll_lock)   led_state |= 0x01;
         
         send_data(0xED);
         read_data();
@@ -62,28 +66,40 @@ namespace keyboard {
         read_data();
     }
 
-    static void buffer_put(char c) {
-        if (kb_buffer.count < KEYBOARD_BUFFER_SIZE) {
-            kb_buffer.buffer[kb_buffer.head] = c;
-            kb_buffer.head = (kb_buffer.head + 1) % KEYBOARD_BUFFER_SIZE;
-            kb_buffer.count++;
-        }
-    }
-
-    static char buffer_get(void) {
-        if (kb_buffer.count == 0) {
-            return 0;
-        }
-        
-        char c = kb_buffer.buffer[kb_buffer.tail];
-        kb_buffer.tail = (kb_buffer.tail + 1) % KEYBOARD_BUFFER_SIZE;
-        kb_buffer.count--;
-        return c;
-    }
-
     void init(void) {
-        kb_state.num_lock = 1;
+        // Reset keyboard controller
+        send_command(0xAE);         // Disable keyboard
+        send_command(0x20);         // Read configuration
+        UINT8 config = read_data();
+        send_command(0x60);         // Write configuration  
+        send_data(config | 0x01);   // Enable interrupts
+        send_command(0xAF);         // Enable keyboard
+        
+        // Clear buffer
+        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x01) {
+            port::byte_in(KEYBOARD_DATA_PORT);
+        }
+
+        kb_state.caps_lock      = 0;
+        kb_state.num_lock       = 0;
+        kb_state.scroll_lock    = 0;
+        kb_state.alt_pressed    = 0;
+        kb_state.shift_pressed  = 0;
+        kb_state.ctrl_pressed   = 0;
         set_leds();
+    }
+
+    static UINT8 get_current_modifiers(void) {
+        UINT8 modifiers = 0;
+        
+        if (kb_state.shift_pressed)  modifiers |= MOD_SHIFT;
+        if (kb_state.ctrl_pressed)   modifiers |= MOD_CTRL;
+        if (kb_state.alt_pressed)    modifiers |= MOD_ALT;
+        if (kb_state.caps_lock)      modifiers |= MOD_CAPS;
+        if (kb_state.num_lock)       modifiers |= MOD_NUM;
+        if (kb_state.scroll_lock)    modifiers |= MOD_SCROLL;
+        
+        return modifiers;
     }
 
     void handler(void) {
@@ -107,6 +123,32 @@ namespace keyboard {
                 case 0x38:
                     kb_state.alt_pressed = pressed;
                     break;
+                case 0x48: // Up Arrow
+                case 0x50: // Down Arrow  
+                case 0x4B: // Left Arrow
+                case 0x4D: // Right Arrow
+                case 0x49: // Page Up
+                case 0x51: // Page Down
+                case 0x47: // Home
+                case 0x4F: // End
+                case 0x52: // Insert
+                case 0x53: // Delete
+                case 0x1C: // NumPad Enter
+                case 0x35: // NumPad /
+                case 0x5B: // Left Windows Key
+                case 0x5C: // Right Windows Key
+                case 0x5D: // Menu Key
+                case 0x46: // Ctrl+Break
+                case 0x45: // Num Lock (extended version)
+                    if (user_callback != nullptr) {
+                        keyboard_event_t e = {0};
+                        e.type = pressed ? KEY_PRESS : KEY_RELEASE;
+                        e.keyCode = scancode | 0x80; // Mark as extended
+                        e.key = extended_scancode_to_ascii(scancode);
+                        e.modifiers = get_current_modifiers();
+                        user_callback(e);
+                    }
+                    break;
             }
             return;
         }
@@ -116,54 +158,41 @@ namespace keyboard {
             case RSHIFT_SCANCODE:
                 kb_state.shift_pressed = pressed;
                 break;
-                
             case LCTRL_SCANCODE:
                 kb_state.ctrl_pressed = pressed;
                 break;
-                
             case LALT_SCANCODE:
                 kb_state.alt_pressed = pressed;
                 break;
-                
             case CAPS_LOCK_SCANCODE:
                 if (pressed) {
                     kb_state.caps_lock = !kb_state.caps_lock;
                     set_leds();
                 }
                 break;
-                
             case NUM_LOCK_SCANCODE:
                 if (pressed) {
                     kb_state.num_lock = !kb_state.num_lock;
                     set_leds();
                 }
                 break;
-                
             case SCROLL_LOCK_SCANCODE:
                 if (pressed) {
                     kb_state.scroll_lock = !kb_state.scroll_lock;
                     set_leds();
                 }
                 break;
-                
             default:
-                if (pressed) {
-                    char c = scancode_to_ascii(scancode);
-                    if (c) {
-                        buffer_put(c);
-                    }
-                    // JUST FOR TEST (I HOPE)
-                    char t[2];
-                    t[0] = c;
-                    t[1] = '\0';
-                    print(t);
+                if (user_callback != nullptr) {
+                    keyboard_event_t e = {0};
+                    e.type      = pressed ? KEY_PRESS : KEY_RELEASE;
+                    e.keyCode   = scancode;
+                    e.key       = scancode_to_ascii(scancode);
+                    e.modifiers = get_current_modifiers();
+                    user_callback(e);
                 }
                 break;
         }
-    }
-
-    char getchar(void) {
-        return buffer_get();
     }
 
     UINT8 scancode_to_ascii(UINT8 scancode) {
@@ -189,5 +218,23 @@ namespace keyboard {
         }
         
         return c;
+    }
+
+    UINT8 extended_scancode_to_ascii(UINT8 scancode) {
+        switch (scancode) {
+            case 0x1C: return '\n';    // NumPad Enter
+            case 0x35: return '/';     // NumPad /
+            case 0x48: return 0;       // Up Arrow
+            case 0x50: return 0;       // Down Arrow
+            case 0x4B: return 0;       // Left Arrow
+            case 0x4D: return 0;       // Right Arrow
+            case 0x49: return 0;       // Page Up
+            case 0x51: return 0;       // Page Down
+            case 0x47: return 0;       // Home
+            case 0x4F: return 0;       // End
+            case 0x52: return 0;       // Insert
+            case 0x53: return 0x7F;    // Delete
+            default: return 0;
+        }
     }
 } // namespace
