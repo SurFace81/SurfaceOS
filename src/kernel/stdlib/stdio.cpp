@@ -22,6 +22,11 @@ void print(const char* str)
     }
 }
 
+void print(char c) {
+    char out[2] = {c, '\0'};
+    print(out);
+}
+
 void print(int dec)
 {
     char temp_str[100];
@@ -40,7 +45,7 @@ void clearScreen() {
     screen::clear();
 }
 
-void setTextColor(UINT32 color) {
+void setTextColor(Colors color) {
     screen::set_text_color(color);
 }
 

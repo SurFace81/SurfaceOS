@@ -7,6 +7,7 @@
 
 void print(const char*);
 void print(int);
+void print(char);
 void print(UINT64, UINT64 size);
 
 #endif  // STDIO_H

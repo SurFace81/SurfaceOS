@@ -89,19 +89,6 @@ namespace keyboard {
         set_leds();
     }
 
-    static UINT8 get_current_modifiers(void) {
-        UINT8 modifiers = 0;
-        
-        if (kb_state.shift_pressed)  modifiers |= MOD_SHIFT;
-        if (kb_state.ctrl_pressed)   modifiers |= MOD_CTRL;
-        if (kb_state.alt_pressed)    modifiers |= MOD_ALT;
-        if (kb_state.caps_lock)      modifiers |= MOD_CAPS;
-        if (kb_state.num_lock)       modifiers |= MOD_NUM;
-        if (kb_state.scroll_lock)    modifiers |= MOD_SCROLL;
-        
-        return modifiers;
-    }
-
     void handler(void) {
         UINT8 scancode = port::byte_in(KEYBOARD_DATA_PORT);
         
@@ -142,10 +129,14 @@ namespace keyboard {
                 case 0x45: // Num Lock (extended version)
                     if (user_callback != nullptr) {
                         keyboard_event_t e = {0};
-                        e.type = pressed ? KEY_PRESS : KEY_RELEASE;
-                        e.keyCode = scancode | 0x80; // Mark as extended
-                        e.key = extended_scancode_to_ascii(scancode);
-                        e.modifiers = get_current_modifiers();
+                        e.type    = pressed ? KEY_PRESS : KEY_RELEASE;
+                        e.KeyCode = scancode | 0x80; // Mark as extended
+                        e.KeyChar = extended_scancode_to_ascii(scancode);
+                        e.Control = kb_state.ctrl_pressed;
+                        e.Shift   = kb_state.shift_pressed;
+                        e.Alt     = kb_state.alt_pressed;
+                        e.NumLck  = kb_state.num_lock;
+                        e.ScrLck  = kb_state.scroll_lock;
                         user_callback(e);
                     }
                     break;
@@ -185,10 +176,14 @@ namespace keyboard {
             default:
                 if (user_callback != nullptr) {
                     keyboard_event_t e = {0};
-                    e.type      = pressed ? KEY_PRESS : KEY_RELEASE;
-                    e.keyCode   = scancode;
-                    e.key       = scancode_to_ascii(scancode);
-                    e.modifiers = get_current_modifiers();
+                    e.type    = pressed ? KEY_PRESS : KEY_RELEASE;
+                    e.KeyCode = scancode;
+                    e.KeyChar = scancode_to_ascii(scancode);
+                    e.Control = kb_state.ctrl_pressed;
+                    e.Shift   = kb_state.shift_pressed;
+                    e.Alt     = kb_state.alt_pressed;
+                    e.NumLck  = kb_state.num_lock;
+                    e.ScrLck  = kb_state.scroll_lock;
                     user_callback(e);
                 }
                 break;

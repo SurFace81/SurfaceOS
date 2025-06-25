@@ -24,13 +24,6 @@
 
 #define EXTENDED_SCANCODE       0xE0
 
-#define MOD_SHIFT               0x01
-#define MOD_CTRL                0x02
-#define MOD_ALT                 0x04
-#define MOD_CAPS                0x08
-#define MOD_NUM                 0x10
-#define MOD_SCROLL              0x20
-
 typedef struct {
     UINT8 shift_pressed;
     UINT8 ctrl_pressed;
@@ -47,11 +40,27 @@ enum keyboard_event_type {
     KEY_REPEAT  = 2,
 };
 
+enum Keys {
+    /// Virtual key codes enum
+    SPACE           = 57,
+    ESCAPE          = 1,
+    BACKSPACE       = 14,
+    ENTER           = 28,
+    ARROW_LEFT      = 203,
+    ARROW_UP        = 200,
+    ARROW_DOWN      = 208,
+    ARROW_RIGHT     = 205,
+};
+
 typedef struct {
-    UINT8 keyCode;
-    char  key;
+    UINT8 KeyCode;
+    char  KeyChar;
     UINT8 type;
-    UINT8 modifiers;    // reserved, reserved, scroll, num, caps, alt, ctrl, shift
+    bool  Control;
+    bool  Shift;
+    bool  Alt;
+    bool  NumLck;
+    bool  ScrLck;
 } keyboard_event_t;
 
 typedef void (*keyboard_callback_t)(keyboard_event_t e);

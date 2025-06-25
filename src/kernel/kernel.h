@@ -26,7 +26,7 @@ typedef struct {
     UINT64 KernelSize;
     UINT64 StartDataAddress;
     UINT64 StartDataSize;
-} SFOS_BOOT_HEADER;
+} BOOT_HEADER;
 
 typedef struct {
     UINT64 Start;
