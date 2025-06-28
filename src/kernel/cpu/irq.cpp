@@ -1,12 +1,12 @@
 #include "../../include/cpu/irq.h"
 
+alignas(16) irq_handler_t irq_handlers[16] = {0};
+
 namespace irq {
     void enable(int irq);
     void disable(int irq);
     void mask_all(void);
     void unmask_all(void);
-
-    static irq_handler_t irq_handlers[16] = {0};
 
     // Remap the PIC controllers
     static void pic_remap(int offset1, int offset2) {
@@ -160,8 +160,8 @@ void irq_handler(struct interrupt_frame *frame) {
         return;
     }
 
-    if (irq::irq_handlers[irq_line] != 0) {
-        irq::irq_handlers[irq_line]();
+    if (irq_handlers[irq_line] != 0) {
+        irq_handlers[irq_line]();
     }
     
     irq::pic_send_eoi(irq_line);

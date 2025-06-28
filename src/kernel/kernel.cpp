@@ -24,8 +24,8 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
 
     screen::init(&Screen, BootHeader);
     keyboard::init();
-    irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
     console::init();
+    irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
 
     while (1);
 }

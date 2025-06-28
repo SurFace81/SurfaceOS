@@ -1,16 +1,21 @@
 #include "../../include/drivers/console.h"
 
+#define BUFFER_SIZE 256
+
+UINT32 cursor_x = 0;
+UINT32 cursor_y = 0;
+UINT32 max_cols = 0;
+UINT32 max_rows = 0;
+
+alignas(16) char INPUT_BUFFER[BUFFER_SIZE] = {0};
+static int  inPtr = 0;
+
+namespace commands {
+    const char* parse_and_exec(const char* input, int len);
+}
+
 namespace console {
     static void input(keyboard_event_t e);
-
-    static const int BUFFER_SIZE = 256;
-    static char INPUT_BUFFER[BUFFER_SIZE] = {0};
-    static UINT32 inPtr = 0;
-
-    static UINT32 cursor_x = 0;
-    static UINT32 cursor_y = 0;
-    static UINT32 max_cols = 0;
-    static UINT32 max_rows = 0;
 
     void init(void) {
         max_cols = Screen.Width / Screen.SymbolSizeX;
@@ -27,11 +32,8 @@ namespace console {
         cursor_x = 2; cursor_y = 5;
     };
 
-    bool isChars = true;
     static void input(keyboard_event_t e) {
         if (e.type != KEY_PRESS) return;
-
-        isChars = !e.ScrLck;
 
         if (e.KeyCode == Keys::BACKSPACE) {
             if (cursor_x >= 1) {
@@ -40,10 +42,14 @@ namespace console {
                 cursor_x = max_cols - 1;
                 cursor_y -= 1;
             }
+            if (inPtr > 0) {
+                inPtr -= 1;
+            }
 
             screen::backspace(cursor_x, cursor_y);
         }
         else if (e.KeyCode == Keys::ENTER) {
+            print(commands::parse_and_exec(INPUT_BUFFER, inPtr));
             inPtr = 0;
             print("\n\r> ");
             cursor_x = 2;
@@ -61,9 +67,9 @@ namespace console {
         //     if (cursor_x < max_cols)
         //         cursor_x += 1;
         } else {
-            if (isChars) {
+            if (!e.ScrLck) {
                 if (inPtr < BUFFER_SIZE) {
-                    INPUT_BUFFER[inPtr] = e.KeyCode;
+                    INPUT_BUFFER[inPtr] = e.KeyChar;
                     inPtr += 1;
                 }
                 char out[2] = {e.KeyChar, '\0'};
@@ -91,5 +97,36 @@ namespace console {
 } // namespace
 
 namespace commands {
+    static bool cmdcmp(const char* str1, const char* str2, int len) {
+        for (int i = 0; i < len; i++) {
+            if (str1[i] != str2[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
 
+    const char* parse_and_exec(const char* input, int len) {
+        if (len == 0) {
+            cursor_x = 2;
+            cursor_y += 1;
+            return "\n\rThis is not a command!";
+        }
+
+        if (cmdcmp(input, "help", len)) {
+            cursor_x = 0;
+            cursor_y += 1;
+            return "\n\rCLEAR - clear screen";
+        }
+        if (cmdcmp(input, "clear", len)) {
+            screen::clear();
+            cursor_x = 2;
+            cursor_y = 0;
+            return "";
+        }
+
+        cursor_x = 2;
+        cursor_y += 1;
+        return "\n\rThis is not a command!";
+    }
 } // namespace

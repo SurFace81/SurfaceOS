@@ -39,17 +39,26 @@ namespace keyboard {
     }
 
     static void send_command(UINT8 command) {
-        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x02);
+        int attempts = 1000;
+        while ((port::byte_in(KEYBOARD_STATUS_PORT) & 0x02) && --attempts > 0);
+        if (attempts == 0) return;
+
         port::byte_out(KEYBOARD_COMMAND_PORT, command);
     }
 
     static void send_data(UINT8 data) {
-        while (port::byte_in(KEYBOARD_STATUS_PORT) & 0x02);     // in
+        int attempts = 1000;
+        while ((port::byte_in(KEYBOARD_STATUS_PORT) & 0x02) && --attempts > 0);     // in
+        if (attempts == 0) return;
+
         port::byte_out(KEYBOARD_DATA_PORT, data);
     }
 
     static UINT8 read_data(void) {
-        while (!(port::byte_in(KEYBOARD_STATUS_PORT) & 0x01));  // out
+        int attempts = 1000;
+        while (!(port::byte_in(KEYBOARD_STATUS_PORT) & 0x01) && --attempts > 0);  // out
+        if (attempts == 0) return 0;
+
         return port::byte_in(KEYBOARD_DATA_PORT);
     }
 

@@ -4,7 +4,6 @@ SYSTEM_SCREEN Screen;
 
 namespace screen {
     static const unsigned int BBP = 4;
-    static UINT32 BLACK_COLOR = 0x00000000;
 
     void init(SYSTEM_SCREEN* Screen, BOOT_HEADER* Header) {
         Screen->BufferAddress = (UINT8*)0x600000;
@@ -34,7 +33,7 @@ namespace screen {
                 if ((*charPtr & (0b10000000 >> (x - offsetX))) > 0) {
                     *(unsigned int*)(x * BBP + (y * Screen.PixelsPerScanLine * BBP) + Screen.BufferAddress) = Screen.TextColor;
                 } else {
-                    *(unsigned int*)(x * BBP + (y * Screen.PixelsPerScanLine * BBP) + Screen.BufferAddress) = BLACK_COLOR;
+                    *(unsigned int*)(x * BBP + (y * Screen.PixelsPerScanLine * BBP) + Screen.BufferAddress) = 0x00000000;
                 }
             }
             charPtr++;
@@ -54,7 +53,7 @@ namespace screen {
         for (unsigned int y = posY; y < posY + Screen.SymbolSizeY; y++) {
             for (unsigned int x = posX; x < posX + Screen.SymbolSizeX; x++) {
                 if (x < Screen.Width && y < Screen.Height) {
-                    *(unsigned int*)(x * BBP + (y * Screen.PixelsPerScanLine * BBP) + Screen.BufferAddress) = BLACK_COLOR;
+                    *(unsigned int*)(x * BBP + (y * Screen.PixelsPerScanLine * BBP) + Screen.BufferAddress) = 0x00000000;
                 }
             }
         }

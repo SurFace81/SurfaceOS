@@ -3,6 +3,7 @@
 
 #include "keyboard.h"
 #include "screen.h"
+#include "uart.h"
 #include "../cpu/memory.h"
 
 namespace console {
