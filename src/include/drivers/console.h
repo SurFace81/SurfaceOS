@@ -5,6 +5,7 @@
 #include "screen.h"
 #include "../stdlib/list.h"
 #include "../mm/memory.h"
+#include "../cpu/cpuid.h"
 
 namespace console {
     void init(void);

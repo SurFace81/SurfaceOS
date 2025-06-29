@@ -5,7 +5,6 @@
 
 namespace list {
     template<typename T>
-    __attribute__((packed))
     struct Block {
         UINT64 used;           // Количество использованных элементов в блоке
         Block<T>* next;        // Указатель на следующий блок
@@ -13,7 +12,6 @@ namespace list {
     };
 
     template<typename T>
-    __attribute__((packed))
     struct List {
         UINT64 size;           // Общее количество элементов во всем списке
         UINT64 block_capacity; // Количество элементов в одном блоке

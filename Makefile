@@ -32,6 +32,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
 				bin/kernel/drivers/console.o \
+				bin/kernel/cpu/cpuid.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
