@@ -1,6 +1,6 @@
 #include "kernel.h"
 #include "../include/cpu/gdt.h"
-#include "../include/cpu/memory.h"
+#include "../include/mm/memory.h"
 #include "../include/cpu/paging.h"
 #include "../include/drivers/uart.h"
 #include "../include/stdlib/stdio.h"
@@ -8,6 +8,7 @@
 #include "../include/cpu/irq.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/console.h"
+#include "../include/stdlib/list.h"
 
 extern "C" void kmain(BOOT_HEADER *BootHeader)
 {
@@ -16,6 +17,7 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
 
     gdt::init();
     paging::init((UINT64*)0x300000);
+    memory::init();
     idt::init();
     irq::init();
     uart::init(COM1);
@@ -26,6 +28,12 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     keyboard::init();
     console::init();
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
+
+    // list::List<int>* list = list::create<int>();
+    // list::add(list, 10);
+    // list::add(list, 20);
+    // print((UINT64)list, 8);
+    // print(list::get(list, 20));
 
     while (1);
 }

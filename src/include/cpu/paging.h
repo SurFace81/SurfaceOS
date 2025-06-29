@@ -2,7 +2,7 @@
 #define PAGING_H
 
 #include "types.h"
-#include "memory.h"
+#include "../mm/memory.h"
 
 #define PAGE_SIZE_BYTES 0x200000
 

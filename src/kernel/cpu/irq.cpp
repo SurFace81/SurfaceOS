@@ -1,6 +1,6 @@
 #include "../../include/cpu/irq.h"
 
-alignas(16) irq_handler_t irq_handlers[16] = {0};
+alignas(8) irq_handler_t irq_handlers[16] = {0};
 
 namespace irq {
     void enable(int irq);

@@ -3,8 +3,8 @@
 
 #include "keyboard.h"
 #include "screen.h"
-#include "uart.h"
-#include "../cpu/memory.h"
+#include "../stdlib/list.h"
+#include "../mm/memory.h"
 
 namespace console {
     void init(void);

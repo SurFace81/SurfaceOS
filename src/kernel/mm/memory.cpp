@@ -1,6 +1,8 @@
-#include "../../include/cpu/memory.h"
+#include "../../include/mm/memory.h"
 
 static UINT64 TOT_MEMORY_SIZE;
+
+#define ALLOCATOR_START 0x1500000
 
 namespace memory {
     void setMemorySize(UINT64 size)
@@ -11,6 +13,22 @@ namespace memory {
     UINT64 getMemorySize(void)
     {
         return TOT_MEMORY_SIZE;
+    }
+
+    void init() {
+        buddy_init((UINT8*)ALLOCATOR_START);
+    }
+
+    UINT8* memalloc() {
+        UINT8* ptr = buddy_alloc();
+        if (ptr != nullptr)
+            return ptr;
+        
+        return nullptr;
+    }
+
+    bool memfree(UINT8* addr) {
+        return buddy_free(addr);
     }
 
     void memset(UINT8 *ptr, char val, UINT64 size)

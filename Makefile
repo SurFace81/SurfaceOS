@@ -19,7 +19,8 @@ DISK_IMG	= surfaceos.img
 SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/gdt.o \
 				bin/kernel/cpu/gdt.asm.o \
-				bin/kernel/cpu/memory.o \
+				bin/kernel/mm/memory.o \
+				bin/kernel/mm/buddy.o \
 				bin/kernel/cpu/paging.o \
 				bin/kernel/cpu/ports.o \
 				bin/kernel/drivers/uart.o \
@@ -30,7 +31,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
-				bin/kernel/drivers/console.o
+				bin/kernel/drivers/console.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -61,6 +62,10 @@ bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/cpu/%.o: src/kernel/cpu/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(CCFLAGS) -o $@ $^
+
+bin/kernel/mm/%.o: src/kernel/mm/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 

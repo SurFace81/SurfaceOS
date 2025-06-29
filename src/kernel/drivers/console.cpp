@@ -1,23 +1,23 @@
 #include "../../include/drivers/console.h"
 
-#define BUFFER_SIZE 256
+namespace {
+    UINT32 cursor_x = 0;
+    UINT32 cursor_y = 0;
+    UINT32 max_cols = 0;
+    UINT32 max_rows = 0;
 
-UINT32 cursor_x = 0;
-UINT32 cursor_y = 0;
-UINT32 max_cols = 0;
-UINT32 max_rows = 0;
-
-alignas(16) char INPUT_BUFFER[BUFFER_SIZE] = {0};
-static int  inPtr = 0;
+    list::List<char>* INPUT_BUFFER;
+}
 
 namespace commands {
-    const char* parse_and_exec(const char* input, int len);
+    const char* parse_and_exec(list::List<char>* input);
 }
 
 namespace console {
     static void input(keyboard_event_t e);
 
     void init(void) {
+        INPUT_BUFFER = list::create<char>();
         max_cols = Screen.Width / Screen.SymbolSizeX;
         max_rows = Screen.Height / Screen.SymbolSizeY;
 
@@ -42,15 +42,12 @@ namespace console {
                 cursor_x = max_cols - 1;
                 cursor_y -= 1;
             }
-            if (inPtr > 0) {
-                inPtr -= 1;
-            }
 
             screen::backspace(cursor_x, cursor_y);
         }
         else if (e.KeyCode == Keys::ENTER) {
-            print(commands::parse_and_exec(INPUT_BUFFER, inPtr));
-            inPtr = 0;
+            print(commands::parse_and_exec(INPUT_BUFFER));
+            list::clear(INPUT_BUFFER);
             print("\n\r> ");
             cursor_x = 2;
             cursor_y += 1;
@@ -68,10 +65,7 @@ namespace console {
         //         cursor_x += 1;
         } else {
             if (!e.ScrLck) {
-                if (inPtr < BUFFER_SIZE) {
-                    INPUT_BUFFER[inPtr] = e.KeyChar;
-                    inPtr += 1;
-                }
+                list::add(INPUT_BUFFER, e.KeyChar);
                 char out[2] = {e.KeyChar, '\0'};
                 print(out);
             } else {
@@ -97,26 +91,27 @@ namespace console {
 } // namespace
 
 namespace commands {
-    static bool cmdcmp(const char* str1, const char* str2, int len) {
+    static bool cmdcmp(list::List<char>* str1, const char* str2, int len) {
         for (int i = 0; i < len; i++) {
-            if (str1[i] != str2[i]) {
+            char val;
+            list::get(str1, i, val);
+            if (val != str2[i]) {
                 return false;
             }
         }
         return true;
     }
 
-    const char* parse_and_exec(const char* input, int len) {
+    const char* parse_and_exec(list::List<char>* input) {
+        UINT64 len = list::size(input);
         if (len == 0) {
-            cursor_x = 2;
-            cursor_y += 1;
-            return "\n\rThis is not a command!";
+            return "";
         }
 
         if (cmdcmp(input, "help", len)) {
             cursor_x = 0;
-            cursor_y += 1;
-            return "\n\rCLEAR - clear screen";
+            cursor_y += 2;
+            return "\n\rhelp  - shows this info\n\rclear - clear screen";
         }
         if (cmdcmp(input, "clear", len)) {
             screen::clear();
