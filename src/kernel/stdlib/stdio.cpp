@@ -22,6 +22,22 @@ void print(const char* str)
     }
 }
 
+void print(list::List<char>* char_list) {
+    if (!char_list) return;
+    
+    list::Block<char>* current = char_list->first_block;
+    
+    while (current) {
+        for (UINT64 i = 0; i < current->used; i++) {
+            print(current->data[i]);
+            if (current->data[i] == '\0') {
+                return;
+            }
+        }
+        current = current->next;
+    }
+}
+
 void print(char c) {
     char out[2] = {c, '\0'};
     print(out);

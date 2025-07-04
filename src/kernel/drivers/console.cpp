@@ -7,12 +7,12 @@ namespace {
     UINT32 max_rows = 0;
 
     list::List<char>* INPUT_BUFFER;
-    list::List<char>* cpuinfo;
+    list::List<char>* infobuf;
     char cpu_name[51];
 }
 
 namespace commands {
-    const char* parse_and_exec(list::List<char>* input);
+    void parse_and_exec(list::List<char>* input);
 }
 
 namespace console {
@@ -20,7 +20,7 @@ namespace console {
 
     void init(void) {
         INPUT_BUFFER = list::create<char>();
-        cpuinfo = list::create<char>();
+        infobuf = list::create<char>();
         max_cols = Screen.Width / Screen.SymbolSizeX;
         max_rows = Screen.Height / Screen.SymbolSizeY;
 
@@ -54,7 +54,9 @@ namespace console {
             screen::backspace(cursor_x, cursor_y);
         }
         else if (e.KeyCode == Keys::ENTER) {
-            print(commands::parse_and_exec(INPUT_BUFFER));
+            commands::parse_and_exec(INPUT_BUFFER);
+            print(infobuf);
+            list::clear(infobuf);
             list::clear(INPUT_BUFFER);
             print("\n\r> ");
             cursor_x = 2;
@@ -110,95 +112,105 @@ namespace commands {
         return true;
     }
 
-    const char* parse_and_exec(list::List<char>* input) {
+    static void add_to_out_list(const char* str) {
+        for (const char* p = str; *p; ++p) list::add(infobuf, *p);
+    }
+
+    static void add_to_out_list(int num, bool isHex, int size = 8) {
+        char buf[12] = {0};
+        if (isHex) {
+            hex_to_str(num, buf, size);
+        } else {
+            int_to_str(num, buf);
+        }
+        for (char* p = buf; *p; ++p) list::add(infobuf, *p);
+    }
+
+    void parse_and_exec(list::List<char>* input) {
         UINT64 len = list::size(input);
         if (len == 0) {
-            return "";
+            return;
         }
 
         if (cmdcmp(input, "help", len)) {
             cursor_x = 0;
-            cursor_y += 3;
-            return  "\n\rhelp  - shows this info"
-                    "\n\rclear - clear screen"
-                    "\n\rcpuid - get cpu info";
+            cursor_y += 4;
+            add_to_out_list("\n\rhelp  - shows this info");
+            add_to_out_list("\n\rclear - clear screen");
+            add_to_out_list("\n\rcpuid - get cpu info");
+            add_to_out_list("\n\rlspci - list of all PCI devices");
+            return;
         }
         if (cmdcmp(input, "clear", len)) {
             screen::clear();
             cursor_y = 0;
-            return "";
+            return;
+        }
+        if (cmdcmp(input, "lspci", len)) {
+            UINT32 device_count = pci::device_count();
+            add_to_out_list("\n\r PCI Devices found: ");
+            add_to_out_list(device_count, false);
+
+            for (int i = 0; i < device_count; i++) {
+                PCIDevice* dev = pci::get_by_id(i);
+                add_to_out_list("\n\r Vendor: 0x");
+                add_to_out_list(dev->vendor_id, true, 4);
+                add_to_out_list(" Device: 0x");
+                add_to_out_list(dev->device_id, true, 4);
+                add_to_out_list(" Class: 0x");
+                add_to_out_list(dev->class_code, true, 2);
+                add_to_out_list(" Subclass: 0x");
+                add_to_out_list(dev->subclass, true, 2);
+                add_to_out_list(" ProgIF: 0x");
+                add_to_out_list(dev->prog_if, true, 2);
+
+                cursor_y += 1;
+            }
+
+            add_to_out_list("\0");
+            cursor_y += 1;
+            return;
         }
         if (cmdcmp(input, "cpuid", len)) {
-            list::clear(cpuinfo);
-
-            char num_buf[12];
             char name_buf[64];
             name_buf[0] = '\0';
             cpuid::get_cpu_name(name_buf);
 
-            for (const char* p = "\n\r           CPU: "; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = name_buf; *p; ++p) list::add(cpuinfo, *p);
-
-            UINT32 base_freq = cpuid::get_base_freq();
-            for (const char* p = "\n\r      BaseFreq: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(base_freq, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " MHz"; *p; ++p) list::add(cpuinfo, *p);
-
-            UINT32 max_freq = cpuid::get_max_freq();
-            for (const char* p = "\n\r       MaxFreq: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(max_freq, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " MHz"; *p; ++p) list::add(cpuinfo, *p);
-
-            UINT32 bus_freq = cpuid::get_bus_freq();
-            for (const char* p = "\n\r       BusFreq: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(bus_freq, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " MHz"; *p; ++p) list::add(cpuinfo, *p);
-
+            add_to_out_list("\n\r           CPU: ");
+            add_to_out_list(name_buf);
+            add_to_out_list("\n\r      BaseFreq: ");
+            add_to_out_list(cpuid::get_base_freq(), false);
+            add_to_out_list(" MHz\n\r       MaxFreq: ");
+            add_to_out_list(cpuid::get_max_freq(), false);
+            add_to_out_list(" MHz\n\r       BusFreq: ");
+            add_to_out_list(cpuid::get_bus_freq(), false);
             CPUTopology topo;
             cpuid::get_cpu_topology(&topo);
-
-            for (const char* p = "\n\r Logical cores: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(topo.logical_cores, num_buf);
-            for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-
-            for (const char* p = "\n\rPhysical cores: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(topo.physical_cores, num_buf);
-            for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-
-            for (const char* p = "\n\r       Sockets: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(topo.packages, num_buf);
-            for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-
-            for (const char* p = "\n\rHyperthreading: "; *p; ++p) list::add(cpuinfo, *p);
-            const char* ht_status = topo.hyperthreading ? "Yes" : "No";
-            for (const char* p = ht_status; *p; ++p) list::add(cpuinfo, *p);
-
+            add_to_out_list(" MHz\n\r Logical cores: ");
+            add_to_out_list(topo.logical_cores, false);
+            add_to_out_list("\n\rPhysical cores: ");
+            add_to_out_list(topo.physical_cores, false);
+            add_to_out_list("\n\r       Sockets: ");
+            add_to_out_list(topo.packages, false);
+            add_to_out_list("\n\rHyperthreading: ");
+            add_to_out_list(topo.hyperthreading ? "Yes" : "No");
             CacheInfo cache;
             cpuid::get_cache_info(&cache);
+            add_to_out_list("\n\r            L1: ");
+            add_to_out_list(cache.l1d_size + cache.l1i_size, false);
+            add_to_out_list(" KB\n\r            L2: ");
+            add_to_out_list(cache.l2_size, false);
+            add_to_out_list(" KB\n\r            L3: ");
+            add_to_out_list(cache.l3_size, false);
+            add_to_out_list(" KB\0");
 
-            // --- L1 ---
-            for (const char* p = "\n\r            L1: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(cache.l1d_size + cache.l1i_size, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " KB"; *p; ++p) list::add(cpuinfo, *p);
-
-            // --- L2 ---
-            for (const char* p = "\n\r            L2: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(cache.l2_size, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " KB"; *p; ++p) list::add(cpuinfo, *p);
-
-            // --- L3 ---
-            for (const char* p = "\n\r            L3: "; *p; ++p) list::add(cpuinfo, *p);
-            int_to_str(cache.l3_size, num_buf); for (char* p = num_buf; *p; ++p) list::add(cpuinfo, *p);
-            for (const char* p = " KB"; *p; ++p) list::add(cpuinfo, *p);
-
-            list::add(cpuinfo, '\0');
-            list::Block<char>* first_block = cpuinfo->first_block;
             cursor_y += 11;
-            return (const char*)first_block->data;
+            return;
         }
 
         cursor_x = 2;
         cursor_y += 1;
-        return "\n\rThis is not a command!";
+        add_to_out_list("\n\rThis is not a command!");
+        return;
     }
 } // namespace

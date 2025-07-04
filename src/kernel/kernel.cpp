@@ -9,6 +9,7 @@
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/console.h"
 #include "../include/stdlib/list.h"
+#include "../include/cpu/pci.h"
 
 extern "C" void kmain(BOOT_HEADER *BootHeader)
 {
@@ -21,6 +22,7 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     idt::init();
     irq::init();
     uart::init(COM1);
+    pci::init();
 
     memory::memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
 
@@ -28,12 +30,6 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     keyboard::init();
     console::init();
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
-
-    // list::List<int>* list = list::create<int>();
-    // list::add(list, 10);
-    // list::add(list, 20);
-    // print((UINT64)list, 8);
-    // print(list::get(list, 20));
 
     while (1);
 }

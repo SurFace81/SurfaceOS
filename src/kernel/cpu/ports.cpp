@@ -25,6 +25,18 @@ namespace port {
         asm volatile("out %%ax, %%dx" : : "a"(data), "d"(port));
     }
 
+    UINT32 dword_in(UINT16 port)
+    {
+        UINT32 result;
+        asm volatile("in %%dx, %%eax" : "=a"(result) : "d"(port));
+        return result;
+    }
+
+    void dword_out(UINT16 port, UINT32 data)
+    {
+        asm volatile("out %%eax, %%dx" : : "a"(data), "d"(port));
+    }
+
     void io_wait()
     {
         byte_out(0x80, 0);
