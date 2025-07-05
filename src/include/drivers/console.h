@@ -7,7 +7,7 @@
 #include "../mm/memory.h"
 #include "../cpu/cpuid.h"
 #include "../cpu/pci.h"
-#include "uart.h"
+#include "usb/xhci.h"
 
 namespace console {
     void init(void);

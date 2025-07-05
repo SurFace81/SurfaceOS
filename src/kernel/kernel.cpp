@@ -10,6 +10,7 @@
 #include "../include/drivers/console.h"
 #include "../include/stdlib/list.h"
 #include "../include/cpu/pci.h"
+#include "../include/drivers/usb/xhci.h"
 
 extern "C" void kmain(BOOT_HEADER *BootHeader)
 {
@@ -23,6 +24,7 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     irq::init();
     uart::init(COM1);
     pci::init();
+    xhci::init();
 
     memory::memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
 

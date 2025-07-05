@@ -34,6 +34,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/console.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
+				bin/kernel/drivers/usb/xhci.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -56,6 +57,10 @@ bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
 
 # Other files
 bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(CCFLAGS) -o $@ $^
+
+bin/kernel/drivers/usb/%.o: src/kernel/drivers/usb/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
@@ -109,7 +114,8 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 	sudo umount ./tmp
 
 run: $(DISK_IMG)
-	$(QEMU_UEFI) -hda $(DISK_IMG)
+#	$(QEMU_UEFI) -hda $(DISK_IMG)
+	$(QEMU_UEFI) -device qemu-xhci -device usb-storage,drive=usbstick -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
 #	$(QEMU_BIOS) -hda $(DISK_IMG)
 
 
