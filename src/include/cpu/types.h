@@ -17,8 +17,10 @@ typedef          char           SINT8;
 
 #if defined(__x86_64__) || defined(_M_X64)  // x86_64
     typedef UINT64 uintptr_t;
+    typedef UINT64 size_t;
 #else  // x86
     typedef UINT32 uintptr_t;
+    typedef UINT32 size_t;
 #endif
 
 #ifndef __cplusplus

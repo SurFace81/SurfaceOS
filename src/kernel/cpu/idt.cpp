@@ -109,7 +109,5 @@ extern "C" void handle_exception(int exception_number, UINT64* stack_frame) {
             break;
     }
 
-    uart::write("\n");
-    uart::write(exception_names[exception_number]);
-    uart::write("\n");
+    uart::printf("\n\r%s\n", exception_names[exception_number]);
 }

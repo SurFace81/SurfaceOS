@@ -41,4 +41,11 @@ namespace paging {
         asm volatile("mov %%cr3, %%rax" ::: "rax", "memory");
         asm volatile("mov %%rax, %%cr3" ::: "memory");
     }
+
+    UINT64 get_phys_addr(UINT64 virt)
+    {
+        // Now: virt = phys
+        return virt;
+    }
+
 } // namespace

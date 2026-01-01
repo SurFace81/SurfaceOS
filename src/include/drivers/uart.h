@@ -15,11 +15,8 @@
 
 namespace uart {
     int  init(UINT16 port);
-    void write(const char *str);
     char read(void);
-    void log_uint16(UINT16 num);
-    void log_uint64_hex(UINT64 num);
-    void log_uint64_dec(UINT64 num);
+    void printf(const char* fmt, ...);
 }
 
 #endif // UART_H

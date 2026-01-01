@@ -3,6 +3,8 @@
 namespace uart {
     UINT16 port = COM1; // default
 
+    void write(const char *str);
+
     int init(UINT16 _port) {
         port = _port;
 
@@ -47,10 +49,9 @@ namespace uart {
     }
 
     void log_uint16(UINT16 number) {
-        char buffer[8];
+        char buffer[7];
         buffer[0] = '0';
         buffer[1] = 'x';
-        buffer[6] = '\n';
         buffer[7] = '\0';
 
         for (int i = 5; i >= 2; i--) {
@@ -63,11 +64,10 @@ namespace uart {
     }
 
     void log_uint64_hex(UINT64 number) {
-        char buffer[20];
+        char buffer[19];
         buffer[0] = '0';
         buffer[1] = 'x';
-        buffer[18] = '\n';
-        buffer[19] = '\0';
+        buffer[18] = '\0';
 
         for (int i = 17; i >= 2; i--) {
             UINT8 nibble = number & 0xF;
@@ -79,10 +79,9 @@ namespace uart {
     }
 
     void log_uint64_dec(UINT64 number) {
-        char buffer[21];
-        int index = 20;
+        char buffer[20];
+        int index = 19;
         buffer[index--] = '\0';
-        buffer[index--] = '\n';
 
         if (number == 0) {
             buffer[index--] = '0';
@@ -95,4 +94,83 @@ namespace uart {
 
         write(&buffer[index + 1]);
     }
+
+    void log_uint32_hex(UINT32 number) {
+        char buffer[11];
+        buffer[0] = '0';
+        buffer[1] = 'x';
+        buffer[10] = '\0';
+
+        for (int i = 9; i >= 2; i--) {
+            UINT8 nibble = number & 0xF;
+            buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
+            number >>= 4;
+        }
+
+        write(buffer);
+    }
+
+    void log_uint32_dec(UINT32 number) {
+        char buffer[11];
+        int index = 10;
+        buffer[index--] = '\0';
+
+        if (number == 0) {
+            buffer[index--] = '0';
+        } else {
+            while (number > 0) {
+                buffer[index--] = '0' + (number % 10);
+                number /= 10;
+            }
+        }
+
+        write(&buffer[index + 1]);
+    }
+
+    void printf(const char* fmt, ...) {
+        __builtin_va_list args;
+        __builtin_va_start(args, fmt);
+
+        while (*fmt) {
+            if (*fmt != '%') {
+                send(*fmt++);
+                continue;
+            }
+
+            fmt++; // %
+
+            bool ll = true;
+            if (*fmt == 'l' && *(fmt + 1) == 'l') {
+                ll = true;
+                fmt += 2;
+            }
+
+            switch (*fmt) {
+                case 's':
+                    write(__builtin_va_arg(args, const char*));
+                    break;
+                case 'i':
+                case 'u':
+                    if (ll)
+                        log_uint64_dec(__builtin_va_arg(args, UINT64));
+                    else
+                        log_uint32_dec(__builtin_va_arg(args, UINT32));
+                    break;
+                case 'x':
+                    if (ll)
+                        log_uint64_hex(__builtin_va_arg(args, UINT64));
+                    else
+                        log_uint32_hex(__builtin_va_arg(args, UINT32));
+                    break;
+                default:
+                    write(__builtin_va_arg(args, const char*));
+                    break;
+            }
+
+            fmt++;
+        }
+
+        __builtin_va_end(args);
+    }
+    
 } // namespace

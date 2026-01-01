@@ -115,7 +115,7 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 
 run: $(DISK_IMG)
 #	$(QEMU_UEFI) -hda $(DISK_IMG)
-	$(QEMU_UEFI) -device qemu-xhci -device usb-storage,drive=usbstick -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
+	$(QEMU_UEFI) -device qemu-xhci -trace usb_xhci* -D xhci.log -device usb-storage,drive=usbstick -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
 #	$(QEMU_BIOS) -hda $(DISK_IMG)
 
 
