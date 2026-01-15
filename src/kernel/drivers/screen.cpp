@@ -106,4 +106,74 @@ namespace screen {
         Screen.CursorPosX = x;
         Screen.CursorPosY = y;
     }
+
+    void putc(char c) {
+        if (c == '\n') {
+            Screen.CursorPosX = 0;
+            Screen.CursorPosY += Screen.SymbolSizeY;
+        } else if (c == '\b') {
+            if (Screen.CursorPosX) Screen.CursorPosX -= Screen.SymbolSizeX;
+            backspace(Screen.CursorPosX / Screen.SymbolSizeX,
+                    Screen.CursorPosY / Screen.SymbolSizeY);
+        } else {
+            putChar(c);
+            Screen.CursorPosX += Screen.SymbolSizeX;
+            if (Screen.CursorPosX + Screen.SymbolSizeX > Screen.Width) {
+                Screen.CursorPosX = 0;
+                Screen.CursorPosY += Screen.SymbolSizeY;
+            }
+        }
+
+        if (Screen.CursorPosY + Screen.SymbolSizeY > Screen.Height)
+            scroll_up();
+    }
+
+    void write(const char* s) {
+        while (*s) putc(*s++);
+    }
+
+    static void utoa(UINT64 v, char* b, UINT32 base) {
+        char* p = b;
+        do {
+            UINT8 d = v % base;
+            *p++ = d < 10 ? '0' + d : 'A' + d - 10;
+            v /= base;
+        } while (v);
+        *p = 0;
+        for (char *l = b, *r = p - 1; l < r; l++, r--) {
+            char t = *l; *l = *r; *r = t;
+        }
+    }
+
+    void printf(const char* fmt, ...) {
+        __builtin_va_list a;
+        __builtin_va_start(a, fmt);
+
+        char buf[32];
+
+        while (*fmt) {
+            if (*fmt != '%') { putc(*fmt++); continue; }
+            fmt++;
+
+            bool ll = (*fmt == 'l' && fmt[1] == 'l');
+            if (ll) fmt += 2;
+
+            switch (*fmt) {
+                case 's': write(__builtin_va_arg(a, char*)); break;
+                case 'u':
+                case 'i':
+                    utoa(ll ? __builtin_va_arg(a, UINT64)
+                            : __builtin_va_arg(a, UINT32), buf, 10);
+                    write(buf); break;
+                case 'x':
+                    write("0x");
+                    utoa(ll ? __builtin_va_arg(a, UINT64)
+                            : __builtin_va_arg(a, UINT32), buf, 16);
+                    write(buf); break;
+                case '%': putc('%'); break;
+            }
+            fmt++;
+        }
+        __builtin_va_end(a);
+    }
 } // namespace

@@ -22,8 +22,8 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     memory::init();
     idt::init();
     irq::init();
-    uart::init(COM1);
     pci::init();
+    uart::init();
     xhci::init();
 
     memory::memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);

@@ -7,7 +7,7 @@
 - Hardware interrupts (using PIC 8259)
 - PS/2 keyboard driver
 - Framebuffer text console (UEFI GOP)
-- Serial output (using UART 16550)
+- Serial output (using UART 16550, ports/PCIe)
 - Paging with 2 MiB pages
 - Buddy-based memory allocator
 - Basic shell with built-in commands

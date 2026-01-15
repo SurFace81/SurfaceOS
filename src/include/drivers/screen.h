@@ -50,6 +50,7 @@ namespace screen {
     void putChar(char chr);
     void set_text_color(Colors);
     void set_cursor_position(UINT32 x, UINT32 y);
+    void printf(const char* fmt, ...);
 }
 
 #endif  // SCREEN_H

@@ -12,7 +12,19 @@ LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
 # pmemsave XXXX - YYYY mem.dmp 	-	dump of phys memory
-QEMU_UEFI	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 128M -bios uefi64.bin -cpu qemu64 -no-reboot -no-shutdown # -d int,cpu_reset
+# -d int,cpu_reset
+QEMU_UEFI	= 	qemu-system-x86_64 \
+				-monitor stdio \
+				-chardev file,id=uart0,path=uart1.log \
+				-serial file:uart.log \
+				-trace usb_xhci* -D xhci.log \
+				-m 128M \
+				-bios uefi64.bin \
+				-cpu qemu64 \
+				-device qemu-xhci \
+				-device usb-storage,drive=usbstick \
+				-device pci-serial,chardev=uart0 \
+				-no-reboot -no-shutdown
 QEMU_BIOS	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 64M -cpu qemu64 # -no-reboot -no-shutdown
 DISK_IMG	= surfaceos.img
 
@@ -115,7 +127,7 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 
 run: $(DISK_IMG)
 #	$(QEMU_UEFI) -hda $(DISK_IMG)
-	$(QEMU_UEFI) -device qemu-xhci -trace usb_xhci* -D xhci.log -device usb-storage,drive=usbstick -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
+	$(QEMU_UEFI) -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
 #	$(QEMU_BIOS) -hda $(DISK_IMG)
 
 

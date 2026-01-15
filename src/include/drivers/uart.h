@@ -3,6 +3,7 @@
 
 #include "../cpu/ports.h"
 #include "../cpu/types.h"
+#include "../cpu/pci.h"
 
 #define COM1 0x3F8
 #define COM2 0x2F8
@@ -13,8 +14,14 @@
 #define COM7 0x5E8
 #define COM8 0x4E8
 
-namespace uart {
+namespace uart_legacy {
     int  init(UINT16 port);
+    char read(void);
+    void write(const char* str);
+}
+
+namespace uart {
+    int  init();
     char read(void);
     void printf(const char* fmt, ...);
 }

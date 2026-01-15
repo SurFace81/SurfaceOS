@@ -1,11 +1,9 @@
 #include "../../include/drivers/uart.h"
 
-namespace uart {
+namespace uart_legacy {
     UINT16 port = COM1; // default
 
-    void write(const char *str);
-
-    int init(UINT16 _port) {
+    int init(UINT16 _port = COM1) {
         port = _port;
 
         port::byte_out(port + 1, 0x00);  // Disable interrupts
@@ -28,39 +26,137 @@ namespace uart {
         return 0;
     }
 
-    void send(char c) {
+    void _send(char c) {
         while ((port::byte_in(port + 5) & 0x20) == 0);
         return port::byte_out(port, c);
     }
 
     void write(const char *str) {
         while (*str) {
-            send(*str++);
+            uart_legacy::_send(*str++);
         }
     }
 
-    char receive(void) {
+    char _receive() {
         return port::byte_in(port + 5) & 0x01;
     }
 
-    char read(void) {
-        while (receive() == 0);
+    char read() {
+        while (uart_legacy::_receive() == 0);
         return port::byte_in(port);
     }
+    
+} // namespace uart_legacy
 
-    void log_uint16(UINT16 number) {
-        char buffer[7];
-        buffer[0] = '0';
-        buffer[1] = 'x';
-        buffer[7] = '\0';
+namespace uart {
+    
+    enum Backend { 
+        NONE, 
+        PCI_IO, 
+        PCI_MMIO, 
+        LEGACY 
+    };
+    static Backend backend = NONE;
 
-        for (int i = 5; i >= 2; i--) {
-            UINT8 nibble = number & 0xF;
-            buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
-            number >>= 4;
+    enum Reg : UINT8 {
+        DATA                = 0x00, // THR / RBR / DLL
+        INTERRUPT_ENABLE    = 0x01, // IER / DLM
+        INTERRUPT_ID_FIFO   = 0x02, // IIR (R) / FCR (W)
+        LINE_CONTROL        = 0x03, // LCR
+        MODEM_CONTROL       = 0x04, // MCR
+        LINE_STATUS         = 0x05, // LSR
+        MODEM_STATUS        = 0x06, // MSR
+        SCRATCH             = 0x07  // SCR
+    };    
+
+    static UINT16 io = 0;
+    static volatile UINT8* mmio = 0;
+
+    static inline void _out_byte(UINT8 r, UINT8 v) {
+        if (backend == PCI_IO) {
+            port::byte_out(io + r, v);
         }
+        else {
+            mmio[r] = v;
+        }
+    }
 
-        write(buffer);
+    static inline UINT8 _in_byte(UINT8 r) {
+        return (backend == PCI_IO)
+            ? port::byte_in(io + r)
+            : mmio[r];
+    }
+
+    static void _hw_init() {
+        _out_byte(INTERRUPT_ENABLE, 0x00);
+        _out_byte(LINE_CONTROL,     0x80); // DLAB = 1
+        _out_byte(DATA,             0x03); // DLL
+        _out_byte(INTERRUPT_ENABLE, 0x00); // DLM
+        _out_byte(LINE_CONTROL,     0x03); // 8N1, DLAB = 0
+        _out_byte(INTERRUPT_ID_FIFO,0xC7); // FIFO enable/reset
+        _out_byte(MODEM_CONTROL,    0x0B); // RTS/DTR/OUT2
+    }
+
+    static bool _init_pci() {
+        for (UINT32 i = 0; i < pci::device_count(); i++) {
+            PCIDevice* d = pci::get_by_id(i);
+            if (!d || !d->valid) continue;
+            if (d->class_code != 0x07 || d->subclass != 0x00 || d->prog_if < 0x02) continue;
+
+            UINT32 bar = d->bar[0];
+            if (!bar) continue;
+
+            if (bar & 1) {
+                io = bar & ~0x3;
+                backend = PCI_IO;
+            } else {
+                mmio = (volatile UINT8*)(bar & ~0xF);
+                backend = PCI_MMIO;
+            }
+
+            _hw_init();
+            return true;
+        }
+        return false;
+    }
+
+    int init() {
+        if (_init_pci()) return 0;
+
+        uart_legacy::init(COM1);    // Hardcoded
+        backend = LEGACY;
+        return 0;
+    }
+
+    void _send(char c) {
+        if (backend == LEGACY) {
+            uart_legacy::_send(c);
+            return;
+        }
+        while (!(_in_byte(LINE_STATUS) & 0x20));
+        _out_byte(DATA, c);
+    }
+
+    void _write(const char* str) {
+        while (*str) {
+            uart::_send(*str++);
+        }
+    }
+
+    char _receive() {
+        if (backend == LEGACY) {
+            return uart_legacy::_receive();
+        }
+        return _in_byte(LINE_STATUS) & 0x01;
+    }
+
+    char read() {
+        while (_receive() == 0);
+
+        if (backend == LEGACY) {
+            return port::byte_in(uart_legacy::port + DATA);
+        }
+        return _in_byte(DATA);
     }
 
     void log_uint64_hex(UINT64 number) {
@@ -75,7 +171,7 @@ namespace uart {
             number >>= 4;
         }
 
-        write(buffer);
+        uart::_write(buffer);
     }
 
     void log_uint64_dec(UINT64 number) {
@@ -92,7 +188,7 @@ namespace uart {
             }
         }
 
-        write(&buffer[index + 1]);
+        uart::_write(&buffer[index + 1]);
     }
 
     void log_uint32_hex(UINT32 number) {
@@ -107,7 +203,7 @@ namespace uart {
             number >>= 4;
         }
 
-        write(buffer);
+        uart::_write(buffer);
     }
 
     void log_uint32_dec(UINT32 number) {
@@ -124,7 +220,7 @@ namespace uart {
             }
         }
 
-        write(&buffer[index + 1]);
+        uart::_write(&buffer[index + 1]);
     }
 
     void printf(const char* fmt, ...) {
@@ -133,13 +229,13 @@ namespace uart {
 
         while (*fmt) {
             if (*fmt != '%') {
-                send(*fmt++);
+                _send(*fmt++);
                 continue;
             }
 
-            fmt++; // %
+            fmt += 1; //%
 
-            bool ll = true;
+            bool ll = false;
             if (*fmt == 'l' && *(fmt + 1) == 'l') {
                 ll = true;
                 fmt += 2;
@@ -147,7 +243,7 @@ namespace uart {
 
             switch (*fmt) {
                 case 's':
-                    write(__builtin_va_arg(args, const char*));
+                    uart::_write(__builtin_va_arg(args, const char*));
                     break;
                 case 'i':
                 case 'u':
@@ -163,14 +259,13 @@ namespace uart {
                         log_uint32_hex(__builtin_va_arg(args, UINT32));
                     break;
                 default:
-                    write(__builtin_va_arg(args, const char*));
+                    uart::_write(__builtin_va_arg(args, const char*));
                     break;
             }
 
-            fmt++;
+            fmt += 1;
         }
 
         __builtin_va_end(args);
     }
-    
-} // namespace
+} // namespace uart
