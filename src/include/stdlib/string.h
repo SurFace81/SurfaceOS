@@ -8,7 +8,7 @@ extern "C" {
 #endif
 
 void int_to_str(int num, char int_str[]);
-void hex_to_str(UINT64 num, char hex_str[], UINT64 size);
+void hex_to_str(uint64_t num, char hex_str[], uint64_t size);
 void reverse(char s[]);
 int strlen(char s[]);
 void backspace(char s[]);

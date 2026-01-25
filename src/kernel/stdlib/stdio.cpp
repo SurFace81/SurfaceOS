@@ -28,7 +28,7 @@ void print(list::List<char>* char_list) {
     list::Block<char>* current = char_list->first_block;
     
     while (current) {
-        for (UINT64 i = 0; i < current->used; i++) {
+        for (uint64_t i = 0; i < current->used; i++) {
             print(current->data[i]);
             if (current->data[i] == '\0') {
                 return;
@@ -50,7 +50,7 @@ void print(int dec)
     print(temp_str);
 }
 
-void print(UINT64 hex, UINT64 size) {
+void print(uint64_t hex, uint64_t size) {
     char temp_str[size];
     hex_to_str(hex, temp_str, size);
     print("0x");
@@ -65,6 +65,6 @@ void setTextColor(Colors color) {
     screen::set_text_color(color);
 }
 
-void setCursorPosition(UINT32 x, UINT32 y) {
+void setCursorPosition(uint32_t x, uint32_t y) {
     screen::set_cursor_position(x, y);
 }

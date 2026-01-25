@@ -1,38 +1,38 @@
 #include "../../include/cpu/ports.h"
 
 namespace port {
-    UINT8 byte_in(UINT16 port)
+    uint8_t byte_in(uint16_t port)
     {
-        UINT8 result;
+        uint8_t result;
         asm volatile("in %%dx, %%al" : "=a"(result) : "d"(port));
         return result;
     }
 
-    void byte_out(UINT16 port, UINT8 data)
+    void byte_out(uint16_t port, uint8_t data)
     {
         asm volatile("out %%al, %%dx" : : "a"(data), "d"(port));
     }
 
-    UINT16 word_in(UINT16 port)
+    uint16_t word_in(uint16_t port)
     {
-        UINT16 result;
+        uint16_t result;
         asm volatile("in %%dx, %%ax" : "=a"(result) : "d"(port));
         return result;
     }
 
-    void word_out(UINT16 port, UINT16 data)
+    void word_out(uint16_t port, uint16_t data)
     {
         asm volatile("out %%ax, %%dx" : : "a"(data), "d"(port));
     }
 
-    UINT32 dword_in(UINT16 port)
+    uint32_t dword_in(uint16_t port)
     {
-        UINT32 result;
+        uint32_t result;
         asm volatile("in %%dx, %%eax" : "=a"(result) : "d"(port));
         return result;
     }
 
-    void dword_out(UINT16 port, UINT32 data)
+    void dword_out(uint16_t port, uint32_t data)
     {
         asm volatile("out %%eax, %%dx" : : "a"(data), "d"(port));
     }

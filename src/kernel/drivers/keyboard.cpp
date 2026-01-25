@@ -1,8 +1,8 @@
 #include "../../include/drivers/keyboard.h"
 
 namespace keyboard {
-    UINT8 scancode_to_ascii(UINT8 scancode);
-    UINT8 extended_scancode_to_ascii(UINT8 scancode);
+    uint8_t scancode_to_ascii(uint8_t scancode);
+    uint8_t extended_scancode_to_ascii(uint8_t scancode);
 
     static keyboard_state_t kb_state  = {0};
 
@@ -38,7 +38,7 @@ namespace keyboard {
         user_callback = nullptr;
     }
 
-    static void send_command(UINT8 command) {
+    static void send_command(uint8_t command) {
         int attempts = 1000;
         while ((port::byte_in(KEYBOARD_STATUS_PORT) & 0x02) && --attempts > 0);
         if (attempts == 0) return;
@@ -46,7 +46,7 @@ namespace keyboard {
         port::byte_out(KEYBOARD_COMMAND_PORT, command);
     }
 
-    static void send_data(UINT8 data) {
+    static void send_data(uint8_t data) {
         int attempts = 1000;
         while ((port::byte_in(KEYBOARD_STATUS_PORT) & 0x02) && --attempts > 0);     // in
         if (attempts == 0) return;
@@ -54,7 +54,7 @@ namespace keyboard {
         port::byte_out(KEYBOARD_DATA_PORT, data);
     }
 
-    static UINT8 read_data(void) {
+    static uint8_t read_data(void) {
         int attempts = 1000;
         while (!(port::byte_in(KEYBOARD_STATUS_PORT) & 0x01) && --attempts > 0);  // out
         if (attempts == 0) return 0;
@@ -63,7 +63,7 @@ namespace keyboard {
     }
 
     static void set_leds(void) {
-        UINT8 led_state = 0;
+        uint8_t led_state = 0;
         
         if (kb_state.caps_lock)     led_state |= 0x04;
         if (kb_state.num_lock)      led_state |= 0x02;
@@ -79,7 +79,7 @@ namespace keyboard {
         // Reset keyboard controller
         send_command(0xAE);         // Disable keyboard
         send_command(0x20);         // Read configuration
-        UINT8 config = read_data();
+        uint8_t config = read_data();
         send_command(0x60);         // Write configuration  
         send_data(config | 0x01);   // Enable interrupts
         send_command(0xAF);         // Enable keyboard
@@ -99,14 +99,14 @@ namespace keyboard {
     }
 
     void handler(void) {
-        UINT8 scancode = port::byte_in(KEYBOARD_DATA_PORT);
+        uint8_t scancode = port::byte_in(KEYBOARD_DATA_PORT);
         
         if (scancode == EXTENDED_SCANCODE) {
             kb_state.extended_code = 1;
             return;
         }
         
-        UINT8 pressed = !(scancode & KEY_RELEASED_MASK);
+        uint8_t pressed = !(scancode & KEY_RELEASED_MASK);
         scancode &= ~KEY_RELEASED_MASK;
         
         if (kb_state.extended_code) {
@@ -199,7 +199,7 @@ namespace keyboard {
         }
     }
 
-    UINT8 scancode_to_ascii(UINT8 scancode) {
+    uint8_t scancode_to_ascii(uint8_t scancode) {
         if (scancode >= sizeof(scancode_to_ascii_en)) {
             return 0;
         }
@@ -224,7 +224,7 @@ namespace keyboard {
         return c;
     }
 
-    UINT8 extended_scancode_to_ascii(UINT8 scancode) {
+    uint8_t extended_scancode_to_ascii(uint8_t scancode) {
         switch (scancode) {
             case 0x1C: return '\n';    // NumPad Enter
             case 0x35: return '/';     // NumPad /

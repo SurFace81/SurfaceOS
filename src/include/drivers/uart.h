@@ -15,7 +15,7 @@
 #define COM8 0x4E8
 
 namespace uart_legacy {
-    int  init(UINT16 port);
+    int  init(uint16_t port);
     char read(void);
     void write(const char* str);
 }

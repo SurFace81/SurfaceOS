@@ -1,10 +1,10 @@
 #include "../../include/drivers/console.h"
 
 namespace {
-    UINT32 cursor_x = 0;
-    UINT32 cursor_y = 0;
-    UINT32 max_cols = 0;
-    UINT32 max_rows = 0;
+    uint32_t cursor_x = 0;
+    uint32_t cursor_y = 0;
+    uint32_t max_cols = 0;
+    uint32_t max_rows = 0;
 
     list::List<char>* INPUT_BUFFER;
     list::List<char>* infobuf;
@@ -127,7 +127,7 @@ namespace commands {
     }
 
     void parse_and_exec(list::List<char>* input) {
-        UINT64 len = list::size(input);
+        uint64_t len = list::size(input);
         if (len == 0) {
             return;
         }
@@ -167,7 +167,7 @@ namespace commands {
             return;
         }
         if (cmdcmp(input, "lspci", len)) {
-            UINT32 device_count = pci::device_count();
+            uint32_t device_count = pci::device_count();
             add_to_out_list("\n\r PCI devices: ");
             add_to_out_list(device_count, false);
 

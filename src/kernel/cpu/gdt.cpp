@@ -15,7 +15,7 @@ namespace gdt {
     {
         gdt_ptr_t gdtPtr;
         gdtPtr.limit = sizeof(GDT_t) - 1;
-        gdtPtr.base = (UINT64)&DefaultGDT;
+        gdtPtr.base = (uint64_t)&DefaultGDT;
 
         LoadGDT(&gdtPtr);
     }

@@ -14,9 +14,9 @@
 #define PAGE_SIZE       (1 << 7)
 
 namespace paging {
-    void init(UINT64*);
-    void allocate_pages(UINT64 virt, UINT64 phys, UINT64 size);
-    UINT64 get_phys_addr(UINT64 virt);
+    void init(uint64_t*);
+    void allocate_pages(uint64_t virt, uint64_t phys, uint64_t size);
+    uint64_t get_phys_addr(uint64_t virt);
 }
 
 #endif  // PAGING_H

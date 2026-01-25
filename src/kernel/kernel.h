@@ -6,40 +6,40 @@
 typedef struct {
     // Framebuffer
     void* FrameBufferAddress;
-    UINT64 FrameBufferSize;
-    UINT32 ScreenWidth;
-    UINT32 ScreenHeight;
-    UINT32 ScreenPixelsPerScanLine;
+    uint64_t FrameBufferSize;
+    uint32_t ScreenWidth;
+    uint32_t ScreenHeight;
+    uint32_t ScreenPixelsPerScanLine;
     // Console Font
     void* StandartFontBuffer;
-    UINT16 FontSymbolSizeX;
-    UINT16 FontSymbolSizeY;
-    UINT32 FontNumberOfSymbols; // must be <= 256
+    uint16_t FontSymbolSizeX;
+    uint16_t FontSymbolSizeY;
+    uint32_t FontNumberOfSymbols; // must be <= 256
     // MemoryMap
     void* MemoryMapAddress;
-    UINT32 MemoryMapEntrySize;
-    UINT64 MemoryMapEntriesNumber;
-    UINT64 TotalMemorySize;
-    UINT64 FreeMemorySize;
+    uint32_t MemoryMapEntrySize;
+    uint64_t MemoryMapEntriesNumber;
+    uint64_t TotalMemorySize;
+    uint64_t FreeMemorySize;
     // Other info about memory
-    UINT64 KernelAddress;
-    UINT64 KernelSize;
-    UINT64 StartDataAddress;
-    UINT64 StartDataSize;
+    uint64_t KernelAddress;
+    uint64_t KernelSize;
+    uint64_t StartDataAddress;
+    uint64_t StartDataSize;
 } BOOT_HEADER;
 
 typedef struct {
-    UINT64 Start;
-    UINT64 End;
-    UINT32 Type;    // 0 - free memory, 
+    uint64_t Start;
+    uint64_t End;
+    uint32_t Type;    // 0 - free memory, 
                     // 1 - my code and data, 
                     // 2 - EFI code and data, 
                     // 3 - ACPI data, 
                     // 4 - reserved and unusable (?), 
                     // 5 - mapped IO,
                     // 6 - other (?)
-    UINT32 MemSize;
-    UINT64 RESERVED1;
+    uint32_t MemSize;
+    uint64_t RESERVED1;
 } MEMORY_MAP_ENTRY;
 
 #endif

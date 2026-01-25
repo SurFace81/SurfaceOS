@@ -7,19 +7,19 @@
 
 // IDT descriptor
 struct interrupt_descriptor {
-    UINT16 address_low;    // 
-    UINT16 selector;       // code segment
-    UINT8  ist;            // Interrupt Stack Table (0 for general)
-    UINT8  flags;          // 
-    UINT16 address_mid;    // 
-    UINT32 address_high;   // 
-    UINT32 reserved;       // (must be zero)
+    uint16_t address_low;    // 
+    uint16_t selector;       // code segment
+    uint8_t  ist;            // Interrupt Stack Table (0 for general)
+    uint8_t  flags;          // 
+    uint16_t address_mid;    // 
+    uint32_t address_high;   // 
+    uint32_t reserved;       // (must be zero)
 } __attribute__((packed));
 
 // IDTR
 struct idtr {
-    UINT16 limit;     // Size of IDT in bytes minus 1
-    UINT64 base;      // Base address of IDT
+    uint16_t limit;     // Size of IDT in bytes minus 1
+    uint64_t base;      // Base address of IDT
 } __attribute__((packed));
 
 #define IDT_ENTRIES 256
@@ -62,7 +62,7 @@ struct idtr {
 // Functions
 namespace idt {
     void init(void);
-    void set_entry(int index, UINT64 handler, UINT8 flags);
+    void set_entry(int index, uint64_t handler, uint8_t flags);
 }
 
 // Exception handlers

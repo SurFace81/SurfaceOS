@@ -18,7 +18,7 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     memory::setMemorySize(BootHeader->TotalMemorySize);
 
     gdt::init();
-    paging::init((UINT64*)0x300000);
+    paging::init((uint64_t*)0x300000);
     memory::init();
     idt::init();
     irq::init();
@@ -26,7 +26,7 @@ extern "C" void kmain(BOOT_HEADER *BootHeader)
     uart::init();
     xhci::init();
 
-    memory::memalloc((UINT64)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
+    memory::memalloc((uint64_t)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
 
     screen::init(&Screen, BootHeader);
     keyboard::init();

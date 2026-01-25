@@ -1,39 +1,39 @@
 #include "../../include/cpu/pci.h"
 
 static PCIDevice devices[PCI_MAX_DEVICES];
-static UINT32 count = 0;
+static uint32_t count = 0;
 static ClassDevices cls_devs;
 
 namespace pci {
-    void scan_dev(UINT8 bus, UINT8 dev);
-    void scan_bus(UINT8 bus);
-    void scan_fn(UINT8 bus, UINT8 dev, UINT8 fn);
+    void scan_dev(uint8_t bus, uint8_t dev);
+    void scan_bus(uint8_t bus);
+    void scan_fn(uint8_t bus, uint8_t dev, uint8_t fn);
     void scan_all(void);
     
-    static UINT32 addr(UINT8 bus, UINT8 dev, UINT8 fn, UINT8 off) {
+    static uint32_t addr(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
         return (1U << 31) | (bus << 16) | (dev << 11) | (fn << 8) | (off & 0xFC);
     }
 
-    static UINT32 read_dword(UINT8 bus, UINT8 dev, UINT8 fn, UINT8 off) {
+    static uint32_t read_dword(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
         port::dword_out(PCI_CONFIG_ADDRESS, addr(bus, dev, fn, off));
         return port::dword_in(PCI_CONFIG_DATA);
     }
 
-    static UINT16 read_word(UINT8 bus, UINT8 dev, UINT8 fn, UINT8 off) {
-        UINT32 val = read_dword(bus, dev, fn, off & 0xFC);
+    static uint16_t read_word(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
+        uint32_t val = read_dword(bus, dev, fn, off & 0xFC);
         return (val >> ((off & 2) * 8)) & 0xFFFF;
     }
 
-    static UINT8 read_byte(UINT8 bus, UINT8 dev, UINT8 fn, UINT8 off) {
-        UINT32 val = read_dword(bus, dev, fn, off & 0xFC);
+    static uint8_t read_byte(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
+        uint32_t val = read_dword(bus, dev, fn, off & 0xFC);
         return (val >> ((off & 3) * 8)) & 0xFF;
     }
 
-    static bool exists(UINT8 bus, UINT8 dev, UINT8 fn) {
+    static bool exists(uint8_t bus, uint8_t dev, uint8_t fn) {
         return read_word(bus, dev, fn, 0x00) != 0xFFFF;
     }
 
-    static void read(PCIDevice& device, UINT8 bus, UINT8 dev, UINT8 fn) {
+    static void read(PCIDevice& device, uint8_t bus, uint8_t dev, uint8_t fn) {
         device = {};
         device.bus = bus; device.device = dev; device.function = fn;
         device.vendor_id        = read_word(bus, dev, fn, 0x00);
@@ -61,24 +61,24 @@ namespace pci {
         device.valid = true;
     }
 
-    void scan_bus(UINT8 bus) {
-        for (UINT8 dev = 0; dev < 32; dev++) {
+    void scan_bus(uint8_t bus) {
+        for (uint8_t dev = 0; dev < 32; dev++) {
             scan_dev(bus, dev);
         }
     }
 
-    void scan_dev(UINT8 bus, UINT8 dev) {
+    void scan_dev(uint8_t bus, uint8_t dev) {
         if (!exists(bus, dev, 0)) return;
 
         scan_fn(bus, dev, 0);
         if (read_byte(bus, dev, 0, 0x0E) & 0x80) {
-            for (UINT8 fn = 1; fn < 8; fn++) {
+            for (uint8_t fn = 1; fn < 8; fn++) {
                 scan_fn(bus, dev, fn);
             }
         }                
     }
 
-    void scan_fn(UINT8 bus, UINT8 dev, UINT8 fn) {
+    void scan_fn(uint8_t bus, uint8_t dev, uint8_t fn) {
         if (!exists(bus, dev, fn) || count >= PCI_MAX_DEVICES) return;
 
         read(devices[count++], bus, dev, fn);
@@ -89,14 +89,14 @@ namespace pci {
 
     void scan_all(void) {
         count = 0;
-        for (UINT32 i = 0; i < PCI_MAX_DEVICES; i++) {
+        for (uint32_t i = 0; i < PCI_MAX_DEVICES; i++) {
             devices[i].valid = false;
         }
 
         if ((read_byte(0, 0, 0, 0x0E) & 0x80) == 0) {
             scan_bus(0);
         } else {
-            for (UINT8 fn = 0; fn < 8; fn++) {
+            for (uint8_t fn = 0; fn < 8; fn++) {
                 if (exists(0, 0, fn)) {
                     scan_bus(fn);
                 }
@@ -108,9 +108,9 @@ namespace pci {
         scan_all();
     }
 
-    UINT32 device_count() { return count; }
+    uint32_t device_count() { return count; }
 
-    PCIDevice* get_by_id(UINT32 idx) {
+    PCIDevice* get_by_id(uint32_t idx) {
         if (idx >= count) {
             return nullptr;
         }
@@ -118,7 +118,7 @@ namespace pci {
         return &devices[idx];
     }
 
-    // ClassDevices* get_by_class(UINT8 cls) {
+    // ClassDevices* get_by_class(uint8_t cls) {
     //     cls_devs.length = 0;
     //     for (int i = 0; i < PCI_MAX_DEVICES; i++) {
     //         if (devices[i].class_code == cls) {

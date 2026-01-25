@@ -1,9 +1,9 @@
 #include "../../include/drivers/uart.h"
 
 namespace uart_legacy {
-    UINT16 port = COM1; // default
+    uint16_t port = COM1; // default
 
-    int init(UINT16 _port = COM1) {
+    int init(uint16_t _port = COM1) {
         port = _port;
 
         port::byte_out(port + 1, 0x00);  // Disable interrupts
@@ -58,7 +58,7 @@ namespace uart {
     };
     static Backend backend = NONE;
 
-    enum Reg : UINT8 {
+    enum Reg : uint8_t {
         DATA                = 0x00, // THR / RBR / DLL
         INTERRUPT_ENABLE    = 0x01, // IER / DLM
         INTERRUPT_ID_FIFO   = 0x02, // IIR (R) / FCR (W)
@@ -69,10 +69,10 @@ namespace uart {
         SCRATCH             = 0x07  // SCR
     };    
 
-    static UINT16 io = 0;
-    static volatile UINT8* mmio = 0;
+    static uint16_t io = 0;
+    static volatile uint8_t* mmio = 0;
 
-    static inline void _out_byte(UINT8 r, UINT8 v) {
+    static inline void _out_byte(uint8_t r, uint8_t v) {
         if (backend == PCI_IO) {
             port::byte_out(io + r, v);
         }
@@ -81,7 +81,7 @@ namespace uart {
         }
     }
 
-    static inline UINT8 _in_byte(UINT8 r) {
+    static inline uint8_t _in_byte(uint8_t r) {
         return (backend == PCI_IO)
             ? port::byte_in(io + r)
             : mmio[r];
@@ -98,19 +98,19 @@ namespace uart {
     }
 
     static bool _init_pci() {
-        for (UINT32 i = 0; i < pci::device_count(); i++) {
+        for (uint32_t i = 0; i < pci::device_count(); i++) {
             PCIDevice* d = pci::get_by_id(i);
             if (!d || !d->valid) continue;
             if (d->class_code != 0x07 || d->subclass != 0x00 || d->prog_if < 0x02) continue;
 
-            UINT32 bar = d->bar[0];
+            uint32_t bar = d->bar[0];
             if (!bar) continue;
 
             if (bar & 1) {
                 io = bar & ~0x3;
                 backend = PCI_IO;
             } else {
-                mmio = (volatile UINT8*)(bar & ~0xF);
+                mmio = (volatile uint8_t*)(bar & ~0xF);
                 backend = PCI_MMIO;
             }
 
@@ -159,14 +159,14 @@ namespace uart {
         return _in_byte(DATA);
     }
 
-    void log_uint64_hex(UINT64 number) {
+    void log_uint64_hex(uint64_t number) {
         char buffer[19];
         buffer[0] = '0';
         buffer[1] = 'x';
         buffer[18] = '\0';
 
         for (int i = 17; i >= 2; i--) {
-            UINT8 nibble = number & 0xF;
+            uint8_t nibble = number & 0xF;
             buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
             number >>= 4;
         }
@@ -174,7 +174,7 @@ namespace uart {
         uart::_write(buffer);
     }
 
-    void log_uint64_dec(UINT64 number) {
+    void log_uint64_dec(uint64_t number) {
         char buffer[20];
         int index = 19;
         buffer[index--] = '\0';
@@ -191,14 +191,14 @@ namespace uart {
         uart::_write(&buffer[index + 1]);
     }
 
-    void log_uint32_hex(UINT32 number) {
+    void log_uint32_hex(uint32_t number) {
         char buffer[11];
         buffer[0] = '0';
         buffer[1] = 'x';
         buffer[10] = '\0';
 
         for (int i = 9; i >= 2; i--) {
-            UINT8 nibble = number & 0xF;
+            uint8_t nibble = number & 0xF;
             buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
             number >>= 4;
         }
@@ -206,7 +206,7 @@ namespace uart {
         uart::_write(buffer);
     }
 
-    void log_uint32_dec(UINT32 number) {
+    void log_uint32_dec(uint32_t number) {
         char buffer[11];
         int index = 10;
         buffer[index--] = '\0';
@@ -248,15 +248,15 @@ namespace uart {
                 case 'i':
                 case 'u':
                     if (ll)
-                        log_uint64_dec(__builtin_va_arg(args, UINT64));
+                        log_uint64_dec(__builtin_va_arg(args, uint64_t));
                     else
-                        log_uint32_dec(__builtin_va_arg(args, UINT32));
+                        log_uint32_dec(__builtin_va_arg(args, uint32_t));
                     break;
                 case 'x':
                     if (ll)
-                        log_uint64_hex(__builtin_va_arg(args, UINT64));
+                        log_uint64_hex(__builtin_va_arg(args, uint64_t));
                     else
-                        log_uint32_hex(__builtin_va_arg(args, UINT32));
+                        log_uint32_hex(__builtin_va_arg(args, uint32_t));
                     break;
                 default:
                     uart::_write(__builtin_va_arg(args, const char*));

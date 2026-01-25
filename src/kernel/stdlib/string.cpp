@@ -4,7 +4,7 @@
 const char nums_table[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
 
 void int_to_str(int num, char int_str[]) {
-    UINT32 mod;
+    uint32_t mod;
     int res = num;
 
     int i = 0;
@@ -25,10 +25,10 @@ void int_to_str(int num, char int_str[]) {
     reverse(int_str);
 }
 
-void hex_to_str(UINT64 num, char hex_str[], UINT64 size) {
-    UINT64 mod, res = num;
+void hex_to_str(uint64_t num, char hex_str[], uint64_t size) {
+    uint64_t mod, res = num;
 
-    UINT64 i = size - 1;
+    uint64_t i = size - 1;
     do {
         mod = res % 16;
         res = res / 16;
@@ -39,7 +39,7 @@ void hex_to_str(UINT64 num, char hex_str[], UINT64 size) {
 
     hex_str[i] = nums_table[res];
 
-    for (UINT64 j = 0; j < i; j++) {
+    for (uint64_t j = 0; j < i; j++) {
         hex_str[j] = '0';
     }
     hex_str[size] = '\0';

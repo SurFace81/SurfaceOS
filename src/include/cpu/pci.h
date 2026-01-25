@@ -54,14 +54,14 @@
 #define PCI_CLASS_SERIAL            0x0C
 
 struct PCIDevice {
-    UINT8  bus, device, function;
-    UINT16 vendor_id, device_id, command, status;
-    UINT8  revision_id, prog_if, subclass, class_code;
-    UINT8  cache_line_size, latency_timer, header_type, bist;
-    UINT32 bar[6], cardbus_cis;
-    UINT16 subsystem_vendor_id, subsystem_id;
-    UINT32 expansion_rom;
-    UINT8  capabilities, interrupt_line, interrupt_pin;
+    uint8_t  bus, device, function;
+    uint16_t vendor_id, device_id, command, status;
+    uint8_t  revision_id, prog_if, subclass, class_code;
+    uint8_t  cache_line_size, latency_timer, header_type, bist;
+    uint32_t bar[6], cardbus_cis;
+    uint16_t subsystem_vendor_id, subsystem_id;
+    uint32_t expansion_rom;
+    uint8_t  capabilities, interrupt_line, interrupt_pin;
     bool   valid;
 };
 
@@ -72,9 +72,9 @@ struct ClassDevices {
 
 namespace pci {
     void init(void);
-    UINT32 device_count();
-    PCIDevice* get_by_id(UINT32 idx);
-    //ClassDevices* pci::get_by_class(UINT8 cls);
+    uint32_t device_count();
+    PCIDevice* get_by_id(uint32_t idx);
+    //ClassDevices* pci::get_by_class(uint8_t cls);
 }
 
 #endif

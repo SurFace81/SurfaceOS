@@ -25,13 +25,13 @@
 #define EXTENDED_SCANCODE       0xE0
 
 typedef struct {
-    UINT8 shift_pressed;
-    UINT8 ctrl_pressed;
-    UINT8 alt_pressed;
-    UINT8 caps_lock;
-    UINT8 num_lock;
-    UINT8 scroll_lock;
-    UINT8 extended_code;
+    uint8_t shift_pressed;
+    uint8_t ctrl_pressed;
+    uint8_t alt_pressed;
+    uint8_t caps_lock;
+    uint8_t num_lock;
+    uint8_t scroll_lock;
+    uint8_t extended_code;
 } keyboard_state_t;
 
 enum keyboard_event_type {
@@ -53,9 +53,9 @@ enum Keys {
 };
 
 typedef struct {
-    UINT8 KeyCode;
+    uint8_t KeyCode;
     char  KeyChar;
-    UINT8 type;
+    uint8_t type;
     bool  Control;
     bool  Shift;
     bool  Alt;

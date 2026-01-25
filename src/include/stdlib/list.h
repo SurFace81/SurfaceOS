@@ -6,15 +6,15 @@
 namespace list {
     template<typename T>
     struct Block {
-        UINT64 used;           // Количество использованных элементов в блоке
+        uint64_t used;           // Количество использованных элементов в блоке
         Block<T>* next;        // Указатель на следующий блок
         T data[];              // Массив данных (flexible array member)
     };
 
     template<typename T>
     struct List {
-        UINT64 size;           // Общее количество элементов во всем списке
-        UINT64 block_capacity; // Количество элементов в одном блоке
+        uint64_t size;           // Общее количество элементов во всем списке
+        uint64_t block_capacity; // Количество элементов в одном блоке
         Block<T>* first_block; // Указатель на первый блок
         Block<T>* last_block;  // Указатель на последний блок (для быстрого добавления)
     };
@@ -49,11 +49,11 @@ namespace list {
         Block<T>* current = list->first_block;
         while (current) {
             Block<T>* next = current->next;
-            memory::buddy_free((UINT8*)current);
+            memory::buddy_free((uint8_t*)current);
             current = next;
         }
         
-        memory::buddy_free((UINT8*)list);
+        memory::buddy_free((uint8_t*)list);
     }
 
     template<typename T>
@@ -83,16 +83,16 @@ namespace list {
     template<typename T>
     struct BlockPosition {
         Block<T>* block;
-        UINT64 local_index;
+        uint64_t local_index;
     };
 
     template<typename T>
-    BlockPosition<T> find_position(List<T>* list, UINT64 global_index) {
+    BlockPosition<T> find_position(List<T>* list, uint64_t global_index) {
         BlockPosition<T> pos = {nullptr, 0};
         if (!list || global_index >= list->size) return pos;
         
         Block<T>* current = list->first_block;
-        UINT64 current_index = 0;
+        uint64_t current_index = 0;
         
         while (current) {
             if (global_index < current_index + current->used) {
@@ -108,7 +108,7 @@ namespace list {
     }
 
     template<typename T>
-    bool get(List<T>* list, UINT64 index, T& out) {
+    bool get(List<T>* list, uint64_t index, T& out) {
         BlockPosition<T> pos = find_position(list, index);
         if (!pos.block) return false;
         
@@ -117,7 +117,7 @@ namespace list {
     }
 
     template<typename T>
-    void set(List<T>* list, UINT64 index, T value) {
+    void set(List<T>* list, uint64_t index, T value) {
         BlockPosition<T> pos = find_position(list, index);
         if (!pos.block) return;
         
@@ -125,14 +125,14 @@ namespace list {
     }
 
     template<typename T>
-    void remove_at(List<T>* list, UINT64 index) {
+    void remove_at(List<T>* list, uint64_t index) {
         if (!list || index >= list->size) return;
         
         BlockPosition<T> pos = find_position(list, index);
         if (!pos.block) return;
         
         // Сдвигаем элементы внутри текущего блока
-        for (UINT64 i = pos.local_index; i < pos.block->used - 1; i++) {
+        for (uint64_t i = pos.local_index; i < pos.block->used - 1; i++) {
             pos.block->data[i] = pos.block->data[i + 1];
         }
         pos.block->used--;
@@ -157,7 +157,7 @@ namespace list {
                     }
                 }
             }
-            memory::memfree((UINT8*)pos.block);
+            memory::memfree((uint8_t*)pos.block);
         }
         
         // Сдвигаем элементы из следующих блоков
@@ -171,7 +171,7 @@ namespace list {
                 prev_block->used++;
                 
                 // Сдвигаем элементы в текущем блоке
-                for (UINT64 i = 0; i < current->used - 1; i++) {
+                for (uint64_t i = 0; i < current->used - 1; i++) {
                     current->data[i] = current->data[i + 1];
                 }
                 current->used--;
@@ -185,7 +185,7 @@ namespace list {
     }
 
     template<typename T>
-    UINT64 size(List<T>* list) {
+    uint64_t size(List<T>* list) {
         return list ? list->size : 0;
     }
 
@@ -196,7 +196,7 @@ namespace list {
         Block<T>* current = list->first_block;
         while (current) {
             Block<T>* next = current->next;
-            memory::memfree((UINT8*)current);
+            memory::memfree((uint8_t*)current);
             current = next;
         }
         

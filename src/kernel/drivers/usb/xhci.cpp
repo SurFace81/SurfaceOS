@@ -9,21 +9,21 @@ namespace xhci {
     static XHCIPortRegs*        port_regs = nullptr;
     static XHCIRuntimeRegs*     runtime_regs = nullptr;
     static XHCIInterrupterRegs* interrupter_regs = nullptr;
-    static UINT32*     doorbell_regs = nullptr;
+    static uint32_t*     doorbell_regs = nullptr;
     static USBDeviceList device_list = {0};
     
     // CAPLENGTH
-    UINT8 cap_regs_length;
+    uint8_t cap_regs_length;
 
     // HCSPARAMS1
-    UINT8 max_device_slots;
-    UINT8 max_interrupters;
-    UINT8 max_ports;
+    uint8_t max_device_slots;
+    uint8_t max_interrupters;
+    uint8_t max_ports;
 
     // HCSPARAMS2
-    UINT8 isochronous_sheduling_threshold;
-    UINT8 erst_max;
-    UINT8 scratchpad_count;
+    uint8_t isochronous_sheduling_threshold;
+    uint8_t erst_max;
+    uint8_t scratchpad_count;
 
     // HCCPARAMS1
     bool bit64_addr_cap;
@@ -32,34 +32,34 @@ namespace xhci {
     bool port_power_control;
     bool port_indicators;
     bool light_reset_cap;
-    UINT32 ext_cap_offset;
+    uint32_t ext_cap_offset;
 
     // Rings
     size_t segment_trb_count;
     XHCITrb* trbs;
     uintptr_t phys_base;
     XHCIErstEntry* segment_table;
-    UINT64 dequeue_ptr;
-    UINT8 rcs_bit;
+    uint64_t dequeue_ptr;
+    uint8_t rcs_bit;
 
-    static UINT64 __attribute__((aligned(64))) dcbaa[256];
-    constexpr UINT32 MAX_SCRATCHPADS = 64;
-    static UINT64 __attribute__((aligned(64))) scratchpad_array[64];
-    static UINT8 __attribute__((aligned(4096))) scratchpad_pages[64][4096];
+    static uint64_t __attribute__((aligned(64))) dcbaa[256];
+    constexpr uint32_t MAX_SCRATCHPADS = 64;
+    static uint64_t __attribute__((aligned(64))) scratchpad_array[64];
+    static uint8_t __attribute__((aligned(4096))) scratchpad_pages[64][4096];
 
-    constexpr UINT32 COMMAND_RING_TRBS = 256;
+    constexpr uint32_t COMMAND_RING_TRBS = 256;
     static XHCITrb __attribute__((aligned(64))) command_ring[COMMAND_RING_TRBS];
-    static UINT32 cmd_ring_enq = 0;
-    static UINT8  cmd_ring_cycle   = 1;
+    static uint32_t cmd_ring_enq = 0;
+    static uint8_t  cmd_ring_cycle   = 1;
 
-    constexpr UINT32 EVENT_RING_TRBS = 256;
-    constexpr UINT32 EVENT_RING_SEGMENTS = 1;
+    constexpr uint32_t EVENT_RING_TRBS = 256;
+    constexpr uint32_t EVENT_RING_SEGMENTS = 1;
     static XHCITrb __attribute__((aligned(64))) event_ring[EVENT_RING_TRBS];
     static XHCIErstEntry __attribute__((aligned(64))) event_ring_erst[EVENT_RING_SEGMENTS];
-    static UINT32 event_ring_deq = 0;
-    static UINT8  event_ring_cycle = 1;
-    static UINT64 event_ring_phys_base = 0;
-    static UINT64 erst_phys_base = 0;
+    static uint32_t event_ring_deq = 0;
+    static uint8_t  event_ring_cycle = 1;
+    static uint64_t event_ring_phys_base = 0;
+    static uint64_t erst_phys_base = 0;
 
     // Address device
     enum {
@@ -75,103 +75,103 @@ namespace xhci {
     };
 
     // Минимальные оффсеты/флаги для контекстов
-    static inline UINT32 ctx_stride() { return byte64_context_size ? 64 : 32; }
+    static inline uint32_t ctx_stride() { return byte64_context_size ? 64 : 32; }
 
     // Input Context: Control Context + (Slot + EP0 + ...)
     struct __attribute__((packed)) XHCIInputControlContext {
-        UINT32 drop_context_flags;
-        UINT32 add_context_flags;
-        UINT32 rsvd0[5];
-        UINT32 configuration_value;
-        UINT32 interface_number;
-        UINT32 alternate_setting;
-        UINT32 rsvd1;
+        uint32_t drop_context_flags;
+        uint32_t add_context_flags;
+        uint32_t rsvd0[5];
+        uint32_t configuration_value;
+        uint32_t interface_number;
+        uint32_t alternate_setting;
+        uint32_t rsvd1;
     };
 
     // Slot Context (минимально нужные поля)
     // Мы будем писать через dword-доступ, чтобы не попасть на битфилды/эндиан.
     struct __attribute__((packed)) XHCISlotContext {
-        UINT32 dw0;
-        UINT32 dw1;
-        UINT32 dw2;
-        UINT32 dw3;
-        UINT32 rsvd[4]; // довести до 32 байт минимум (дальше stride решит)
+        uint32_t dw0;
+        uint32_t dw1;
+        uint32_t dw2;
+        uint32_t dw3;
+        uint32_t rsvd[4]; // довести до 32 байт минимум (дальше stride решит)
     };
 
     // Endpoint Context (минимально)
     struct __attribute__((packed)) XHCIEndpointContext {
-        UINT32 dw0;
-        UINT32 dw1;
-        UINT32 tr_dequeue_ptr_lo;
-        UINT32 tr_dequeue_ptr_hi;
-        UINT32 dw4;
-        UINT32 rsvd[3];
+        uint32_t dw0;
+        uint32_t dw1;
+        uint32_t tr_dequeue_ptr_lo;
+        uint32_t tr_dequeue_ptr_hi;
+        uint32_t dw4;
+        uint32_t rsvd[3];
     };
 
     // Один девайс: Device Context + Input Context
-    static UINT8 __attribute__((aligned(4096))) input_context_mem[4096];
-    static UINT8 __attribute__((aligned(4096))) device_context_mem[4096];
+    static uint8_t __attribute__((aligned(4096))) input_context_mem[4096];
+    static uint8_t __attribute__((aligned(4096))) device_context_mem[4096];
 
     // EP0 Transfer Ring (минимально)
-    constexpr UINT32 EP0_RING_TRBS = 32;
+    constexpr uint32_t EP0_RING_TRBS = 32;
     static XHCITrb __attribute__((aligned(64))) ep0_ring[EP0_RING_TRBS];
-    static UINT32 ep0_enq = 0;
-    static UINT8  ep0_cycle = 1;
+    static uint32_t ep0_enq = 0;
+    static uint8_t  ep0_cycle = 1;
 
-    static UINT8 g_slot_id = 0;
-    static UINT8 g_port_id = 0;
-    static UINT32 g_port_speed = 0; // из PORTSC (PSIV)
+    static uint8_t g_slot_id = 0;
+    static uint8_t g_port_id = 0;
+    static uint32_t g_port_speed = 0; // из PORTSC (PSIV)
 
     struct __attribute__((packed)) USBSetupPacket {
-        UINT8  bmRequestType;
-        UINT8  bRequest;
-        UINT16 wValue;
-        UINT16 wIndex;
-        UINT16 wLength;
+        uint8_t  bmRequestType;
+        uint8_t  bRequest;
+        uint16_t wValue;
+        uint16_t wIndex;
+        uint16_t wLength;
     };
 
     // стандартные запросы
-    constexpr UINT8 USB_REQ_GET_DESCRIPTOR = 6;
-    constexpr UINT8 USB_DESC_DEVICE = 1;
-    constexpr UINT8 USB_DESC_CONFIGURATION = 2;
+    constexpr uint8_t USB_REQ_GET_DESCRIPTOR = 6;
+    constexpr uint8_t USB_DESC_DEVICE = 1;
+    constexpr uint8_t USB_DESC_CONFIGURATION = 2;
 
-    constexpr UINT32 BULK_RING_TRBS = 256;
+    constexpr uint32_t BULK_RING_TRBS = 256;
 
     static XHCITrb __attribute__((aligned(64))) bulk_in_ring[BULK_RING_TRBS];
     static XHCITrb __attribute__((aligned(64))) bulk_out_ring[BULK_RING_TRBS];
 
-    static UINT32 bulk_in_enq = 0;
-    static UINT32 bulk_out_enq = 0;
-    static UINT8  bulk_in_cycle = 1;
-    static UINT8  bulk_out_cycle = 1;
+    static uint32_t bulk_in_enq = 0;
+    static uint32_t bulk_out_enq = 0;
+    static uint8_t  bulk_in_cycle = 1;
+    static uint8_t  bulk_out_cycle = 1;
 
-    static UINT8  g_bulk_ep_in_dci  = 0;
-    static UINT8  g_bulk_ep_out_dci = 0;
+    static uint8_t  g_bulk_ep_in_dci  = 0;
+    static uint8_t  g_bulk_ep_out_dci = 0;
 
-    constexpr UINT8 USB_REQ_SET_CONFIGURATION = 9;
-    constexpr UINT8 XHCI_TRB_TYPE_NORMAL = 1;
+    constexpr uint8_t USB_REQ_SET_CONFIGURATION = 9;
+    constexpr uint8_t XHCI_TRB_TYPE_NORMAL = 1;
 
     struct __attribute__((packed)) MSC_CBW {
-        UINT32 dCBWSignature;   // 'USBC' 0x43425355
-        UINT32 dCBWTag;
-        UINT32 dCBWDataTransferLength;
-        UINT8  bmCBWFlags;      // 0x80 IN, 0x00 OUT
-        UINT8  bCBWLUN;
-        UINT8  bCBWCBLength;
-        UINT8  CBWCB[16];
+        uint32_t dCBWSignature;   // 'USBC' 0x43425355
+        uint32_t dCBWTag;
+        uint32_t dCBWDataTransferLength;
+        uint8_t  bmCBWFlags;      // 0x80 IN, 0x00 OUT
+        uint8_t  bCBWLUN;
+        uint8_t  bCBWCBLength;
+        uint8_t  CBWCB[16];
     };
 
     struct __attribute__((packed)) MSC_CSW {
-        UINT32 dCSWSignature;   // 'USBS' 0x53425355
-        UINT32 dCSWTag;
-        UINT32 dCSWDataResidue;
-        UINT8  bCSWStatus;      // 0=pass
+        uint32_t dCSWSignature;   // 'USBS' 0x53425355
+        uint32_t dCSWTag;
+        uint32_t dCSWDataResidue;
+        uint8_t  bCSWStatus;      // 0=pass
     };
 
-    static UINT32 g_msc_tag = 1;
+    static uint32_t g_msc_tag = 1;
 
     static PCIDevice* find_xhci_controller() {
-        for (UINT32 i = 0; i < pci::device_count(); i++) {
+        for (uint32_t i = 0; i < pci::device_count(); i++) {
             PCIDevice* d = pci::get_by_id(i);
             if (d && d->valid && d->class_code == 0x0C && d->subclass == 0x03 && d->prog_if == 0x30) {
                 return d;
@@ -181,7 +181,7 @@ namespace xhci {
     }
 
     static bool map_registers() {
-        UINT64 base_address = controller_pci->bar[0] & ~0xF;
+        uint64_t base_address = controller_pci->bar[0] & ~0xF;
 
         cap_regs = (XHCICapabilityRegs*)base_address;
         cap_regs_length = cap_regs->caplength;
@@ -199,12 +199,12 @@ namespace xhci {
         port_power_control = ((cap_regs->hccparams1 >> 3) & 0x1);
         port_indicators = ((cap_regs->hccparams1 >> 4) & 0x1);
         light_reset_cap = ((cap_regs->hccparams1 >> 5) & 0x1);
-        ext_cap_offset = ((cap_regs->hccparams1 >> 16) & 0xFFFF) * sizeof(UINT32);
+        ext_cap_offset = ((cap_regs->hccparams1 >> 16) & 0xFFFF) * sizeof(uint32_t);
         scratchpad_count = ((cap_regs->hcsparams2 >> 27) & 0x1F) << 5 | ((cap_regs->hcsparams2 >> 21) & 0x1F);
 
         op_regs = (XHCIOperationalRegs*)(base_address + cap_regs->caplength);
         port_regs = (XHCIPortRegs*)(base_address + cap_regs->caplength + 0x400);
-        doorbell_regs = (UINT32*)(base_address + cap_regs->dboff);
+        doorbell_regs = (uint32_t*)(base_address + cap_regs->dboff);
 
         // Update the base pointer to the runtime register set
         runtime_regs = (XHCIRuntimeRegs*)(base_address + cap_regs->rtsoff);
@@ -239,7 +239,7 @@ namespace xhci {
     }
 
     void log_usbsts() {
-        UINT32 status = op_regs->usbsts;
+        uint32_t status = op_regs->usbsts;
         uart::printf("===== USBSTS =====\n");
         if (status & (1 << 0))  uart::printf("    Host Controlled Halted\n");
         if (status & (1 << 2))  uart::printf("    Host System Error\n");
@@ -258,12 +258,12 @@ namespace xhci {
         doorbell_regs[0] = 0;
     }
 
-    static inline void ring_control_ep0_doorbell(UINT8 slot_id) {
+    static inline void ring_control_ep0_doorbell(uint8_t slot_id) {
         // DB[slot_id], target=1 -> Control Endpoint Ring
         doorbell_regs[slot_id] = 1;
     }
 
-    static inline void ring_ep_doorbell(UINT8 slot_id, UINT8 dci) {
+    static inline void ring_ep_doorbell(uint8_t slot_id, uint8_t dci) {
         doorbell_regs[slot_id] = dci;
     }
 
@@ -298,7 +298,7 @@ namespace xhci {
 
         // Update ERDP
         volatile XHCIInterrupterRegs* ir = &runtime_regs->ir[0];
-        UINT64 deq_phys =
+        uint64_t deq_phys =
             event_ring_phys_base +
             (event_ring_deq * sizeof(XHCITrb));
 
@@ -339,7 +339,7 @@ namespace xhci {
         return nullptr;
     }
 
-    void acknowledge_irq(UINT8 interrupter) {
+    void acknowledge_irq(uint8_t interrupter) {
         // Clear the EINT bit in USBSTS by writting '1' to it
         op_regs->usbsts = (1 << 3);
 
@@ -347,7 +347,7 @@ namespace xhci {
         volatile XHCIInterrupterRegs* interrupter_regs = &runtime_regs->ir[interrupter];
 
         // Read the current value of IMAN
-        UINT32 iman = interrupter_regs->iman;
+        uint32_t iman = interrupter_regs->iman;
 
         // Set the IP bit to '1' to clear it, preserve other bits including PE
         iman |= (1 << 0);
@@ -377,7 +377,7 @@ namespace xhci {
         acknowledge_irq(0);
     }
 
-    static UINT16 ep0_max_packet_from_speed(UINT32 psiv) {
+    static uint16_t ep0_max_packet_from_speed(uint32_t psiv) {
         // PSIV: 1=LS,2=FS,3=HS,4=SS (как ты уже используешь)
         switch (psiv) {
             case 1: return 8;     // Low Speed
@@ -388,16 +388,16 @@ namespace xhci {
         }
     }
 
-    static UINT32 get_port_speed(UINT32 portsc) {
+    static uint32_t get_port_speed(uint32_t portsc) {
         if (!(portsc & 0x1)) return 0;
         return (portsc >> 10) & 0xF;
     }
 
-    static bool find_first_connected_port(UINT8* out_port, UINT32* out_speed) {
-        for (UINT8 i = 0; i < max_ports; i++) {
-            UINT32 portsc = port_regs[i].portsc;
+    static bool find_first_connected_port(uint8_t* out_port, uint32_t* out_speed) {
+        for (uint8_t i = 0; i < max_ports; i++) {
+            uint32_t portsc = port_regs[i].portsc;
             if (portsc & 0x1) { // CCS
-                *out_port = (UINT8)(i + 1); // ports are 1-based in contexts
+                *out_port = (uint8_t)(i + 1); // ports are 1-based in contexts
                 *out_speed = get_port_speed(portsc);
                 return true;
             }
@@ -406,11 +406,11 @@ namespace xhci {
     }
 
     static void ep0_ring_init() {
-        memory::memset((UINT8*)ep0_ring, 0, sizeof(ep0_ring));
+        memory::memset((uint8_t*)ep0_ring, 0, sizeof(ep0_ring));
         ep0_enq = 0;
         ep0_cycle = 1;
 
-        UINT64 ring_phys = paging::get_phys_addr((UINT64)&ep0_ring[0]);
+        uint64_t ring_phys = paging::get_phys_addr((uint64_t)&ep0_ring[0]);
 
         // Link TRB в конец, замыкаем на начало
         ep0_ring[EP0_RING_TRBS - 1].parameter = ring_phys;
@@ -419,19 +419,19 @@ namespace xhci {
         uart::printf("EP0 ring phys: %llx\n", ring_phys);
     }
 
-    static void bulk_ring_init(XHCITrb* ring, UINT32 trbs, UINT32& enq, UINT8& cycle) {
-        memory::memset((UINT8*)ring, 0, sizeof(XHCITrb) * trbs);
+    static void bulk_ring_init(XHCITrb* ring, uint32_t trbs, uint32_t& enq, uint8_t& cycle) {
+        memory::memset((uint8_t*)ring, 0, sizeof(XHCITrb) * trbs);
         enq = 0;
         cycle = 1;
 
-        UINT64 phys = paging::get_phys_addr((UINT64)&ring[0]);
+        uint64_t phys = paging::get_phys_addr((uint64_t)&ring[0]);
         ring[trbs - 1].parameter = phys;
         ring[trbs - 1].control = (6 << 10) | (1 << 1) | cycle;
 
         uart::printf("Bulk ring phys: %llx\n", phys);
     }
 
-    static void bulk_ring_enqueue_trb(XHCITrb* ring, UINT32 trbs, UINT32& enq, UINT8& cycle, const XHCITrb& src) {
+    static void bulk_ring_enqueue_trb(XHCITrb* ring, uint32_t trbs, uint32_t& enq, uint8_t& cycle, const XHCITrb& src) {
         XHCITrb trb = src;
         trb.cycle_bit = cycle;
         ring[enq] = trb;
@@ -450,7 +450,7 @@ namespace xhci {
                 if (!evt) continue;
 
                 if (evt->trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT) {
-                    UINT8 cc = (evt->status >> 24) & 0xFF;
+                    uint8_t cc = (evt->status >> 24) & 0xFF;
                     uart::printf("%s: Transfer Event cc=%u\n", tag, cc);
                     return (cc == 1);
                 }
@@ -460,9 +460,9 @@ namespace xhci {
         return false;
     }
 
-    static bool bulk_out_xfer(UINT8 slot_id, void* buf, UINT32 len) {
+    static bool bulk_out_xfer(uint8_t slot_id, void* buf, uint32_t len) {
         XHCITrb trb = {};
-        trb.parameter = paging::get_phys_addr((UINT64)buf);
+        trb.parameter = paging::get_phys_addr((uint64_t)buf);
         trb.status = len;
         trb.trb_type = XHCI_TRB_TYPE_NORMAL;
         trb.control |= (1u << 5); // IOC
@@ -473,9 +473,9 @@ namespace xhci {
         return wait_transfer_event("BULK OUT");
     }
 
-    static bool bulk_in_xfer(UINT8 slot_id, void* buf, UINT32 len) {
+    static bool bulk_in_xfer(uint8_t slot_id, void* buf, uint32_t len) {
         XHCITrb trb = {};
-        trb.parameter = paging::get_phys_addr((UINT64)buf);
+        trb.parameter = paging::get_phys_addr((uint64_t)buf);
         trb.status = len;
         trb.trb_type = XHCI_TRB_TYPE_NORMAL;
         trb.control |= (1u << 5); // IOC
@@ -486,8 +486,8 @@ namespace xhci {
         return wait_transfer_event("BULK IN");
     }
 
-    static UINT8 ep_addr_to_dci(UINT8 ep_addr) {
-        UINT8 ep_num = ep_addr & 0x0F;
+    static uint8_t ep_addr_to_dci(uint8_t ep_addr) {
+        uint8_t ep_num = ep_addr & 0x0F;
         bool is_in = (ep_addr & 0x80) != 0;
         return (ep_num * 2) + (is_in ? 1 : 0);
     }
@@ -505,29 +505,29 @@ namespace xhci {
         }
     }
 
-    static void* input_ctx_ptr(UINT32 index) {
+    static void* input_ctx_ptr(uint32_t index) {
         // index 0 = Input Control Context
         return (void*)(input_context_mem + (index * ctx_stride()));
     }
 
-    static void* device_ctx_ptr(UINT32 index) {
+    static void* device_ctx_ptr(uint32_t index) {
         // Device Context: index 0 = Slot Context, 1 = EP0, ...
         return (void*)(device_context_mem + (index * ctx_stride()));
     }
 
-    static bool address_device(UINT8 slot_id, UINT8 port_id, UINT32 port_speed) {
+    static bool address_device(uint8_t slot_id, uint8_t port_id, uint32_t port_speed) {
         uart::printf("=== Address Device: slot=%u port=%u speed=%u ===\n", slot_id, port_id, port_speed);
 
         // 1) Инициализируем EP0 ring (TR Dequeue Pointer обязан быть валиден)
         ep0_ring_init();
-        UINT64 ep0_ring_phys = paging::get_phys_addr((UINT64)&ep0_ring[0]);
+        uint64_t ep0_ring_phys = paging::get_phys_addr((uint64_t)&ep0_ring[0]);
 
         // 2) Чистим контексты
-        memory::memset((UINT8*)input_context_mem, 0, sizeof(input_context_mem));
-        memory::memset((UINT8*)device_context_mem, 0, sizeof(device_context_mem));
+        memory::memset((uint8_t*)input_context_mem, 0, sizeof(input_context_mem));
+        memory::memset((uint8_t*)device_context_mem, 0, sizeof(device_context_mem));
 
         // 3) Прописываем DCBAA entry для slot_id -> Device Context phys
-        UINT64 dev_ctx_phys = paging::get_phys_addr((UINT64)&device_context_mem[0]);
+        uint64_t dev_ctx_phys = paging::get_phys_addr((uint64_t)&device_context_mem[0]);
         dcbaa[slot_id] = dev_ctx_phys;
 
         uart::printf("DeviceCtx phys: %llx -> DCBAA[%u]\n", dev_ctx_phys, slot_id);
@@ -551,36 +551,36 @@ namespace xhci {
         // dw1:
         // bits 16..23 = Root Hub Port Number
         slot->dw1 = 0;
-        slot->dw1 |= ((UINT32)port_id << 16);
+        slot->dw1 |= ((uint32_t)port_id << 16);
 
         // 6) EP0 Endpoint Context (Input Context ep0 ctx = index 2)
         XHCIEndpointContext* ep0 = (XHCIEndpointContext*)input_ctx_ptr(2);
 
-        UINT16 mps = ep0_max_packet_from_speed(port_speed);
+        uint16_t mps = ep0_max_packet_from_speed(port_speed);
 
         // dw1:
         // bits 16..31 = Max Packet Size
         // bits  3..5  = EP Type (Control = 4)
         // Для простоты выставим только EP Type и MPS.
         ep0->dw1 = 0;
-        ep0->dw1 |= ((UINT32)mps << 16);
+        ep0->dw1 |= ((uint32_t)mps << 16);
         ep0->dw1 |= (4u << 3); // EP Type = Control
 
         // TR Dequeue Pointer: физ адрес ринга + DCS (bit0)
-        UINT64 trdp = (ep0_ring_phys & ~0xFULL) | (ep0_cycle & 1);
-        ep0->tr_dequeue_ptr_lo = (UINT32)(trdp & 0xFFFFFFFF);
-        ep0->tr_dequeue_ptr_hi = (UINT32)((trdp >> 32) & 0xFFFFFFFF);
+        uint64_t trdp = (ep0_ring_phys & ~0xFULL) | (ep0_cycle & 1);
+        ep0->tr_dequeue_ptr_lo = (uint32_t)(trdp & 0xFFFFFFFF);
+        ep0->tr_dequeue_ptr_hi = (uint32_t)((trdp >> 32) & 0xFFFFFFFF);
 
         uart::printf("EP0 MPS=%u TRDP=%llx\n", mps, trdp);
 
         // 7) Формируем Address Device Command TRB
         XHCITrb cmd = {};
-        cmd.parameter = paging::get_phys_addr((UINT64)&input_context_mem[0]);
+        cmd.parameter = paging::get_phys_addr((uint64_t)&input_context_mem[0]);
         cmd.status = 0;
         cmd.trb_type = XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD;
 
         // slot id у Address Device кладётся в control[31:24] (как и в completion event)
-        cmd.control |= ((UINT32)slot_id << 24);
+        cmd.control |= ((uint32_t)slot_id << 24);
 
         uart::printf("InputCtx phys: %llx\n", cmd.parameter);
 
@@ -591,8 +591,8 @@ namespace xhci {
             return false;
         }
 
-        UINT8 cc = (completion->status >> 24) & 0xFF;
-        UINT8 sid = (completion->control >> 24) & 0xFF;
+        uint8_t cc = (completion->status >> 24) & 0xFF;
+        uint8_t sid = (completion->control >> 24) & 0xFF;
 
         uart::printf("Address Device completion: cc=%u slot_id=%u\n", cc, sid);
 
@@ -605,28 +605,28 @@ namespace xhci {
         return true;
     }
 
-    static bool ep0_control_transfer(UINT8 slot_id, const USBSetupPacket& setup, void* data_buf) {
-        UINT64 data_phys  = data_buf ? paging::get_phys_addr((UINT64)data_buf) : 0;
+    static bool ep0_control_transfer(uint8_t slot_id, const USBSetupPacket& setup, void* data_buf) {
+        uint64_t data_phys  = data_buf ? paging::get_phys_addr((uint64_t)data_buf) : 0;
 
         bool has_data = (setup.wLength != 0);
         bool dir_in = (setup.bmRequestType & 0x80) != 0;
 
         // TRT: 0 = no data, 2 = IN, 3 = OUT
-        UINT32 trt = 0;
+        uint32_t trt = 0;
         if (!has_data) trt = 0;
         else trt = dir_in ? 2 : 3;
 
         // Упаковка 8 байт setup packet прямо в parameter (little-endian)
-        UINT32 p0 =
-            ((UINT32)setup.bmRequestType) |
-            ((UINT32)setup.bRequest << 8) |
-            ((UINT32)setup.wValue << 16);
+        uint32_t p0 =
+            ((uint32_t)setup.bmRequestType) |
+            ((uint32_t)setup.bRequest << 8) |
+            ((uint32_t)setup.wValue << 16);
 
-        UINT32 p1 =
-            ((UINT32)setup.wIndex) |
-            ((UINT32)setup.wLength << 16);
+        uint32_t p1 =
+            ((uint32_t)setup.wIndex) |
+            ((uint32_t)setup.wLength << 16);
 
-        UINT64 setup_param = ((UINT64)p1 << 32) | (UINT64)p0;
+        uint64_t setup_param = ((uint64_t)p1 << 32) | (uint64_t)p0;
 
         uart::printf("EP0 setup: bm=%02x req=%02x val=%04x idx=%04x len=%u TRT=%u\n",
             setup.bmRequestType, setup.bRequest, setup.wValue, setup.wIndex, setup.wLength, trt);
@@ -677,8 +677,8 @@ namespace xhci {
                 XHCITrb* evt = event_ring_dequeue();
                 if (!evt) continue;
 
-                UINT8 t  = (UINT8)evt->trb_type;
-                UINT8 cc = (UINT8)((evt->status >> 24) & 0xFF);
+                uint8_t t  = (uint8_t)evt->trb_type;
+                uint8_t cc = (uint8_t)((evt->status >> 24) & 0xFF);
 
                 uart::printf("EVT: type=%u cc=%u\n", t, cc);
 
@@ -693,8 +693,8 @@ namespace xhci {
         return false;
     }
 
-    static bool get_device_descriptor(UINT8 slot_id) {
-        static UINT8 __attribute__((aligned(16))) dev_desc[18];
+    static bool get_device_descriptor(uint8_t slot_id) {
+        static uint8_t __attribute__((aligned(16))) dev_desc[18];
         memory::memset(dev_desc, 0, sizeof(dev_desc));
 
         USBSetupPacket s = {};
@@ -714,15 +714,15 @@ namespace xhci {
         for (int i = 0; i < 18; i++) uart::printf("%02x ", dev_desc[i]);
         uart::printf("\n");
 
-        UINT16 vid = (UINT16)(dev_desc[8] | (dev_desc[9] << 8));
-        UINT16 pid = (UINT16)(dev_desc[10] | (dev_desc[11] << 8));
+        uint16_t vid = (uint16_t)(dev_desc[8] | (dev_desc[9] << 8));
+        uint16_t pid = (uint16_t)(dev_desc[10] | (dev_desc[11] << 8));
         uart::printf("VID=%04x PID=%04x\n", vid, pid);
 
         return true;
     }
 
-    static bool get_config_descriptor_header(UINT8 slot_id, UINT16* out_total_len) {
-        static UINT8 __attribute__((aligned(16))) cfg_hdr[9];
+    static bool get_config_descriptor_header(uint8_t slot_id, uint16_t* out_total_len) {
+        static uint8_t __attribute__((aligned(16))) cfg_hdr[9];
         memory::memset(cfg_hdr, 0, sizeof(cfg_hdr));
 
         USBSetupPacket s = {};
@@ -742,13 +742,13 @@ namespace xhci {
         for (int i = 0; i < 9; i++) uart::printf("%02x ", cfg_hdr[i]);
         uart::printf("\n");
 
-        UINT16 total = (UINT16)(cfg_hdr[2] | (cfg_hdr[3] << 8));
+        uint16_t total = (uint16_t)(cfg_hdr[2] | (cfg_hdr[3] << 8));
         uart::printf("wTotalLength=%u\n", total);
         *out_total_len = total;
         return true;
     }
 
-    static bool get_full_config_descriptor(UINT8 slot_id, UINT16 total_len, UINT8* out_buf) {
+    static bool get_full_config_descriptor(uint8_t slot_id, uint16_t total_len, uint8_t* out_buf) {
         memory::memset(out_buf, 0, total_len);
 
         USBSetupPacket s = {};
@@ -767,7 +767,7 @@ namespace xhci {
         return true;
     }
 
-    static bool set_configuration(UINT8 slot_id, UINT8 config_value) {
+    static bool set_configuration(uint8_t slot_id, uint8_t config_value) {
         USBSetupPacket s = {};
         s.bmRequestType = 0x00; // OUT, Standard, Device
         s.bRequest = USB_REQ_SET_CONFIGURATION;
@@ -782,12 +782,12 @@ namespace xhci {
     }
 
     static bool parse_mass_storage_and_bulk_eps(
-        const UINT8* cfg, UINT16 len,
-        UINT8* out_ifnum,
-        UINT8* out_ep_in_addr,
-        UINT8* out_ep_out_addr,
-        UINT16* out_mps_in,
-        UINT16* out_mps_out
+        const uint8_t* cfg, uint16_t len,
+        uint8_t* out_ifnum,
+        uint8_t* out_ep_in_addr,
+        uint8_t* out_ep_out_addr,
+        uint16_t* out_mps_in,
+        uint16_t* out_mps_out
     ) {
         *out_ifnum = 0xFF;
         *out_ep_in_addr = 0;
@@ -797,18 +797,18 @@ namespace xhci {
 
         bool in_ms_interface = false;
 
-        for (UINT16 i = 0; i + 2 <= len; ) {
-            UINT8 bLength = cfg[i + 0];
-            UINT8 bType   = cfg[i + 1];
+        for (uint16_t i = 0; i + 2 <= len; ) {
+            uint8_t bLength = cfg[i + 0];
+            uint8_t bType   = cfg[i + 1];
 
             if (bLength == 0 || (i + bLength) > len) break;
 
             if (bType == 4 && bLength >= 9) { // INTERFACE
-                UINT8 ifnum   = cfg[i + 2];
-                UINT8 alt     = cfg[i + 3];
-                UINT8 cls     = cfg[i + 5];
-                UINT8 subcls  = cfg[i + 6];
-                UINT8 proto   = cfg[i + 7];
+                uint8_t ifnum   = cfg[i + 2];
+                uint8_t alt     = cfg[i + 3];
+                uint8_t cls     = cfg[i + 5];
+                uint8_t subcls  = cfg[i + 6];
+                uint8_t proto   = cfg[i + 7];
 
                 // Mass Storage: class 0x08, subclass 0x06 (SCSI), protocol 0x50 (BOT)
                 in_ms_interface = (alt == 0 && cls == 0x08 && subcls == 0x06 && proto == 0x50);
@@ -820,11 +820,11 @@ namespace xhci {
             }
             else if (bType == 5 && bLength >= 7) { // ENDPOINT
                 if (in_ms_interface) {
-                    UINT8  ep_addr = cfg[i + 2];     // bEndpointAddress
-                    UINT8  attrs   = cfg[i + 3];     // bmAttributes
-                    UINT16 mps     = (UINT16)(cfg[i + 4] | (cfg[i + 5] << 8));
+                    uint8_t  ep_addr = cfg[i + 2];     // bEndpointAddress
+                    uint8_t  attrs   = cfg[i + 3];     // bmAttributes
+                    uint16_t mps     = (uint16_t)(cfg[i + 4] | (cfg[i + 5] << 8));
 
-                    UINT8 transfer_type = attrs & 0x3;
+                    uint8_t transfer_type = attrs & 0x3;
                     bool is_in = (ep_addr & 0x80) != 0;
 
                     // Bulk endpoints only
@@ -842,7 +842,7 @@ namespace xhci {
                 }
             }
 
-            i = (UINT16)(i + bLength);
+            i = (uint16_t)(i + bLength);
         }
 
         if (*out_ifnum == 0xFF || *out_ep_in_addr == 0 || *out_ep_out_addr == 0) {
@@ -853,11 +853,11 @@ namespace xhci {
     }
 
     static bool configure_bulk_endpoints(
-        UINT8 slot_id,
-        UINT8 ep_in_addr,
-        UINT8 ep_out_addr,
-        UINT16 mps_in,
-        UINT16 mps_out
+        uint8_t slot_id,
+        uint8_t ep_in_addr,
+        uint8_t ep_out_addr,
+        uint16_t mps_in,
+        uint16_t mps_out
     ) {
         uart::printf("=== Configure Bulk Endpoints ===\n");
 
@@ -870,8 +870,8 @@ namespace xhci {
         bulk_ring_init(bulk_in_ring,  BULK_RING_TRBS, bulk_in_enq,  bulk_in_cycle);
         bulk_ring_init(bulk_out_ring, BULK_RING_TRBS, bulk_out_enq, bulk_out_cycle);
 
-        UINT64 bulk_in_phys  = paging::get_phys_addr((UINT64)&bulk_in_ring[0]);
-        UINT64 bulk_out_phys = paging::get_phys_addr((UINT64)&bulk_out_ring[0]);
+        uint64_t bulk_in_phys  = paging::get_phys_addr((uint64_t)&bulk_in_ring[0]);
+        uint64_t bulk_out_phys = paging::get_phys_addr((uint64_t)&bulk_out_ring[0]);
 
         memory::memset(input_context_mem, 0, sizeof(input_context_mem));
 
@@ -891,22 +891,22 @@ namespace xhci {
             (XHCIEndpointContext*)input_ctx_ptr(g_bulk_ep_in_dci + 1);
 
         ep_in->dw1 = (mps_in << 16) | (15 << 8) | (6 << 3); // Bulk IN
-        UINT64 trdp_in = (bulk_in_phys & ~0xFULL) | bulk_in_cycle;
-        ep_in->tr_dequeue_ptr_lo = (UINT32)(trdp_in & 0xFFFFFFFF);
-        ep_in->tr_dequeue_ptr_hi = (UINT32)(trdp_in >> 32);
+        uint64_t trdp_in = (bulk_in_phys & ~0xFULL) | bulk_in_cycle;
+        ep_in->tr_dequeue_ptr_lo = (uint32_t)(trdp_in & 0xFFFFFFFF);
+        ep_in->tr_dequeue_ptr_hi = (uint32_t)(trdp_in >> 32);
 
         // Bulk OUT Endpoint Context
         XHCIEndpointContext* ep_out = (XHCIEndpointContext*)input_ctx_ptr(g_bulk_ep_out_dci + 1);
 
         ep_out->dw1 = (mps_out << 16) | (15 << 8) | (2 << 3); // Bulk OUT
-        UINT64 trdp_out = (bulk_out_phys & ~0xFULL) | bulk_out_cycle;
-        ep_out->tr_dequeue_ptr_lo = (UINT32)(trdp_out & 0xFFFFFFFF);
-        ep_out->tr_dequeue_ptr_hi = (UINT32)(trdp_out >> 32);
+        uint64_t trdp_out = (bulk_out_phys & ~0xFULL) | bulk_out_cycle;
+        ep_out->tr_dequeue_ptr_lo = (uint32_t)(trdp_out & 0xFFFFFFFF);
+        ep_out->tr_dequeue_ptr_hi = (uint32_t)(trdp_out >> 32);
 
         XHCITrb cmd = {};
-        cmd.parameter = paging::get_phys_addr((UINT64)&input_context_mem[0]);
+        cmd.parameter = paging::get_phys_addr((uint64_t)&input_context_mem[0]);
         cmd.trb_type = XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD;
-        cmd.control |= ((UINT32)slot_id << 24);
+        cmd.control |= ((uint32_t)slot_id << 24);
 
         XHCITrb* evt = send_command_trb(cmd);
         if (!evt) {
@@ -914,7 +914,7 @@ namespace xhci {
             return false;
         }
 
-        UINT8 cc = (evt->status >> 24) & 0xFF;
+        uint8_t cc = (evt->status >> 24) & 0xFF;
         uart::printf("Configure Endpoint completion=%u\n", cc);
 
         return (cc == 1);
@@ -936,11 +936,11 @@ namespace xhci {
         op_regs->dnctrl = 0xFFFF;
 
         // Configure usbconfig field
-        op_regs->config = static_cast<UINT32>(max_device_slots);
+        op_regs->config = static_cast<uint32_t>(max_device_slots);
 
         // DCBAA
         //size_t dcbaa_size = sizeof(uintptr_t) * (max_device_slots + 1);
-        memory::memset((UINT8*)dcbaa, 0, sizeof(UINT64) * 256);
+        memory::memset((uint8_t*)dcbaa, 0, sizeof(uint64_t) * 256);
 
         // Scratchpads
         if (scratchpad_count > 0) {
@@ -948,22 +948,22 @@ namespace xhci {
                 scratchpad_count = MAX_SCRATCHPADS;
             }
 
-            for (UINT32 i = 0; i < scratchpad_count; i++) {
-                scratchpad_array[i] = paging::get_phys_addr((UINT64)&scratchpad_pages[i][0]);
+            for (uint32_t i = 0; i < scratchpad_count; i++) {
+                scratchpad_array[i] = paging::get_phys_addr((uint64_t)&scratchpad_pages[i][0]);
             }
 
-            dcbaa[0] = paging::get_phys_addr((UINT64)&scratchpad_array[0]);
+            dcbaa[0] = paging::get_phys_addr((uint64_t)&scratchpad_array[0]);
         }
 
         // Setup the device context base address array with scratchpad buffers
-        op_regs->dcbaap = paging::get_phys_addr((UINT64)&dcbaa[0]);
+        op_regs->dcbaap = paging::get_phys_addr((uint64_t)&dcbaa[0]);
 
         // Setup the command ring and write CRCM
-        memory::memset((UINT8*)command_ring, 0, sizeof(command_ring));
+        memory::memset((uint8_t*)command_ring, 0, sizeof(command_ring));
         cmd_ring_enq = 0;
         cmd_ring_cycle = 1;
 
-        UINT64 cr_phys = paging::get_phys_addr((UINT64)&command_ring[0]);
+        uint64_t cr_phys = paging::get_phys_addr((uint64_t)&command_ring[0]);
 
         // Link TRB
         command_ring[COMMAND_RING_TRBS - 1].parameter = cr_phys;
@@ -978,19 +978,19 @@ namespace xhci {
         volatile XHCIInterrupterRegs* interrupter_regs = &runtime_regs->ir[0];
 
         // Enable interrupts
-        UINT32 iman = interrupter_regs->iman;
+        uint32_t iman = interrupter_regs->iman;
         iman |= (1 << 1);
         interrupter_regs->iman = iman;
 
         // Setup the event ring and write to interrupter
         // registers to set ERSTZ, ERDP, and ERSTBA
-        memory::memset((UINT8*)event_ring, 0, sizeof(event_ring));
-        memory::memset((UINT8*)event_ring_erst, 0, sizeof(event_ring_erst));
+        memory::memset((uint8_t*)event_ring, 0, sizeof(event_ring));
+        memory::memset((uint8_t*)event_ring_erst, 0, sizeof(event_ring_erst));
         event_ring_deq = 0;
         event_ring_cycle = 1;
 
-        event_ring_phys_base = paging::get_phys_addr((UINT64)&event_ring[0]);
-        erst_phys_base = paging::get_phys_addr((UINT64)&event_ring_erst[0]);
+        event_ring_phys_base = paging::get_phys_addr((uint64_t)&event_ring[0]);
+        erst_phys_base = paging::get_phys_addr((uint64_t)&event_ring_erst[0]);
 
         // ERST entry
         event_ring_erst[0].ring_segment_base_addr = event_ring_phys_base;
@@ -1007,12 +1007,12 @@ namespace xhci {
         acknowledge_irq(0);
     }
 
-    static bool msc_command_in(UINT8 slot_id, const UINT8* cdb, UINT8 cdb_len, void* data, UINT32 data_len) {
+    static bool msc_command_in(uint8_t slot_id, const uint8_t* cdb, uint8_t cdb_len, void* data, uint32_t data_len) {
         static MSC_CBW __attribute__((aligned(16))) cbw;
         static MSC_CSW __attribute__((aligned(16))) csw;
 
-        memory::memset((UINT8*)&cbw, 0, sizeof(cbw));
-        memory::memset((UINT8*)&csw, 0, sizeof(csw));
+        memory::memset((uint8_t*)&cbw, 0, sizeof(cbw));
+        memory::memset((uint8_t*)&csw, 0, sizeof(csw));
 
         cbw.dCBWSignature = 0x43425355;
         cbw.dCBWTag = g_msc_tag++;
@@ -1020,7 +1020,7 @@ namespace xhci {
         cbw.bmCBWFlags = 0x80;
         cbw.bCBWLUN = 0;
         cbw.bCBWCBLength = cdb_len;
-        for (UINT8 i = 0; i < cdb_len; i++) cbw.CBWCB[i] = cdb[i];
+        for (uint8_t i = 0; i < cdb_len; i++) cbw.CBWCB[i] = cdb[i];
 
         uart::printf("MSC IN cmd: tag=%u data_len=%u\n", cbw.dCBWTag, data_len);
 
@@ -1032,15 +1032,15 @@ namespace xhci {
         return (csw.dCSWSignature == 0x53425355) && (csw.dCSWTag == cbw.dCBWTag) && (csw.bCSWStatus == 0);
     }
 
-    static UINT32 be32(const UINT8* p) {
-        return ((UINT32)p[0] << 24) | ((UINT32)p[1] << 16) | ((UINT32)p[2] << 8) | (UINT32)p[3];
+    static uint32_t be32(const uint8_t* p) {
+        return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
     }
 
-    static bool msc_inquiry(UINT8 slot_id) {
-        static UINT8 __attribute__((aligned(16))) buf[36];
+    static bool msc_inquiry(uint8_t slot_id) {
+        static uint8_t __attribute__((aligned(16))) buf[36];
         memory::memset(buf, 0, sizeof(buf));
 
-        UINT8 cdb[6] = { 0x12, 0x00, 0x00, 0x00, 36, 0x00 }; // INQUIRY
+        uint8_t cdb[6] = { 0x12, 0x00, 0x00, 0x00, 36, 0x00 }; // INQUIRY
         uart::printf("SCSI INQUIRY\n");
         if (!msc_command_in(slot_id, cdb, 6, buf, 36)) return false;
 
@@ -1050,24 +1050,24 @@ namespace xhci {
         return true;
     }
 
-    static bool msc_read_capacity(UINT8 slot_id, UINT32* out_block_size) {
-        static UINT8 __attribute__((aligned(16))) buf[8];
+    static bool msc_read_capacity(uint8_t slot_id, uint32_t* out_block_size) {
+        static uint8_t __attribute__((aligned(16))) buf[8];
         memory::memset(buf, 0, sizeof(buf));
 
-        UINT8 cdb[10] = { 0x25,0,0,0,0,0,0,0,0,0 }; // READ CAPACITY(10)
+        uint8_t cdb[10] = { 0x25,0,0,0,0,0,0,0,0,0 }; // READ CAPACITY(10)
         uart::printf("SCSI READ CAPACITY(10)\n");
         if (!msc_command_in(slot_id, cdb, 10, buf, 8)) return false;
 
-        UINT32 last_lba = be32(&buf[0]);
-        UINT32 blk_sz   = be32(&buf[4]);
+        uint32_t last_lba = be32(&buf[0]);
+        uint32_t blk_sz   = be32(&buf[4]);
         uart::printf("Capacity: last_lba=%u block_size=%u\n", last_lba, blk_sz);
         *out_block_size = blk_sz;
         return true;
     }
 
-    static bool msc_read10_lba0(UINT8 slot_id, void* dst, UINT32 block_size) {
+    static bool msc_read10_lba0(uint8_t slot_id, void* dst, uint32_t block_size) {
         // читаем 1 блок (обычно 512)
-        UINT8 cdb[10] = {0};
+        uint8_t cdb[10] = {0};
         cdb[0] = 0x28; // READ(10)
         // LBA = 0 -> already 0
         cdb[7] = 0;
@@ -1090,8 +1090,8 @@ namespace xhci {
     }
 
     static void reset_ports() {
-        for (UINT8 i = 0; i < max_ports; i++) {
-            UINT32* portsc = &port_regs[i].portsc;
+        for (uint8_t i = 0; i < max_ports; i++) {
+            uint32_t* portsc = &port_regs[i].portsc;
             if ((*portsc & 0x1) && !(*portsc & (1 << 4))) {
                 *portsc |= (1 << 4); // PR
                 for (int j = 0; j < 100000 && (*portsc & (1 << 21)); j++);
@@ -1103,8 +1103,8 @@ namespace xhci {
         device_list.length = 0;
         if (!port_regs || max_ports == 0) return;
 
-        for (UINT8 i = 0; i < max_ports; i++) {
-            UINT32 portsc = port_regs[i].portsc;
+        for (uint8_t i = 0; i < max_ports; i++) {
+            uint32_t portsc = port_regs[i].portsc;
 
             USBDevice* device = &device_list.devices[device_list.length];
             device->port_number = i + 1;
@@ -1133,12 +1133,12 @@ namespace xhci {
         cmd.trb_type = 9;
 
         XHCITrb* completion = send_command_trb(cmd);
-        UINT8 slot_id;
+        uint8_t slot_id;
 
         if (!completion) {
             uart::printf("Enable Slot FAILED: no completion\n");
         } else {
-            UINT8 completion_code = (completion->status >> 24) & 0xFF;
+            uint8_t completion_code = (completion->status >> 24) & 0xFF;
             slot_id               = (completion->control >> 24) & 0xFF;
 
             uart::printf(
@@ -1165,12 +1165,12 @@ namespace xhci {
 
         if (!get_device_descriptor(slot_id)) return;
 
-        UINT16 total_len = 0;
+        uint16_t total_len = 0;
         if (!get_config_descriptor_header(slot_id, &total_len)) return;
 
         uart::printf("Step2 OK (descriptors)\n\n");
 
-        static UINT8 __attribute__((aligned(16))) cfg_full[256];
+        static uint8_t __attribute__((aligned(16))) cfg_full[256];
 
         if (total_len > sizeof(cfg_full)) {
             uart::printf("Config too big: %u\n", total_len);
@@ -1179,9 +1179,9 @@ namespace xhci {
 
         if (!get_full_config_descriptor(slot_id, total_len, cfg_full)) return;
 
-        UINT8 ifnum = 0xFF;
-        UINT8 ep_in = 0, ep_out = 0;
-        UINT16 mps_in = 0, mps_out = 0;
+        uint8_t ifnum = 0xFF;
+        uint8_t ep_in = 0, ep_out = 0;
+        uint16_t mps_in = 0, mps_out = 0;
 
         if (!parse_mass_storage_and_bulk_eps(cfg_full, total_len, &ifnum, &ep_in, &ep_out, &mps_in, &mps_out)) {
             uart::printf("Step3 FAILED (no bulk endpoints)\n");
@@ -1197,14 +1197,14 @@ namespace xhci {
 
         uart::printf("Step4 OK (bulk endpoints ready)\n\n");
 
-        UINT8 config_value = cfg_full[5];
+        uint8_t config_value = cfg_full[5];
         uart::printf("bConfigurationValue=%u\n", config_value);
 
         if (!set_configuration(slot_id, config_value)) return;
         
         uart::printf("Step5 OK!\n\n");
 
-        UINT32 block_size = 512;
+        uint32_t block_size = 512;
 
         if (!msc_inquiry(slot_id)) {
             uart::printf("MSC INQUIRY FAILED\n");
@@ -1228,12 +1228,12 @@ namespace xhci {
         // scan_ports();
     }
 
-    UINT32 device_count() {
+    uint32_t device_count() {
         scan_ports();
         return device_list.length;
     }
 
-    USBDevice* get_device(UINT32 idx) {
+    USBDevice* get_device(uint32_t idx) {
         if (idx >= device_list.length) return nullptr;
         return &device_list.devices[idx];
     }
@@ -1243,7 +1243,7 @@ namespace xhci {
         return &device_list;
     }
 
-    const char* get_speed_name(UINT32 speed) {
+    const char* get_speed_name(uint32_t speed) {
         switch (speed) {
             case 0: return "Disconnected";
             case 1: return "Low Speed";

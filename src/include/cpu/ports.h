@@ -4,12 +4,12 @@
 #include "types.h"
 
 namespace port {
-    UINT8  byte_in  (UINT16 port);
-    void   byte_out (UINT16 port, UINT8 data);
-    UINT16 word_in  (UINT16 port);
-    void   word_out (UINT16 port, UINT16 data);
-    UINT32 dword_in (UINT16 port);
-    void   dword_out(UINT16 port, UINT32 data);
+    uint8_t  byte_in  (uint16_t port);
+    void   byte_out (uint16_t port, uint8_t data);
+    uint16_t word_in  (uint16_t port);
+    void   word_out (uint16_t port, uint16_t data);
+    uint32_t dword_in (uint16_t port);
+    void   dword_out(uint16_t port, uint32_t data);
 
     void   io_wait(void);
 }

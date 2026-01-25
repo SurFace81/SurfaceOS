@@ -6,7 +6,7 @@ namespace screen {
     static const unsigned int BBP = 4;
 
     void init(SYSTEM_SCREEN* Screen, BOOT_HEADER* Header) {
-        Screen->BufferAddress = (UINT8*)0x600000;
+        Screen->BufferAddress = (uint8_t*)0x600000;
         Screen->BufferSize = Header->FrameBufferSize;
         Screen->CursorPosX = 0;
         Screen->CursorPosY = 0;
@@ -41,7 +41,7 @@ namespace screen {
     }
 
     void clear(void) {
-        UINT32* bufferPtr = (UINT32*)Screen.BufferAddress;
+        uint32_t* bufferPtr = (uint32_t*)Screen.BufferAddress;
         for (unsigned int i = 0; i < Screen.BufferSize; i++) {
             bufferPtr[i] = 0x00000000;
         }
@@ -59,7 +59,7 @@ namespace screen {
         }
     }
 
-    void backspace(UINT32 posX, UINT32 posY) {
+    void backspace(uint32_t posX, uint32_t posY) {
         eraseChar(posX * Screen.SymbolSizeX, posY * Screen.SymbolSizeY);
     }
 
@@ -67,8 +67,8 @@ namespace screen {
         unsigned int lineHeight = Screen.SymbolSizeY;
         unsigned int bytesPerLine = Screen.PixelsPerScanLine * BBP;
         
-        UINT64* src = (UINT64*)Screen.BufferAddress + (lineHeight * bytesPerLine) / 8;
-        UINT64* dst = (UINT64*)Screen.BufferAddress;
+        uint64_t* src = (uint64_t*)Screen.BufferAddress + (lineHeight * bytesPerLine) / 8;
+        uint64_t* dst = (uint64_t*)Screen.BufferAddress;
         
         unsigned int totalTextLines = Screen.Height / Screen.SymbolSizeY;
         unsigned int copySize = ((totalTextLines - 1) * lineHeight * bytesPerLine) / 8;
@@ -78,7 +78,7 @@ namespace screen {
         }
         
         // Erase last line
-        UINT64* lastLine = (UINT64*)Screen.BufferAddress;
+        uint64_t* lastLine = (uint64_t*)Screen.BufferAddress;
         lastLine += ((totalTextLines - 1) * lineHeight * bytesPerLine) / 8;
         
         unsigned int lastLineSize = (lineHeight * bytesPerLine) / 8;
@@ -94,15 +94,15 @@ namespace screen {
 
         for (unsigned int y = 0; y < Screen.Height; y++) {
             for (unsigned int x = 0; x < Screen.Width; x++) {
-                UINT32* pixel = x + (y * Screen.PixelsPerScanLine) + (UINT32*)Screen.BufferAddress;
+                uint32_t* pixel = x + (y * Screen.PixelsPerScanLine) + (uint32_t*)Screen.BufferAddress;
                 if (*pixel != 0x00000000) {
-                    *pixel = (UINT32)Screen.TextColor;
+                    *pixel = (uint32_t)Screen.TextColor;
                 }
             }
         }
     }
 
-    void set_cursor_position(UINT32 x, UINT32 y) {
+    void set_cursor_position(uint32_t x, uint32_t y) {
         Screen.CursorPosX = x;
         Screen.CursorPosY = y;
     }
@@ -132,10 +132,10 @@ namespace screen {
         while (*s) putc(*s++);
     }
 
-    static void utoa(UINT64 v, char* b, UINT32 base) {
+    static void utoa(uint64_t v, char* b, uint32_t base) {
         char* p = b;
         do {
-            UINT8 d = v % base;
+            uint8_t d = v % base;
             *p++ = d < 10 ? '0' + d : 'A' + d - 10;
             v /= base;
         } while (v);
@@ -162,13 +162,13 @@ namespace screen {
                 case 's': write(__builtin_va_arg(a, char*)); break;
                 case 'u':
                 case 'i':
-                    utoa(ll ? __builtin_va_arg(a, UINT64)
-                            : __builtin_va_arg(a, UINT32), buf, 10);
+                    utoa(ll ? __builtin_va_arg(a, uint64_t)
+                            : __builtin_va_arg(a, uint32_t), buf, 10);
                     write(buf); break;
                 case 'x':
                     write("0x");
-                    utoa(ll ? __builtin_va_arg(a, UINT64)
-                            : __builtin_va_arg(a, UINT32), buf, 16);
+                    utoa(ll ? __builtin_va_arg(a, uint64_t)
+                            : __builtin_va_arg(a, uint32_t), buf, 16);
                     write(buf); break;
                 case '%': putc('%'); break;
             }

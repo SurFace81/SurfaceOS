@@ -7,13 +7,13 @@
 
 namespace memory {
     void init(void);
-    void setMemorySize(UINT64);
-    UINT64 getMemorySize(void);
-    bool memfree(UINT8* addr);
-    UINT8* memalloc();
-    void memset(UINT8* addr, char value, UINT64 size);
-    void memcpy(UINT8* src, UINT8* dst, UINT64 size);
-    void memalloc(UINT64 src, UINT64 dst, UINT64 size_in_bytes);
+    void setMemorySize(uint64_t);
+    uint64_t getMemorySize(void);
+    bool memfree(uint8_t* addr);
+    uint8_t* memalloc();
+    void memset(uint8_t* addr, char value, uint64_t size);
+    void memcpy(uint8_t* src, uint8_t* dst, uint64_t size);
+    void memalloc(uint64_t src, uint64_t dst, uint64_t size_in_bytes);
 }
 
 #endif  // MEMORY_H

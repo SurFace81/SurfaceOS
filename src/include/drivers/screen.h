@@ -5,21 +5,21 @@
 #include "../../kernel/kernel.h"
 
 typedef struct {
-    UINT32 Width;
-    UINT32 Height;
-    UINT32 TextColor;
+    uint32_t Width;
+    uint32_t Height;
+    uint32_t TextColor;
 
-    UINT8* BufferAddress;
-    UINT64 BufferSize;
-    UINT32 PixelsPerScanLine;
+    uint8_t* BufferAddress;
+    uint64_t BufferSize;
+    uint32_t PixelsPerScanLine;
 
-    UINT32 CursorPosX;
-    UINT32 CursorPosY;
+    uint32_t CursorPosX;
+    uint32_t CursorPosY;
 
     char* FontPtr;
-    UINT16 SymbolSizeX;
-    UINT16 SymbolSizeY;
-    UINT32 NumberOfSymbols;
+    uint16_t SymbolSizeX;
+    uint16_t SymbolSizeY;
+    uint32_t NumberOfSymbols;
 } SYSTEM_SCREEN;
 
 enum Colors {
@@ -45,11 +45,11 @@ extern SYSTEM_SCREEN Screen;
 namespace screen {
     void init(SYSTEM_SCREEN* Screen, BOOT_HEADER* Header);
     void clear(void);
-    void backspace(UINT32 posX, UINT32 posY);
+    void backspace(uint32_t posX, uint32_t posY);
     void scroll_up(void);
     void putChar(char chr);
     void set_text_color(Colors);
-    void set_cursor_position(UINT32 x, UINT32 y);
+    void set_cursor_position(uint32_t x, uint32_t y);
     void printf(const char* fmt, ...);
 }
 

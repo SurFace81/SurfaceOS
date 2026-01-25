@@ -7,9 +7,9 @@
 #define ALLOCATOR_MAX_BLOCKS 9216     // ~9Mb
 
 namespace memory {
-    void buddy_init(UINT8* start_addr);
-    UINT8* buddy_alloc(void);
-    bool buddy_free(UINT8* addr);
+    void buddy_init(uint8_t* start_addr);
+    uint8_t* buddy_alloc(void);
+    bool buddy_free(uint8_t* addr);
 }
 
 #endif

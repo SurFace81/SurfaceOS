@@ -1,48 +1,48 @@
 #include "../../include/cpu/paging.h"
 
 namespace paging {
-    UINT64 *PageTableAddr = 0x00;
-    UINT64 flags = PAGE_PRESENT | PAGE_WRITE;
+    uint64_t *PageTableAddr = 0x00;
+    uint64_t flags = PAGE_PRESENT | PAGE_WRITE;
 
-    void init(UINT64 *TableAddr)
+    void init(uint64_t *TableAddr)
     {
-        memory::memset((UINT8*)TableAddr, 0x00, 1 + 32 + 16384);
+        memory::memset((uint8_t*)TableAddr, 0x00, 1 + 32 + 16384);
 
         // PML4 table
-        UINT64 *PML4 = (UINT64*)TableAddr;
-        *PML4 = ((UINT64)PML4 + 0x1000) | flags;
+        uint64_t *PML4 = (uint64_t*)TableAddr;
+        *PML4 = ((uint64_t)PML4 + 0x1000) | flags;
 
         // PDP table
-        UINT64 *PDP = (UINT64*)((UINT64)PML4 + 0x1000);
-        for (UINT64 i = 0; i < 32; i++)
+        uint64_t *PDP = (uint64_t*)((uint64_t)PML4 + 0x1000);
+        for (uint64_t i = 0; i < 32; i++)
         {
-            *(PDP + i) = (((UINT64)PDP + 0x1000) + i * 0x1000) | flags;
+            *(PDP + i) = (((uint64_t)PDP + 0x1000) + i * 0x1000) | flags;
         }
 
         // PD tables
-        UINT64 *PD = (UINT64 *)((UINT64)PDP + 0x1000);
+        uint64_t *PD = (uint64_t *)((uint64_t)PDP + 0x1000);
         PageTableAddr = PD;
-        for (UINT64 i = 0; i < 16384; i++)
+        for (uint64_t i = 0; i < 16384; i++)
         {
-            *(PD + i) = ((UINT64)(0x0000 + i * 0x200000)) | flags | PAGE_SIZE;
+            *(PD + i) = ((uint64_t)(0x0000 + i * 0x200000)) | flags | PAGE_SIZE;
         }
 
         asm volatile("mov %0, %%cr3" :: "r"(PML4) : "memory");
     }
 
-    void allocate_pages(UINT64 virt, UINT64 phys, UINT64 size)
+    void allocate_pages(uint64_t virt, uint64_t phys, uint64_t size)
     {
-        UINT64 offset = virt / PAGE_SIZE_BYTES;
-        for (UINT64 i = 0; i < size; i++)
+        uint64_t offset = virt / PAGE_SIZE_BYTES;
+        for (uint64_t i = 0; i < size; i++)
         {
-            *(PageTableAddr + offset + i) = ((UINT64)(phys + i * PAGE_SIZE_BYTES)) | flags | PAGE_SIZE;
+            *(PageTableAddr + offset + i) = ((uint64_t)(phys + i * PAGE_SIZE_BYTES)) | flags | PAGE_SIZE;
         }
 
         asm volatile("mov %%cr3, %%rax" ::: "rax", "memory");
         asm volatile("mov %%rax, %%cr3" ::: "memory");
     }
 
-    UINT64 get_phys_addr(UINT64 virt)
+    uint64_t get_phys_addr(uint64_t virt)
     {
         // Now: virt = phys
         return virt;

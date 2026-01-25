@@ -1,26 +1,26 @@
 #ifndef TYPES_H
 #define TYPES_H
 
-typedef unsigned long long      UINT64;
-typedef          long long      SINT64;
+typedef unsigned long long      uint64_t;
+typedef          long long      sint64_t;
 
-typedef unsigned int            UINT32;
-typedef          int            SINT32;
+typedef unsigned int            uint32_t;
+typedef          int            sint32_t;
 
-typedef unsigned short          UINT16;
-typedef          short          SINT16;
+typedef unsigned short          uint16_t;
+typedef          short          sint16_t;
 
-typedef unsigned char           UINT8;
-typedef          char           SINT8;
+typedef unsigned char           uint8_t;
+typedef          char           sint8_t;
 
 #define NULL (void*)0
 
 #if defined(__x86_64__) || defined(_M_X64)  // x86_64
-    typedef UINT64 uintptr_t;
-    typedef UINT64 size_t;
+    typedef uint64_t uintptr_t;
+    typedef uint64_t size_t;
 #else  // x86
-    typedef UINT32 uintptr_t;
-    typedef UINT32 size_t;
+    typedef uint32_t uintptr_t;
+    typedef uint32_t size_t;
 #endif
 
 #ifndef __cplusplus

@@ -1,7 +1,7 @@
 #include "../../include/cpu/cpuid.h"
 
 namespace cpuid {
-    static void cpuid(UINT32 function, UINT32* eax, UINT32* ebx, UINT32* ecx, UINT32* edx) {
+    static void cpuid(uint32_t function, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
         asm volatile(
             "cpuid"
             : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
@@ -10,7 +10,7 @@ namespace cpuid {
     }
 
     void get_cpu_name(char* cpu_name) {
-        UINT32 eax, ebx, ecx, edx;
+        uint32_t eax, ebx, ecx, edx;
     
         // Проверяем, поддерживаются ли расширенные функции CPUID
         cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
@@ -32,10 +32,10 @@ namespace cpuid {
             cpuid(0x80000002 + part, &eax, &ebx, &ecx, &edx);
             
             // Записываем 16 байт из четырёх регистров
-            *((UINT32*)&cpu_name[part * 16 + 0]) = eax;
-            *((UINT32*)&cpu_name[part * 16 + 4]) = ebx;
-            *((UINT32*)&cpu_name[part * 16 + 8]) = ecx;
-            *((UINT32*)&cpu_name[part * 16 + 12]) = edx;
+            *((uint32_t*)&cpu_name[part * 16 + 0]) = eax;
+            *((uint32_t*)&cpu_name[part * 16 + 4]) = ebx;
+            *((uint32_t*)&cpu_name[part * 16 + 8]) = ecx;
+            *((uint32_t*)&cpu_name[part * 16 + 12]) = edx;
         }
         cpu_name[48] = '\0';
         
@@ -55,8 +55,8 @@ namespace cpuid {
         }
     }
 
-    void get_cpu_frequency(UINT32* base_freq_mhz, UINT32* max_freq_mhz, UINT32* bus_freq_mhz) {
-        UINT32 eax, ebx, ecx, edx;
+    void get_cpu_frequency(uint32_t* base_freq_mhz, uint32_t* max_freq_mhz, uint32_t* bus_freq_mhz) {
+        uint32_t eax, ebx, ecx, edx;
         
         *base_freq_mhz = 0;
         *max_freq_mhz = 0;
@@ -74,26 +74,26 @@ namespace cpuid {
         *bus_freq_mhz = ecx;
     }
 
-    UINT32 get_base_freq(void) {
-        UINT32 base_freq, max_freq, bus_freq;
+    uint32_t get_base_freq(void) {
+        uint32_t base_freq, max_freq, bus_freq;
         get_cpu_frequency(&base_freq, &max_freq, &bus_freq);
         return base_freq;
     }
 
-    UINT32 get_max_freq(void) {
-        UINT32 base_freq, max_freq, bus_freq;
+    uint32_t get_max_freq(void) {
+        uint32_t base_freq, max_freq, bus_freq;
         get_cpu_frequency(&base_freq, &max_freq, &bus_freq);
         return max_freq;
     }
 
-    UINT32 get_bus_freq(void) {
-        UINT32 base_freq, max_freq, bus_freq;
+    uint32_t get_bus_freq(void) {
+        uint32_t base_freq, max_freq, bus_freq;
         get_cpu_frequency(&base_freq, &max_freq, &bus_freq);
         return bus_freq;
     }
 
     void get_cpu_features(CPUFeatures* features) {
-        UINT32 eax, ebx, ecx, edx;
+        uint32_t eax, ebx, ecx, edx;
         *features = {};
         
         cpuid(0x01, &eax, &ebx, &ecx, &edx);
@@ -189,13 +189,13 @@ namespace cpuid {
     }
 
     void get_cache_info(CacheInfo* cache) {
-        UINT32 eax, ebx, ecx, edx;
+        uint32_t eax, ebx, ecx, edx;
         *cache = {};
 
         cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
         if (eax < 0x04) return;
 
-        for (UINT32 i = 0; i < 16; i++) {
+        for (uint32_t i = 0; i < 16; i++) {
             ecx = i;
             asm volatile(
                 "cpuid"
@@ -203,15 +203,15 @@ namespace cpuid {
                 : "a"(0x04), "c"(i)
             );
 
-            UINT32 cache_type = eax & 0x1F;
+            uint32_t cache_type = eax & 0x1F;
             if (cache_type == 0) break;
 
-            UINT32 cache_level = (eax >> 5) & 0x7;
-            UINT32 ways = ((ebx >> 22) & 0x3FF) + 1;
-            UINT32 partitions = ((ebx >> 12) & 0x3FF) + 1;
-            UINT32 line_size = (ebx & 0xFFF) + 1;
-            UINT32 sets = ecx + 1;
-            UINT32 size = (ways * partitions * line_size * sets) / 1024;
+            uint32_t cache_level = (eax >> 5) & 0x7;
+            uint32_t ways = ((ebx >> 22) & 0x3FF) + 1;
+            uint32_t partitions = ((ebx >> 12) & 0x3FF) + 1;
+            uint32_t line_size = (ebx & 0xFFF) + 1;
+            uint32_t sets = ecx + 1;
+            uint32_t size = (ways * partitions * line_size * sets) / 1024;
 
             if (cache_level == 1) {
                 if (cache_type == 1) {
@@ -236,21 +236,21 @@ namespace cpuid {
     }
     
     void get_cpu_topology(CPUTopology* topology) {
-        UINT32 eax, ebx, ecx, edx;
-        UINT32 threads_per_core = 1;
-        UINT32 cores_per_package = 1;
+        uint32_t eax, ebx, ecx, edx;
+        uint32_t threads_per_core = 1;
+        uint32_t cores_per_package = 1;
 
-        for (UINT32 level = 0; level < 4; ++level) {
+        for (uint32_t level = 0; level < 4; ++level) {
             asm volatile(
                 "cpuid"
                 : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
                 : "a"(0x1F), "c"(level)
             );
 
-            UINT32 level_type = (ecx >> 8) & 0xFF;
+            uint32_t level_type = (ecx >> 8) & 0xFF;
             if (level_type == 0) break;
 
-            UINT32 processors_at_level = ebx & 0xFFFF;
+            uint32_t processors_at_level = ebx & 0xFFFF;
 
             if (level_type == 1) {
                 threads_per_core = processors_at_level;

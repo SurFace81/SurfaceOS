@@ -10,7 +10,7 @@ namespace irq {
 
     // Remap the PIC controllers
     static void pic_remap(int offset1, int offset2) {
-        UINT8 a1, a2;
+        uint8_t a1, a2;
         
         // Save masks
         a1 = port::byte_in(PIC1_DATA);
@@ -48,7 +48,7 @@ namespace irq {
     }
 
     // Send End-Of-Interrupt signal
-    static void pic_send_eoi(UINT8 irq) {
+    static void pic_send_eoi(uint8_t irq) {
         if (irq >= 8) {
             port::byte_out(PIC2_COMMAND, PIC_EOI);
         }
@@ -56,7 +56,7 @@ namespace irq {
     }
 
     // Check if IRQ is spurious
-    static int is_spurious_irq(UINT8 irq) {
+    static int is_spurious_irq(uint8_t irq) {
         if (irq == 7) {
             port::byte_out(PIC1_COMMAND, 0x0B);
             return !(port::byte_in(PIC1_COMMAND) & 0x80);
@@ -71,22 +71,22 @@ namespace irq {
         asm volatile ("cli");
         pic_remap(IRQ_BASE, IRQ_BASE + 8);
         
-        idt::set_entry(32, (UINT64)irq0,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(33, (UINT64)irq1,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(34, (UINT64)irq2,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(35, (UINT64)irq3,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(36, (UINT64)irq4,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(37, (UINT64)irq5,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(38, (UINT64)irq6,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(39, (UINT64)irq7,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(40, (UINT64)irq8,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(41, (UINT64)irq9,  IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(42, (UINT64)irq10, IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(43, (UINT64)irq11, IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(44, (UINT64)irq12, IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(45, (UINT64)irq13, IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(46, (UINT64)irq14, IDT_FLAG_INTERRUPT_GATE);
-        idt::set_entry(47, (UINT64)irq15, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(32, (uint64_t)irq0,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(33, (uint64_t)irq1,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(34, (uint64_t)irq2,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(35, (uint64_t)irq3,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(36, (uint64_t)irq4,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(37, (uint64_t)irq5,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(38, (uint64_t)irq6,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(39, (uint64_t)irq7,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(40, (uint64_t)irq8,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(41, (uint64_t)irq9,  IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(42, (uint64_t)irq10, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(43, (uint64_t)irq11, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(44, (uint64_t)irq12, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(45, (uint64_t)irq13, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(46, (uint64_t)irq14, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
         
         mask_all();
 
@@ -108,8 +108,8 @@ namespace irq {
     }
 
     void enable(int irq) {
-        UINT16 port;
-        UINT8 value;
+        uint16_t port;
+        uint8_t value;
         
         if (irq < 8) {
             port = PIC1_DATA;
@@ -123,8 +123,8 @@ namespace irq {
     }
 
     void disable(int irq) {
-        UINT16 port;
-        UINT8 value;
+        uint16_t port;
+        uint8_t value;
         
         if (irq < 8) {
             port = PIC1_DATA;
@@ -151,7 +151,7 @@ namespace irq {
 
 // Common IRQ handler
 void irq_handler(struct interrupt_frame *frame) {
-    UINT8 irq_line = frame->int_no - IRQ_BASE;
+    uint8_t irq_line = frame->int_no - IRQ_BASE;
     
     if (irq::is_spurious_irq(irq_line)) {
         if (irq_line == 15) {
