@@ -3,32 +3,6 @@
 
 #include "types.h"
 
-struct CPUFeatures {
-    // Основные флаги из leaf 0x01 (EDX)
-    bool fpu, pae;
-    bool apic, mtrr, pge, cmov, pat;
-    bool clflush, dts, acpi, mmx, fxsr, sse;
-    bool sse2, pbe;
-    
-    // Дополнительные флаги из leaf 0x01 (ECX)
-    bool sse3, pclmulqdq, monitor, vmx, smx;
-    bool ssse3, fma, cx16, pcid;
-    bool sse4_1, sse4_2, x2apic, movbe, popcnt, tsc_deadline, aes;
-    bool xsave, osxsave, avx, rdrnd;
-    
-    // Расширенные флаги из leaf 0x07 (EBX)
-    bool fsgsbase, tsc_adjust, bmi1, avx2, fdp_excptn_only, smep;
-    bool bmi2, erms, invpcid, pqm, fpcsds, pqe;
-    bool avx512f, avx512dq, rdseed, adx, smap, avx512ifma, pcommit, clflushopt;
-    bool clwb, sha, avx512bw, avx512vl;
-    
-    // AMD расширенные флаги из leaf 0x80000001 (EDX)
-    bool syscall, mp, nx, rdtscp, lm;
-    
-    // AMD расширенные флаги из leaf 0x80000001 (ECX)
-    bool lahf_lm,abm, sse4a, misalignsse;
-    bool nodeid, topoext, perfctr_core, perfctr_nb, dbx;
-};
 struct CacheInfo {
     uint32_t l1d_size;      // L1 data cache в KB
     uint32_t l1i_size;      // L1 instruction cache в KB
@@ -57,7 +31,6 @@ namespace cpuid {
     uint32_t get_base_freq(void);
     uint32_t get_max_freq(void);
     uint32_t get_bus_freq(void);
-    void get_cpu_features(CPUFeatures* features);
     void get_cache_info(CacheInfo* cache);
     void get_cpu_topology(CPUTopology* topology);
 }
