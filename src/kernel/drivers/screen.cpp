@@ -1,4 +1,5 @@
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/uart.h"
 
 SYSTEM_SCREEN Screen;
 
@@ -23,8 +24,8 @@ namespace screen {
     }
 
     void putChar(char chr) {
-        unsigned int offsetX = Screen.CursorPosX;
-        unsigned int offsetY = Screen.CursorPosY;
+        unsigned int offsetX = Screen.CursorPosX * Screen.SymbolSizeX;
+        unsigned int offsetY = Screen.CursorPosY * Screen.SymbolSizeY;
 
         char* charPtr = Screen.FontPtr + chr * Screen.SymbolSizeY;
 
@@ -70,8 +71,8 @@ namespace screen {
         uint64_t* src = (uint64_t*)Screen.BufferAddress + (lineHeight * bytesPerLine) / 8;
         uint64_t* dst = (uint64_t*)Screen.BufferAddress;
         
-        unsigned int totalTextLines = Screen.Height / Screen.SymbolSizeY;
-        unsigned int copySize = ((totalTextLines - 1) * lineHeight * bytesPerLine) / 8;
+        unsigned int rows = Screen.Height / Screen.SymbolSizeY;
+        unsigned int copySize = ((rows - 1) * lineHeight * bytesPerLine) / 8;
         
         for (unsigned int i = 0; i < copySize; i++) {
             dst[i] = src[i];
@@ -79,14 +80,14 @@ namespace screen {
         
         // Erase last line
         uint64_t* lastLine = (uint64_t*)Screen.BufferAddress;
-        lastLine += ((totalTextLines - 1) * lineHeight * bytesPerLine) / 8;
+        lastLine += ((rows - 1) * lineHeight * bytesPerLine) / 8;
         
         unsigned int lastLineSize = (lineHeight * bytesPerLine) / 8;
         for (unsigned int i = 0; i < lastLineSize; i++) {
             lastLine[i] = 0;
         }
 
-        set_cursor_position(0, (totalTextLines - 1) * Screen.SymbolSizeY);
+        set_cursor_position(0, rows - 1);
     }
 
     void set_text_color(Colors newColor) {
@@ -109,23 +110,26 @@ namespace screen {
 
     void putc(char c) {
         if (c == '\n') {
-            Screen.CursorPosX = 0;
-            Screen.CursorPosY += Screen.SymbolSizeY;
+            if (Screen.CursorPosY + 1 >= Screen.Height / Screen.SymbolSizeY) {
+                scroll_up();
+            } else Screen.CursorPosY += 1;
         } else if (c == '\b') {
-            if (Screen.CursorPosX) Screen.CursorPosX -= Screen.SymbolSizeX;
-            backspace(Screen.CursorPosX / Screen.SymbolSizeX,
-                    Screen.CursorPosY / Screen.SymbolSizeY);
+            if (Screen.CursorPosX > 0) Screen.CursorPosX -= 1;
+            backspace(Screen.CursorPosX, Screen.CursorPosY);
+        } else if (c == '\t') {
+            Screen.CursorPosX += 4;
+        } else if (c == '\r') {
+            Screen.CursorPosX = 0;
         } else {
             putChar(c);
-            Screen.CursorPosX += Screen.SymbolSizeX;
-            if (Screen.CursorPosX + Screen.SymbolSizeX > Screen.Width) {
+            Screen.CursorPosX += 1;
+            if (Screen.CursorPosX >= (Screen.Width / Screen.SymbolSizeX)) {
                 Screen.CursorPosX = 0;
-                Screen.CursorPosY += Screen.SymbolSizeY;
+                if (Screen.CursorPosY + 1 >= Screen.Height / Screen.SymbolSizeY) {
+                    scroll_up();
+                } else Screen.CursorPosY += 1;
             }
         }
-
-        if (Screen.CursorPosY + Screen.SymbolSizeY > Screen.Height)
-            scroll_up();
     }
 
     void write(const char* s) {

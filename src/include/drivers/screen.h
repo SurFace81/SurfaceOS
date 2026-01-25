@@ -48,6 +48,7 @@ namespace screen {
     void backspace(uint32_t posX, uint32_t posY);
     void scroll_up(void);
     void putChar(char chr);
+    void write(const char* s);
     void set_text_color(Colors);
     void set_cursor_position(uint32_t x, uint32_t y);
     void printf(const char* fmt, ...);

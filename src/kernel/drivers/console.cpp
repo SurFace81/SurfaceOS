@@ -61,12 +61,6 @@ namespace console {
             print("\n\r> ");
             cursor_x = 2;
             cursor_y += 1;
-        // } else if (e.KeyCode == Keys::ARROW_DOWN) {
-        //     if (cursor_y < max_rows - 1)
-        //         cursor_y += 1;
-        // } else if (e.KeyCode == Keys::ARROW_UP) {
-        //     if (cursor_y > 0)
-        //         cursor_y -= 1;
         // } else if (e.KeyCode == Keys::ARROW_LEFT) {
         //     if (cursor_x > 0)
         //         cursor_x -= 1;
@@ -96,7 +90,7 @@ namespace console {
             cursor_y = max_rows - 2;
         }
 
-        screen::set_cursor_position(cursor_x * Screen.SymbolSizeX, cursor_y * Screen.SymbolSizeY);
+        screen::set_cursor_position(cursor_x, cursor_y);
     }
 } // namespace
 
