@@ -3,8 +3,19 @@
 
 SYSTEM_SCREEN Screen;
 
+namespace {
+    static inline uint32_t cols() {
+        return Screen.Width / Screen.SymbolSizeX;
+    }
+
+    static inline uint32_t rows() {
+        return Screen.Height / Screen.SymbolSizeY;
+    }
+}
+
 namespace screen {
     static const unsigned int BBP = 4;
+    static uint8_t columnState[320] = {0}; // Maximum: 2560 pixels horizontal
 
     void init(SYSTEM_SCREEN* Screen, BOOT_HEADER* Header) {
         Screen->BufferAddress = (uint8_t*)0x600000;
@@ -65,29 +76,28 @@ namespace screen {
     }
 
     void scroll_up(void) {
-        unsigned int lineHeight = Screen.SymbolSizeY;
-        unsigned int bytesPerLine = Screen.PixelsPerScanLine * BBP;
+        const uint32_t lineHeight = Screen.SymbolSizeY;
+        const uint32_t bytesPerLine = Screen.PixelsPerScanLine * BBP;
         
         uint64_t* src = (uint64_t*)Screen.BufferAddress + (lineHeight * bytesPerLine) / 8;
         uint64_t* dst = (uint64_t*)Screen.BufferAddress;
         
-        unsigned int rows = Screen.Height / Screen.SymbolSizeY;
-        unsigned int copySize = ((rows - 1) * lineHeight * bytesPerLine) / 8;
+        const uint32_t copySize = ((rows() - 1) * lineHeight * bytesPerLine) / 8;
         
-        for (unsigned int i = 0; i < copySize; i++) {
+        for (uint32_t i = 0; i < copySize; i++) {
             dst[i] = src[i];
         }
         
         // Erase last line
         uint64_t* lastLine = (uint64_t*)Screen.BufferAddress;
-        lastLine += ((rows - 1) * lineHeight * bytesPerLine) / 8;
+        lastLine += ((rows() - 1) * lineHeight * bytesPerLine) / 8;
         
-        unsigned int lastLineSize = (lineHeight * bytesPerLine) / 8;
-        for (unsigned int i = 0; i < lastLineSize; i++) {
+        const uint32_t lastLineSize = (lineHeight * bytesPerLine) / 8;
+        for (uint32_t i = 0; i < lastLineSize; i++) {
             lastLine[i] = 0;
         }
 
-        set_cursor_position(0, rows - 1);
+        set_cursor_position(0, rows() - 1);
     }
 
     void set_text_color(Colors newColor) {
@@ -109,26 +119,53 @@ namespace screen {
     }
 
     void putc(char c) {
-        if (c == '\n') {
-            if (Screen.CursorPosY + 1 >= Screen.Height / Screen.SymbolSizeY) {
-                scroll_up();
-            } else Screen.CursorPosY += 1;
-        } else if (c == '\b') {
-            if (Screen.CursorPosX > 0) Screen.CursorPosX -= 1;
-            backspace(Screen.CursorPosX, Screen.CursorPosY);
-        } else if (c == '\t') {
-            Screen.CursorPosX += 4;
-        } else if (c == '\r') {
-            Screen.CursorPosX = 0;
-        } else {
-            putChar(c);
-            Screen.CursorPosX += 1;
-            if (Screen.CursorPosX >= (Screen.Width / Screen.SymbolSizeX)) {
-                Screen.CursorPosX = 0;
-                if (Screen.CursorPosY + 1 >= Screen.Height / Screen.SymbolSizeY) {
+        switch (c) {
+            case '\n':
+                for (uint32_t i = 0; i < cols(); i++) {
+                    if (columnState[i] > 0) {
+                        columnState[i] -= 1;
+                    }
+                }
+
+                if (Screen.CursorPosY + 1 >= rows()) {
                     scroll_up();
-                } else Screen.CursorPosY += 1;
-            }
+                } else {
+                    Screen.CursorPosY += 1;
+                }
+                break;
+
+            case '\b':
+                if (Screen.CursorPosX > 0) {
+                    Screen.CursorPosX -= 1;
+                }
+                backspace(Screen.CursorPosX, Screen.CursorPosY);
+                break;
+
+            case '\t':
+                Screen.CursorPosX += 4;
+                break;
+
+            case '\r':
+                Screen.CursorPosX = 0;
+                break;
+
+            default:
+                putChar(c);
+
+                if (Screen.CursorPosX < cols()) {
+                    columnState[Screen.CursorPosX] = rows();
+                }
+
+                Screen.CursorPosX += 1;
+                if (Screen.CursorPosX >= cols()) {
+                    Screen.CursorPosX = 0;
+                    if (Screen.CursorPosY + 1 >= rows()) {
+                        scroll_up();
+                    } else {
+                        Screen.CursorPosY += 1;
+                    }
+                }
+                break;
         }
     }
 
