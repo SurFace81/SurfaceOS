@@ -1,271 +1,194 @@
 #include "../../include/drivers/uart.h"
-
-namespace uart_legacy {
-    uint16_t port = COM1; // default
-
-    int init(uint16_t _port = COM1) {
-        port = _port;
-
-        port::byte_out(port + 1, 0x00);  // Disable interrupts
-        port::byte_out(port + 3, 0x80);  // Enable DLAB (set baud rate divisor)
-        port::byte_out(port + 0, 0x03);  // Set divisor to 3 (low byte, 38400 baud)
-        port::byte_out(port + 1, 0x00);  // High byte
-        port::byte_out(port + 3, 0x03);  // 8 bits, no parity, one stop bit
-        port::byte_out(port + 2, 0xC7);  // Enable FIFO, clear them, with 14-byte threshold
-        port::byte_out(port + 4, 0x0B);  // IRQs enabled, RTS/DSR set
-        port::byte_out(port + 4, 0x1E);  // Set in loopback mode, test the serial chip
-        port::byte_out(port + 0, 0xAE);  // Test serial chip (send byte 0xAE and check if serial returns same byte)
-
-        if (port::byte_in(port + 0) != 0xAE){
-            return 1;
-        }
-
-        port::byte_out(port + 4, 0x0F);
-        write("\n");
-
-        return 0;
-    }
-
-    void _send(char c) {
-        while ((port::byte_in(port + 5) & 0x20) == 0);
-        return port::byte_out(port, c);
-    }
-
-    void write(const char *str) {
-        while (*str) {
-            uart_legacy::_send(*str++);
-        }
-    }
-
-    char _receive() {
-        return port::byte_in(port + 5) & 0x01;
-    }
-
-    char read() {
-        while (uart_legacy::_receive() == 0);
-        return port::byte_in(port);
-    }
-    
-} // namespace uart_legacy
+#include "../../include/cpu/paging.h"
+#include "../../include/drivers/screen.h"
 
 namespace uart {
-    
-    enum Backend { 
-        NONE, 
-        PCI_IO, 
-        PCI_MMIO, 
-        LEGACY 
-    };
+
+    enum Backend { NONE, PCI_IO, PCI_MMIO };
     static Backend backend = NONE;
+    static bool initialized = false;
+
+    static uint16_t io_base = 0;
+    static volatile uint8_t* mmio_base = nullptr;
+    static uint32_t reg_stride = 1;
 
     enum Reg : uint8_t {
-        DATA                = 0x00, // THR / RBR / DLL
-        INTERRUPT_ENABLE    = 0x01, // IER / DLM
-        INTERRUPT_ID_FIFO   = 0x02, // IIR (R) / FCR (W)
-        LINE_CONTROL        = 0x03, // LCR
-        MODEM_CONTROL       = 0x04, // MCR
-        LINE_STATUS         = 0x05, // LSR
-        MODEM_STATUS        = 0x06, // MSR
-        SCRATCH             = 0x07  // SCR
-    };    
+        THR = 0, IER = 1, FCR = 2, LCR = 3,
+        MCR = 4, LSR = 5, MSR = 6, SCR = 7,
+    };
 
-    static uint16_t io = 0;
-    static volatile uint8_t* mmio = 0;
-
-    static inline void _out_byte(uint8_t r, uint8_t v) {
-        if (backend == PCI_IO) {
-            port::byte_out(io + r, v);
-        }
-        else {
-            mmio[r] = v;
-        }
+    static inline void reg_write(uint8_t reg, uint8_t val) {
+        if (backend == PCI_IO)
+            port::byte_out(io_base + reg, val);
+        else
+            mmio_base[reg * reg_stride] = val;
     }
 
-    static inline uint8_t _in_byte(uint8_t r) {
-        return (backend == PCI_IO)
-            ? port::byte_in(io + r)
-            : mmio[r];
+    static inline uint8_t reg_read(uint8_t reg) {
+        if (backend == PCI_IO)
+            return port::byte_in(io_base + reg);
+        else
+            return mmio_base[reg * reg_stride];
     }
 
-    static void _hw_init() {
-        _out_byte(INTERRUPT_ENABLE, 0x00);
-        _out_byte(LINE_CONTROL,     0x80); // DLAB = 1
-        _out_byte(DATA,             0x03); // DLL
-        _out_byte(INTERRUPT_ENABLE, 0x00); // DLM
-        _out_byte(LINE_CONTROL,     0x03); // 8N1, DLAB = 0
-        _out_byte(INTERRUPT_ID_FIFO,0xC7); // FIFO enable/reset
-        _out_byte(MODEM_CONTROL,    0x0B); // RTS/DTR/OUT2
+    static void pci_enable_device(PCIDevice* dev) {
+        uint32_t addr = (1U << 31)
+                      | ((uint32_t)dev->bus << 16)
+                      | ((uint32_t)dev->device << 11)
+                      | ((uint32_t)dev->function << 8)
+                      | (PCI_COMMAND & 0xFC);
+        port::dword_out(PCI_CONFIG_ADDRESS, addr);
+        uint32_t val = port::dword_in(PCI_CONFIG_DATA);
+        uint16_t cmd = val & 0xFFFF;
+        cmd |= (1 << 0) | (1 << 1) | (1 << 2);
+        val = (val & 0xFFFF0000) | cmd;
+        port::dword_out(PCI_CONFIG_ADDRESS, addr);
+        port::dword_out(PCI_CONFIG_DATA, val);
     }
 
-    static bool _init_pci() {
+    static bool init_pci() {
         for (uint32_t i = 0; i < pci::device_count(); i++) {
             PCIDevice* d = pci::get_by_id(i);
             if (!d || !d->valid) continue;
-            if (d->class_code != 0x07 || d->subclass != 0x00 || d->prog_if < 0x02) continue;
+            if (d->class_code != 0x07 || d->subclass != 0x00) continue;
 
-            uint32_t bar = d->bar[0];
-            if (!bar) continue;
+            uint32_t bar0 = d->bar[0];
+            if (!bar0) continue;
 
-            if (bar & 1) {
-                io = bar & ~0x3;
+            pci_enable_device(d);
+
+            if (bar0 & 1) {
+                io_base = bar0 & ~0x3;
+                reg_stride = 1;
                 backend = PCI_IO;
             } else {
-                mmio = (volatile uint8_t*)(bar & ~0xF);
+                uint8_t bar_type = (bar0 >> 1) & 0x3;
+                uint64_t base_addr = 0;
+
+                if (bar_type == 0x00)
+                    base_addr = bar0 & 0xFFFFFFF0ULL;
+                else if (bar_type == 0x02)
+                    base_addr = ((uint64_t)d->bar[1] << 32) | (bar0 & 0xFFFFFFF0ULL);
+                else
+                    continue;
+
+                if (base_addr == 0) continue;
+
+                uint64_t page_base = base_addr & ~(0x200000ULL - 1);
+                paging::allocate_pages(page_base, page_base, 1);
+
+                mmio_base = (volatile uint8_t*)base_addr;
+                reg_stride = 4;
                 backend = PCI_MMIO;
             }
-
-            _hw_init();
             return true;
         }
         return false;
     }
 
-    int init() {
-        if (_init_pci()) return 0;
+    static void hw_init() {
+        reg_write(IER, 0x00);
+        reg_write(LCR, 0x80);
+        reg_write(THR, 0x01);
+        reg_write(IER, 0x00);
+        reg_write(LCR, 0x03);
+        reg_write(FCR, 0xC7);
+        reg_write(MCR, 0x0B);
+    }
 
-        uart_legacy::init(COM1);    // Hardcoded
-        backend = LEGACY;
+    int init() {
+        if (!init_pci()) {
+            return 1;
+        }
+
+        hw_init();
+        initialized = true;
+
+        reg_write(SCR, 0x55);
+        uint8_t test = reg_read(SCR);
+
         return 0;
     }
 
-    void _send(char c) {
-        if (backend == LEGACY) {
-            uart_legacy::_send(c);
-            return;
-        }
-        while (!(_in_byte(LINE_STATUS) & 0x20));
-        _out_byte(DATA, c);
+    static void send_char(char c) {
+        if (!initialized) return;
+        while (!(reg_read(LSR) & 0x20));
+        reg_write(THR, c);
     }
 
-    void _write(const char* str) {
-        while (*str) {
-            uart::_send(*str++);
-        }
+    static void write_str(const char* str) {
+        while (*str) send_char(*str++);
     }
 
-    char _receive() {
-        if (backend == LEGACY) {
-            return uart_legacy::_receive();
-        }
-        return _in_byte(LINE_STATUS) & 0x01;
-    }
+    void listen_loop() {
+        if (!initialized) return;
+        printf("UART listening...\n");
+        screen::printf("UART listening...\n\r");
 
-    char read() {
-        while (_receive() == 0);
-
-        if (backend == LEGACY) {
-            return port::byte_in(uart_legacy::port + DATA);
-        }
-        return _in_byte(DATA);
-    }
-
-    void log_uint64_hex(uint64_t number) {
-        char buffer[19];
-        buffer[0] = '0';
-        buffer[1] = 'x';
-        buffer[18] = '\0';
-
-        for (int i = 17; i >= 2; i--) {
-            uint8_t nibble = number & 0xF;
-            buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
-            number >>= 4;
-        }
-
-        uart::_write(buffer);
-    }
-
-    void log_uint64_dec(uint64_t number) {
-        char buffer[20];
-        int index = 19;
-        buffer[index--] = '\0';
-
-        if (number == 0) {
-            buffer[index--] = '0';
-        } else {
-            while (number > 0) {
-                buffer[index--] = '0' + (number % 10);
-                number /= 10;
+        while (1) {
+            if (reg_read(LSR) & 0x01) {
+                char c = reg_read(THR);
+                char buf[2] = {c, '\0'};
+                screen::write(buf);
+                printf("%c", c);
             }
         }
-
-        uart::_write(&buffer[index + 1]);
     }
 
-    void log_uint32_hex(uint32_t number) {
-        char buffer[11];
-        buffer[0] = '0';
-        buffer[1] = 'x';
-        buffer[10] = '\0';
-
-        for (int i = 9; i >= 2; i--) {
-            uint8_t nibble = number & 0xF;
-            buffer[i] = (nibble < 10) ? ('0' + nibble) : ('A' + (nibble - 10));
-            number >>= 4;
-        }
-
-        uart::_write(buffer);
+    static void log_uint64_hex(uint64_t n) {
+        char b[19]; b[0]='0'; b[1]='x'; b[18]='\0';
+        for (int i=17; i>=2; i--) { b[i]="0123456789ABCDEF"[n&0xF]; n>>=4; }
+        write_str(b);
     }
 
-    void log_uint32_dec(uint32_t number) {
-        char buffer[11];
-        int index = 10;
-        buffer[index--] = '\0';
+    static void log_uint32_hex(uint32_t n) {
+        char b[11]; b[0]='0'; b[1]='x'; b[10]='\0';
+        for (int i=9; i>=2; i--) { b[i]="0123456789ABCDEF"[n&0xF]; n>>=4; }
+        write_str(b);
+    }
 
-        if (number == 0) {
-            buffer[index--] = '0';
-        } else {
-            while (number > 0) {
-                buffer[index--] = '0' + (number % 10);
-                number /= 10;
-            }
-        }
+    static void log_uint64_dec(uint64_t n) {
+        char b[21]; int i=19; b[20]='\0';
+        if (!n) b[i--]='0';
+        else while(n) { b[i--]='0'+(n%10); n/=10; }
+        write_str(&b[i+1]);
+    }
 
-        uart::_write(&buffer[index + 1]);
+    static void log_uint32_dec(uint32_t n) {
+        char b[12]; int i=10; b[11]='\0';
+        if (!n) b[i--]='0';
+        else while(n) { b[i--]='0'+(n%10); n/=10; }
+        write_str(&b[i+1]);
     }
 
     void printf(const char* fmt, ...) {
+        if (!initialized) return;
         __builtin_va_list args;
         __builtin_va_start(args, fmt);
 
         while (*fmt) {
-            if (*fmt != '%') {
-                _send(*fmt++);
-                continue;
-            }
-
-            fmt += 1; //%
-
-            bool ll = false;
-            if (*fmt == 'l' && *(fmt + 1) == 'l') {
-                ll = true;
-                fmt += 2;
-            }
+            if (*fmt != '%') { send_char(*fmt++); continue; }
+            fmt++;
+            bool ll = (*fmt=='l' && *(fmt+1)=='l');
+            if (ll) fmt+=2;
 
             switch (*fmt) {
-                case 's':
-                    uart::_write(__builtin_va_arg(args, const char*));
-                    break;
-                case 'i':
-                case 'u':
-                    if (ll)
-                        log_uint64_dec(__builtin_va_arg(args, uint64_t));
-                    else
-                        log_uint32_dec(__builtin_va_arg(args, uint32_t));
+                case 's': write_str(__builtin_va_arg(args, const char*)); break;
+                case 'c': send_char((char)__builtin_va_arg(args, int)); break;
+                case 'i': case 'u':
+                    if (ll) log_uint64_dec(__builtin_va_arg(args, uint64_t));
+                    else    log_uint32_dec(__builtin_va_arg(args, uint32_t));
                     break;
                 case 'x':
-                    if (ll)
-                        log_uint64_hex(__builtin_va_arg(args, uint64_t));
-                    else
-                        log_uint32_hex(__builtin_va_arg(args, uint32_t));
+                    if (ll) log_uint64_hex(__builtin_va_arg(args, uint64_t));
+                    else    log_uint32_hex(__builtin_va_arg(args, uint32_t));
                     break;
-                default:
-                    uart::_write(__builtin_va_arg(args, const char*));
-                    break;
+                case '%': send_char('%'); break;
+                default:  send_char('%'); send_char(*fmt); break;
             }
-
-            fmt += 1;
+            fmt++;
         }
-
         __builtin_va_end(args);
     }
+
 } // namespace uart

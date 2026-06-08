@@ -1,4 +1,5 @@
 #include "../../include/drivers/console.h"
+#include "../../include/drivers/uart.h"
 
 namespace {
     uint32_t cursor_x = 0;
@@ -72,6 +73,7 @@ namespace console {
                 list::add(INPUT_BUFFER, e.KeyChar);
                 char out[2] = {e.KeyChar, '\0'};
                 print(out);
+                uart::printf("%c", e.KeyChar);
             } else {
                 print((int)e.KeyCode);
                 cursor_x += 3;
