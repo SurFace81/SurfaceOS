@@ -143,25 +143,6 @@ namespace commands {
             cursor_y = 0;
             return;
         }
-        if (cmdcmp(input, "lsusb", len)) {
-            USBDeviceList* usbs = xhci::get_device_list();
-            add_to_out_list("\n\rUSB devices: ");
-            add_to_out_list(usbs->length, false);
-
-            for (int i = 0; i < usbs->length; i++) {
-                add_to_out_list("\n\rPort ");
-                add_to_out_list(i, false);
-                add_to_out_list(": ");
-                add_to_out_list(usbs->devices[i].speed > 0 ? "Device connected (" : "Disconnect (");
-                add_to_out_list(xhci::get_speed_name(usbs->devices[i].speed));
-                add_to_out_list(")");
-
-                cursor_y += 1;
-            }
-
-            cursor_y += 1;
-            return;
-        }
         if (cmdcmp(input, "lspci", len)) {
             uint32_t device_count = pci::device_count();
             add_to_out_list("\n\r PCI devices: ");

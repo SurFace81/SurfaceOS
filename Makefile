@@ -45,7 +45,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/console.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
-				bin/kernel/drivers/usb/xhci.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
