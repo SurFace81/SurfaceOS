@@ -11,3 +11,4 @@ disk
 *.o
 *.bin
 *.EFI
+.clang-format
