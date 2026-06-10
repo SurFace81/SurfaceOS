@@ -3,20 +3,10 @@
 
 #include "../cpu/types.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+void int_to_str(int num, char str[]);
+void hex_to_str(uint64_t num, char str[], uint64_t size);
 
-void int_to_str(int num, char int_str[]);
-void hex_to_str(uint64_t num, char hex_str[], uint64_t size);
-void reverse(char s[]);
-int strlen(char s[]);
-void backspace(char s[]);
-void append(char s[], char n);
-int strcmp(char s1[], char s2[]);
+int  strlen(const char* s);
+int  strcmp(const char* s1, const char* s2);
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif  // STRING_H
+#endif // STRING_H

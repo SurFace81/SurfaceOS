@@ -1,80 +1,80 @@
 #include "../../include/stdlib/string.h"
-#include "../../include/cpu/types.h"
 
-const char nums_table[] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'};
+static const char digits[] = "0123456789ABCDEF";
 
-void int_to_str(int num, char int_str[]) {
-    uint32_t mod;
-    int res = num;
-
-    int i = 0;
-    do {
-        mod = res % 10;
-        res = res / 10;
-
-        int_str[i] = nums_table[mod];
-        i++;
-    } while(res >= 10);
-
-    if (res != 0) {
-        int_str[i] = nums_table[res];
-        int_str[i + 1] = '\0';
-    } else {
-        int_str[i] = '\0';
-    }
-    reverse(int_str);
-}
-
-void hex_to_str(uint64_t num, char hex_str[], uint64_t size) {
-    uint64_t mod, res = num;
-
-    uint64_t i = size - 1;
-    do {
-        mod = res % 16;
-        res = res / 16;
-
-        hex_str[i] = nums_table[mod];
-        i--;
-    } while(res >= 16);
-
-    hex_str[i] = nums_table[res];
-
-    for (uint64_t j = 0; j < i; j++) {
-        hex_str[j] = '0';
-    }
-    hex_str[size] = '\0';
-}
-
-void reverse(char s[]) {
-    int c, i, j;
-    for (i = 0, j = strlen(s)-1; i < j; i++, j--) {
-        c = s[i];
+static void reverse(char* s, int len)
+{
+    for (int i = 0, j = len - 1; i < j; i++, j--)
+    {
+        char t = s[i];
         s[i] = s[j];
-        s[j] = c;
+        s[j] = t;
     }
 }
 
-int strlen(char s[]) {
+void int_to_str(int num, char str[])
+{
+    if (num < 0)
+    {
+        str[0] = '-';
+        // avoid overflow on INT_MIN: cast after negation digit-by-digit
+        uint32_t u = (uint32_t)(-(num + 1)) + 1;
+        int i = 1;
+
+        do
+        {
+            str[i++] = digits[u % 10];
+            u /= 10;
+        } while (u);
+
+        str[i] = '\0';
+        reverse(str + 1, i - 1);
+        return;
+    }
+
+    uint32_t u = (uint32_t)num;
     int i = 0;
-    while (s[i] != '\0') ++i;
+
+    do
+    {
+        str[i++] = digits[u % 10];
+        u /= 10;
+    } while (u);
+
+    str[i] = '\0';
+    reverse(str, i);
+}
+
+void hex_to_str(uint64_t num, char str[], uint64_t size)
+{
+    for (uint64_t i = 0; i < size; i++)
+        str[i] = '0';
+    str[size] = '\0';
+
+    uint64_t i = size;
+    while (num && i > 0)
+    {
+        i--;
+        str[i] = digits[num & 0xF];
+        num >>= 4;
+    }
+}
+
+int strlen(const char* s)
+{
+    int i = 0;
+    while (s[i]) i++;
+    
     return i;
 }
 
-void append(char s[], char n) {
-    int len = strlen(s);
-    s[len] = n;
-    s[len+1] = '\0';
-}
-
-void backspace(char s[]) {
-    int len = strlen(s);
-    s[len-1] = '\0';
-}
-
-int strcmp(char s1[], char s2[]) {
-    int i;
-    for (i = 0; s1[i] == s2[i]; i++) {
-        if (s1[i] == '\0') return 0;
+int strcmp(const char* s1, const char* s2)
+{
+    while (*s1 && *s1 == *s2)
+    {
+        s1++;
+        s2++;
     }
-    return s1[i] - s2[i];
+
+    return (uint8_t)*s1 - (uint8_t)*s2;
 }
