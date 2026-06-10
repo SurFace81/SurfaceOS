@@ -95,6 +95,7 @@ namespace keyboard {
         kb_state.alt_pressed    = 0;
         kb_state.shift_pressed  = 0;
         kb_state.ctrl_pressed   = 0;
+        kb_state.extended_code  = 0;
         set_leds();
     }
 

@@ -1,213 +1,193 @@
 #include "../../include/drivers/console.h"
 #include "../../include/drivers/uart.h"
 
-namespace {
-    uint32_t cursor_x = 0;
-    uint32_t cursor_y = 0;
-    uint32_t max_cols = 0;
-    uint32_t max_rows = 0;
+#define MAX_COMMANDS 32
 
-    list::List<char>* INPUT_BUFFER;
-    list::List<char>* infobuf;
-    char cpu_name[51];
+struct Command
+{
+    const char* name;
+    uint32_t name_len;
+    command_fn handler;
+};
+
+static Command cmd_table[MAX_COMMANDS];
+static uint32_t cmd_count = 0;
+
+static list::List<char>* input_buf;
+
+// helpers
+static uint32_t str_len(const char* s)
+{
+    uint32_t n = 0;
+    while (s[n])
+        n++;
+    return n;
 }
 
-namespace commands {
-    void parse_and_exec(list::List<char>* input);
+static bool buf_eq(list::List<char>* buf, const char* str, uint32_t len)
+{
+    if (list::size(buf) != len)
+        return false;
+    for (uint32_t i = 0; i < len; i++)
+    {
+        char c;
+        list::get(buf, i, c);
+        if (c != str[i])
+            return false;
+    }
+    return true;
 }
 
-namespace console {
-    static void input(keyboard_event_t e);
+// built-in commands
+static void cmd_help(list::List<char>*)
+{
+    screen::printf("\n\r");
+    for (uint32_t i = 0; i < cmd_count; i++)
+        screen::printf(" %s\n\r", cmd_table[i].name);
+}
 
-    void init(void) {
-        INPUT_BUFFER = list::create<char>();
-        infobuf = list::create<char>();
-        max_cols = Screen.Width / Screen.SymbolSizeX;
-        max_rows = Screen.Height / Screen.SymbolSizeY;
+static void cmd_clear(list::List<char>*)
+{
+    screen::clear();
+}
 
-        keyboard::set_keyboard_callback(input);
+static void cmd_cpuid(list::List<char>*)
+{
+    char name[64];
+    cpuid::get_cpu_name(name);
 
-        print("\n\tSurfaceOS v0.1 (C) 2025\n\r\tMem: ");
-        print((int)(memory::getMemorySize() / 1048576 + 1));
-        print(" Mb\n\r\tCpu: ");
-        cpuid::get_cpu_name(cpu_name);
-        print(cpu_name);
-        print(" @ ");
-        char freq[12];
-        int_to_str(cpuid::get_base_freq(), freq);
-        print(freq);
-        print("MHz\n\r------------------------------------------------\n\n\r> ");
-        
-        cursor_x = 2; cursor_y = 6;
-    };
+    CPUTopology topo;
+    cpuid::get_cpu_topology(&topo);
 
-    static void input(keyboard_event_t e) {
-        if (e.type != KEY_PRESS) return;
+    CacheInfo cache;
+    cpuid::get_cache_info(&cache);
 
-        if (e.KeyCode == Keys::BACKSPACE) {
-            if (cursor_x >= 1) {
-                cursor_x -= 1;
-            } else if (cursor_y >= 1) {
-                cursor_x = max_cols - 1;
-                cursor_y -= 1;
-            }
-            list::remove_at(INPUT_BUFFER, list::size(INPUT_BUFFER) - 1);
-            screen::backspace(cursor_x, cursor_y);
-        }
-        else if (e.KeyCode == Keys::ENTER) {
-            commands::parse_and_exec(INPUT_BUFFER);
-            print(infobuf);
-            list::clear(infobuf);
-            list::clear(INPUT_BUFFER);
-            print("\n\r> ");
-            cursor_x = 2;
-            cursor_y += 1;
-        // } else if (e.KeyCode == Keys::ARROW_LEFT) {
-        //     if (cursor_x > 0)
-        //         cursor_x -= 1;
-        // } else if (e.KeyCode == Keys::ARROW_RIGHT) {
-        //     if (cursor_x < max_cols)
-        //         cursor_x += 1;
-        } else {
-            if (!e.ScrLck) {
-                list::add(INPUT_BUFFER, e.KeyChar);
-                char out[2] = {e.KeyChar, '\0'};
-                print(out);
-                uart::printf("%c", e.KeyChar);
-            } else {
-                print((int)e.KeyCode);
-                cursor_x += 3;
-                return;
-            }
-            cursor_x += 1;
-        
-            if (cursor_x >= max_cols) {
-                cursor_x = 0;
-                cursor_y += 1;
-            }
-        }
+    screen::printf("\n\r           CPU: %s", name);
+    screen::printf("\n\r      BaseFreq: %u MHz", cpuid::get_base_freq());
+    screen::printf("\n\r       MaxFreq: %u MHz", cpuid::get_max_freq());
+    screen::printf("\n\r       BusFreq: %u MHz", cpuid::get_bus_freq());
+    screen::printf("\n\r Logical cores: %u", topo.logical_cores);
+    screen::printf("\n\rPhysical cores: %u", topo.physical_cores);
+    screen::printf("\n\r       Sockets: %u", topo.packages);
+    screen::printf("\n\rHyperthreading: %s", topo.hyperthreading ? "Yes" : "No");
+    screen::printf("\n\r            L1: %u KB", cache.l1d_size + cache.l1i_size);
+    screen::printf("\n\r            L2: %u KB", cache.l2_size);
+    screen::printf("\n\r            L3: %u KB", cache.l3_size);
+}
 
-        if (cursor_y >= max_rows - 1) {
-            screen::scroll_up();
-            cursor_y = max_rows - 2;
-        }
+static void cmd_lspci(list::List<char>*)
+{
+    uint32_t count = pci::device_count();
+    screen::printf("\n\r PCI devices: %u", count);
 
-        screen::set_cursor_position(cursor_x, cursor_y);
+    for (uint32_t i = 0; i < count; i++)
+    {
+        PCIDevice* d = pci::get_by_id(i);
+        screen::printf("\n\r %x:%x class %x:%x prog %x", (uint32_t)d->vendor_id, (uint32_t)d->device_id,
+                       (uint32_t)d->class_code, (uint32_t)d->subclass, (uint32_t)d->prog_if);
     }
-} // namespace
+}
 
-namespace commands {
-    static bool cmdcmp(list::List<char>* str1, const char* str2, int len) {
-        for (int i = 0; i < len; i++) {
-            char val;
-            list::get(str1, i, val);
-            if (val != str2[i]) {
-                return false;
-            }
+// input handler
+static void exec(list::List<char>* buf)
+{
+    if (list::size(buf) == 0)
+        return;
+
+    for (uint32_t i = 0; i < cmd_count; i++)
+    {
+        if (buf_eq(buf, cmd_table[i].name, cmd_table[i].name_len))
+        {
+            cmd_table[i].handler(buf);
+            return;
         }
-        return true;
     }
 
-    static void add_to_out_list(const char* str) {
-        for (const char* p = str; *p; ++p) list::add(infobuf, *p);
-    }
+    screen::printf("\n\rUnknown command");
+}
 
-    static void add_to_out_list(int num, bool isHex, int size = 8) {
-        char buf[12] = {0};
-        if (isHex) {
-            hex_to_str(num, buf, size);
-        } else {
-            int_to_str(num, buf);
-        }
-        for (char* p = buf; *p; ++p) list::add(infobuf, *p);
-    }
+static void on_key(keyboard_event_t e)
+{
+    if (e.type != KEY_PRESS)
+        return;
 
-    void parse_and_exec(list::List<char>* input) {
-        uint64_t len = list::size(input);
-        if (len == 0) {
+    if (e.KeyCode == Keys::BACKSPACE)
+    {
+        if (list::size(input_buf) == 0)
             return;
+
+        list::remove_at(input_buf, list::size(input_buf) - 1);
+
+        // Move cursor back and erase
+        uint32_t cx = screen::cursor_x();
+        uint32_t cy = screen::cursor_y();
+
+        if (cx > 0)
+            cx--;
+        else if (cy > 0)
+        {
+            cy--;
+            cx = screen::cols() - 1;
         }
 
-        if (cmdcmp(input, "help", len)) {
-            cursor_x = 0;
-            cursor_y += 5;
-            add_to_out_list("\n\rhelp  - shows this info");
-            add_to_out_list("\n\rclear - clear screen");
-            add_to_out_list("\n\rcpuid - get cpu info");
-            add_to_out_list("\n\rlspci - list of all PCI devices");
-            add_to_out_list("\n\rlsusb - list of all USB devices");
-            return;
-        }
-        if (cmdcmp(input, "clear", len)) {
-            screen::clear();
-            cursor_y = 0;
-            return;
-        }
-        if (cmdcmp(input, "lspci", len)) {
-            uint32_t device_count = pci::device_count();
-            add_to_out_list("\n\r PCI devices: ");
-            add_to_out_list(device_count, false);
-
-            for (int i = 0; i < device_count; i++) {
-                PCIDevice* dev = pci::get_by_id(i);
-                add_to_out_list("\n\r Vendor: 0x");
-                add_to_out_list(dev->vendor_id, true, 4);
-                add_to_out_list(" Device: 0x");
-                add_to_out_list(dev->device_id, true, 4);
-                add_to_out_list(" Class: 0x");
-                add_to_out_list(dev->class_code, true, 2);
-                add_to_out_list(" Subclass: 0x");
-                add_to_out_list(dev->subclass, true, 2);
-                add_to_out_list(" ProgIF: 0x");
-                add_to_out_list(dev->prog_if, true, 2);
-
-                cursor_y += 1;
-            }
-
-            add_to_out_list("\0");
-            cursor_y += 1;
-            return;
-        }
-        if (cmdcmp(input, "cpuid", len)) {
-            char name_buf[64];
-            name_buf[0] = '\0';
-            cpuid::get_cpu_name(name_buf);
-
-            add_to_out_list("\n\r           CPU: ");
-            add_to_out_list(name_buf);
-            add_to_out_list("\n\r      BaseFreq: ");
-            add_to_out_list(cpuid::get_base_freq(), false);
-            add_to_out_list(" MHz\n\r       MaxFreq: ");
-            add_to_out_list(cpuid::get_max_freq(), false);
-            add_to_out_list(" MHz\n\r       BusFreq: ");
-            add_to_out_list(cpuid::get_bus_freq(), false);
-            CPUTopology topo;
-            cpuid::get_cpu_topology(&topo);
-            add_to_out_list(" MHz\n\r Logical cores: ");
-            add_to_out_list(topo.logical_cores, false);
-            add_to_out_list("\n\rPhysical cores: ");
-            add_to_out_list(topo.physical_cores, false);
-            add_to_out_list("\n\r       Sockets: ");
-            add_to_out_list(topo.packages, false);
-            add_to_out_list("\n\rHyperthreading: ");
-            add_to_out_list(topo.hyperthreading ? "Yes" : "No");
-            CacheInfo cache;
-            cpuid::get_cache_info(&cache);
-            add_to_out_list("\n\r            L1: ");
-            add_to_out_list(cache.l1d_size + cache.l1i_size, false);
-            add_to_out_list(" KB\n\r            L2: ");
-            add_to_out_list(cache.l2_size, false);
-            add_to_out_list(" KB\n\r            L3: ");
-            add_to_out_list(cache.l3_size, false);
-            add_to_out_list(" KB\0");
-
-            cursor_y += 11;
-            return;
-        }
-
-        cursor_x = 2;
-        cursor_y += 1;
-        add_to_out_list("\n\rThis is not a command!");
+        screen::erase_at(cx, cy);
+        screen::set_cursor(cx, cy);
         return;
     }
-} // namespace
+
+    if (e.KeyCode == Keys::ENTER)
+    {
+        exec(input_buf);
+        list::clear(input_buf);
+        screen::printf("\n\r> ");
+        return;
+    }
+
+    // Regular character
+    list::add(input_buf, e.KeyChar);
+    char out[2] = {e.KeyChar, '\0'};
+    screen::write(out);
+    uart::printf("%c", e.KeyChar);
+}
+
+// API
+namespace console
+{
+    void register_command(const char* name, command_fn handler)
+    {
+        if (cmd_count >= MAX_COMMANDS)
+            return;
+
+        cmd_table[cmd_count].name       = name;
+        cmd_table[cmd_count].name_len   = str_len(name);
+        cmd_table[cmd_count].handler    = handler;
+        cmd_count++;
+    }
+
+    void init()
+    {
+        cmd_count = 0; // .bss is not zeroed in flat binary — explicit init required
+        input_buf = list::create<char>();
+
+        // Register built-in commands
+        register_command("help", cmd_help);
+        register_command("clear", cmd_clear);
+        register_command("cpuid", cmd_cpuid);
+        register_command("lspci", cmd_lspci);
+
+        keyboard::set_keyboard_callback(on_key);
+
+        // Welcome message
+        char cpu_name[51];
+        cpuid::get_cpu_name(cpu_name);
+
+        char freq[12];
+        int_to_str(cpuid::get_base_freq(), freq);
+
+        screen::printf("\n\tSurfaceOS v0.1 (C) 2025\n\r\tMem: ");
+        screen::printf("%u", (uint32_t)(memory::getMemorySize() / 1048576 + 1));
+        screen::printf(" Mb\n\r\tCpu: %s @ %s MHz", cpu_name, freq);
+        screen::printf("\n\r------------------------------------------------\n\n\r> ");
+    }
+
+} // namespace console
