@@ -1,4 +1,5 @@
 #include "../../include/cpu/paging.h"
+#include "../../include/mm/memory.h"
 
 namespace paging {
     uint64_t *PageTableAddr = 0x00;
@@ -44,7 +45,7 @@ namespace paging {
 
     uint64_t get_phys_addr(uint64_t virt)
     {
-        // Now: virt = phys
+        // Identity mapping
         return virt;
     }
 

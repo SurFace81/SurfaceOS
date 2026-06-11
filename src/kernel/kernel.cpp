@@ -14,17 +14,17 @@
 extern "C" void kmain(BOOT_HEADER* BootHeader)
 {
     asm volatile("movq $0x200000, %rsp"); // move stack
-    memory::setMemorySize(BootHeader->TotalMemorySize);
 
     gdt::init();
     paging::init((uint64_t*)0x300000);
-    memory::init();
+    memory::init(BootHeader->TotalMemorySize);
     idt::init();
     irq::init();
     pci::init();
     uart::init();
 
-    memory::memalloc((uint64_t)BootHeader->FrameBufferAddress, 0x600000, BootHeader->FrameBufferSize);
+    paging::allocate_pages(0x600000, (uint64_t)BootHeader->FrameBufferAddress, 
+        (BootHeader->FrameBufferSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
 
     screen::init(BootHeader);
     keyboard::init();
