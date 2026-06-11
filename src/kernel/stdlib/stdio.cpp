@@ -5,15 +5,20 @@ void print(const char* str)
     screen::write(str);
 }
 
-void print(list::List<char>* char_list) {
-    if (!char_list) return;
-    
+void print(list::List<char>* char_list)
+{
+    if (!char_list)
+        return;
+
     list::Block<char>* current = char_list->first_block;
-    
-    while (current) {
-        for (uint64_t i = 0; i < current->used; i++) {
+
+    while (current)
+    {
+        for (uint64_t i = 0; i < current->used; i++)
+        {
             print(current->data[i]);
-            if (current->data[i] == '\0') {
+            if (current->data[i] == '\0')
+            {
                 return;
             }
         }
@@ -21,7 +26,8 @@ void print(list::List<char>* char_list) {
     }
 }
 
-void print(char c) {
+void print(char c)
+{
     char out[2] = {c, '\0'};
     print(out);
 }
@@ -33,21 +39,25 @@ void print(int dec)
     print(temp_str);
 }
 
-void print(uint64_t hex, uint64_t size) {
+void print(uint64_t hex, uint64_t size)
+{
     char temp_str[size];
     hex_to_str(hex, temp_str, size);
     print("0x");
     print(temp_str);
 }
 
-void clearScreen() {
+void clearScreen()
+{
     screen::clear();
 }
 
-void setTextColor(Colors color) {
-    screen::set_text_color(color);
+void setTextColor(Colors color)
+{
+    screen::set_color(color);
 }
 
-void setCursorPosition(uint32_t x, uint32_t y) {
-    screen::set_cursor_position(x, y);
+void setCursorPosition(uint32_t x, uint32_t y)
+{
+    screen::set_cursor(x, y);
 }

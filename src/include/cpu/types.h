@@ -27,4 +27,9 @@ typedef          char           sint8_t;
 typedef enum {false, true} bool;
 #endif
 
+typedef enum Result {
+    SUCCESS = 0,
+    ERROR = 1
+} Result;
+
 #endif  // TYPES_H

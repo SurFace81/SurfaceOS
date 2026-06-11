@@ -9,8 +9,6 @@
 #define PCI_CONFIG_ADDRESS  0xCF8
 #define PCI_CONFIG_DATA     0xCFC
 
-#define PCI_MAX_DEVICES     128
-
 // PCI Configuration Space offsets
 #define PCI_VENDOR_ID       0x00
 #define PCI_DEVICE_ID       0x02
@@ -53,7 +51,8 @@
 #define PCI_CLASS_PROCESSOR         0x0B
 #define PCI_CLASS_SERIAL            0x0C
 
-struct PCIDevice {
+struct PCIDevice 
+{
     uint8_t  bus, device, function;
     uint16_t vendor_id, device_id, command, status;
     uint8_t  revision_id, prog_if, subclass, class_code;
@@ -62,19 +61,31 @@ struct PCIDevice {
     uint16_t subsystem_vendor_id, subsystem_id;
     uint32_t expansion_rom;
     uint8_t  capabilities, interrupt_line, interrupt_pin;
-    bool   valid;
+    bool     valid;
 };
 
-struct ClassDevices {
-    int length;
-    PCIDevice cls_devices[PCI_MAX_DEVICES];
+struct PCIBar 
+{
+    bool     valid;
+    bool     is_io;
+    uint64_t base;
 };
 
-namespace pci {
+namespace pci 
+{
     void init(void);
-    uint32_t device_count();
+
+    uint32_t   device_count();
     PCIDevice* get_by_id(uint32_t idx);
-    //ClassDevices* pci::get_by_class(uint8_t cls);
+    PCIDevice* find(uint8_t cls, uint8_t subcls, int prog_if = -1, uint32_t start_idx = 0);
+
+    void enable_device(PCIDevice* d);
+    PCIBar get_bar(PCIDevice* d, int index = 0);
+
+    uint32_t read32 (PCIDevice* d, uint8_t off);
+    uint16_t read16 (PCIDevice* d, uint8_t off);
+    void     write32(PCIDevice* d, uint8_t off, uint32_t val);
+    void     write16(PCIDevice* d, uint8_t off, uint16_t val);
 }
 
 #endif

@@ -1,37 +1,25 @@
 #include "../../include/mm/memory.h"
+#include "../../include/mm/heap.h"
 
-static uint64_t TOT_MEMORY_SIZE;
+static uint64_t total_memory_size;
 
-#define ALLOCATOR_START 0x1500000
+#define HEAP_START 0x2000000
+#define HEAP_SIZE (9 * 1024 * 1024)
 
-namespace memory {
-    void setMemorySize(uint64_t size)
+namespace memory
+{
+    void init(uint64_t total_memory)
     {
-        TOT_MEMORY_SIZE = size;
+        total_memory_size = total_memory;
+        heap::init((void*)HEAP_START, HEAP_SIZE);
     }
 
-    uint64_t getMemorySize(void)
+    uint64_t total(void)
     {
-        return TOT_MEMORY_SIZE;
+        return total_memory_size;
     }
 
-    void init() {
-        buddy_init((uint8_t*)ALLOCATOR_START);
-    }
-
-    uint8_t* memalloc() {
-        uint8_t* ptr = buddy_alloc();
-        if (ptr != nullptr)
-            return ptr;
-        
-        return nullptr;
-    }
-
-    bool memfree(uint8_t* addr) {
-        return buddy_free(addr);
-    }
-
-    void memset(uint8_t *ptr, char val, uint64_t size)
+    void memset(uint8_t* ptr, char val, uint64_t size)
     {
         for (uint64_t i = 0; i < size; i++)
         {
@@ -39,17 +27,11 @@ namespace memory {
         }
     }
 
-    void memcpy(uint8_t *src, uint8_t *dst, uint64_t size)
+    void memcpy(uint8_t* src, uint8_t* dst, uint64_t size)
     {
         for (uint64_t i = 0; i < size; i++)
         {
             dst[i] = src[i];
         }
     }
-
-    void memalloc(uint64_t src, uint64_t dst, uint64_t size_in_bytes)
-    {
-        uint64_t num_pages = (size_in_bytes + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES;
-        paging::allocate_pages(dst, src, num_pages);
-    }
-} // namespace
+} // namespace memory

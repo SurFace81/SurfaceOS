@@ -31,7 +31,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/gdt.o \
 				bin/kernel/cpu/gdt.asm.o \
 				bin/kernel/mm/memory.o \
-				bin/kernel/mm/buddy.o \
+				bin/kernel/mm/heap.o \
 				bin/kernel/cpu/paging.o \
 				bin/kernel/cpu/ports.o \
 				bin/kernel/drivers/uart.o \
@@ -45,7 +45,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/console.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
-				bin/kernel/drivers/usb/xhci.o \
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
