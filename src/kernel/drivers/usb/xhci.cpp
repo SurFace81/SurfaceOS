@@ -530,6 +530,255 @@ static xhci_cmd_completion_trb_t* send_command(xhci_trb_t* cmd_trb, uint32_t tim
     return nullptr;
 }
 
+static xhci_transfer_event_trb_t* wait_transfer_event(uint32_t timeout_ms) {
+    xhci_transfer_event_trb_t* last_transfer = nullptr;
+    uint32_t elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        if (evt_ring_has_events(&evt_ring)) {
+            xhci_trb_t* trb = evt_ring_dequeue_trb(&evt_ring);
+            if (!trb) break;
+
+            uart::printf("xhci: [wait] event type=%u (%s)\n",
+                         (uint32_t)trb->trb_type, trb_type_str(trb->trb_type));
+
+            if (trb->trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT) {
+                xhci_transfer_event_trb_t* te = (xhci_transfer_event_trb_t*)trb;
+                uart::printf("xhci: [wait]   code=%u (%s) slot=%u ep=%u residue=%u trb_ptr=%llx\n",
+                             (uint32_t)te->completion_code,
+                             completion_code_str(te->completion_code),
+                             (uint32_t)te->slot_id,
+                             (uint32_t)te->endpoint_id,
+                             (uint32_t)te->transfer_length,
+                             te->trb_pointer);
+                last_transfer = te;
+
+                // If success or short packet on non-final TRB, keep reading events
+                // If stall or error, return immediately
+                if (te->completion_code != XHCI_TRB_COMPLETION_SUCCESS &&
+                    te->completion_code != 13) {
+                    // Error — return it
+                    evt_ring_update_erdp(&evt_ring);
+                    uint64_t erdp = read_mmio64(&evt_ring.interrupter->erdp);
+                    erdp |= XHCI_ERDP_EHB;
+                    write_mmio64(&evt_ring.interrupter->erdp, erdp);
+                    acknowledge_irq(0);
+                    return te;
+                }
+
+                // Success or short packet — check if this is the Status Stage (final)
+                // IOC is on Status Stage, so SUCCESS on it means we're done
+                if (te->completion_code == XHCI_TRB_COMPLETION_SUCCESS) {
+                    evt_ring_update_erdp(&evt_ring);
+                    uint64_t erdp = read_mmio64(&evt_ring.interrupter->erdp);
+                    erdp |= XHCI_ERDP_EHB;
+                    write_mmio64(&evt_ring.interrupter->erdp, erdp);
+                    acknowledge_irq(0);
+                    return te;
+                }
+
+                // Short packet — there might be another event for Status Stage
+                // Continue polling
+            }
+        }
+        delay_ms(1);
+        elapsed++;
+    }
+
+    if (last_transfer) {
+        evt_ring_update_erdp(&evt_ring);
+        uint64_t erdp = read_mmio64(&evt_ring.interrupter->erdp);
+        erdp |= XHCI_ERDP_EHB;
+        write_mmio64(&evt_ring.interrupter->erdp, erdp);
+        acknowledge_irq(0);
+        return last_transfer;
+    }
+
+    uart::printf("xhci: transfer event timeout after %u ms\n", timeout_ms);
+    return nullptr;
+}
+
+// Perform a control IN transfer (read data from device via EP0)
+// setup_packet: 8 bytes of USB setup packet
+// buffer: destination for data (physically contiguous)
+// buffer_phys: physical address of buffer
+// data_length: how many bytes to read
+// Returns actual bytes transferred, or -1 on error
+static sint32_t control_transfer_in(uint8_t slot_id, uint8_t* setup_packet,
+                                     void* buffer, uintptr_t buffer_phys,
+                                     uint16_t data_length) {
+    xhci_transfer_ring* ring = &ep0_rings[slot_id];
+
+    // Setup Stage TRB (type 2)
+    xhci_trb_t setup_trb;
+    memory::memset((uint8_t*)&setup_trb, 0, sizeof(xhci_trb_t));
+    // Pack setup packet directly into parameter as uint64_t (little-endian)
+    setup_trb.parameter = (uint64_t)setup_packet[0]
+                        | ((uint64_t)setup_packet[1] << 8)
+                        | ((uint64_t)setup_packet[2] << 16)
+                        | ((uint64_t)setup_packet[3] << 24)
+                        | ((uint64_t)setup_packet[4] << 32)
+                        | ((uint64_t)setup_packet[5] << 40)
+                        | ((uint64_t)setup_packet[6] << 48)
+                        | ((uint64_t)setup_packet[7] << 56);
+    setup_trb.status = 8; // transfer length = 8
+    // TRB Type=2 (bits 10-15), IDT=1 (bit 6), TRT=3 (bits 16-17)
+    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT)
+                      | (1 << 6)
+                      | (3 << 16);
+    transfer_ring_enqueue(ring, &setup_trb);
+
+    // Data Stage TRB (type 3)
+    xhci_trb_t data_trb;
+    memory::memset((uint8_t*)&data_trb, 0, sizeof(xhci_trb_t));
+    data_trb.parameter = (uint64_t)buffer_phys;
+    data_trb.status = data_length;
+    data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 16);  // DIR = 1 (IN)
+    transfer_ring_enqueue(ring, &data_trb);
+
+    // Status Stage TRB (type 4)
+    // Direction is opposite to data: data=IN, so status=OUT (dir=0)
+    xhci_trb_t status_trb;
+    memory::memset((uint8_t*)&status_trb, 0, sizeof(xhci_trb_t));
+    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT)
+                       | (1 << 5); // IOC (Interrupt On Completion)
+    transfer_ring_enqueue(ring, &status_trb);
+
+    // Ring doorbell for this slot, target = 1 (Control EP, DCI=1)
+    ring_doorbell(slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
+
+    // Wait for completion
+    xhci_transfer_event_trb_t* evt = wait_transfer_event(500);
+    if (!evt) {
+        uart::printf("xhci: control transfer timeout slot=%u\n", (uint32_t)slot_id);
+        return -1;
+    }
+
+    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS &&
+        evt->completion_code != 13 /* SHORT_PACKET */) {
+        uart::printf("xhci: control transfer failed slot=%u code=%u (%s)\n",
+                     (uint32_t)slot_id,
+                     (uint32_t)evt->completion_code,
+                     completion_code_str(evt->completion_code));
+        return -1;
+    }
+
+    // Actual bytes transferred = requested - residue
+    sint32_t transferred = (sint32_t)data_length - (sint32_t)evt->transfer_length;
+    return transferred;
+}
+
+// Allocate input context for a device
+static xhci_input_context* alloc_input_context() {
+    xhci_input_context* ctx = (xhci_input_context*)alloc_xhci_memory(
+        sizeof(xhci_input_context),
+        XHCI_INPUT_CTX_ALIGNMENT,
+        XHCI_INPUT_CTX_BOUNDARY);
+    return ctx;
+}
+
+static bool evaluate_context(uint8_t slot_id, uint16_t new_max_packet_size) {
+    xhci_input_context* input_ctx = alloc_input_context();
+    if (!input_ctx) return false;
+
+    // Only evaluating EP0
+    input_ctx->control_context.add_flags = (1 << 1); // EP0 only
+    input_ctx->device_context.control_ep_context.max_packet_size = new_max_packet_size;
+
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.parameter = xhci_virt_to_phys(input_ctx);
+    cmd.control = (XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD << XHCI_TRB_TYPE_SHIFT)
+                | ((uint32_t)slot_id << 24);
+
+    xhci_cmd_completion_trb_t* cc = send_command(&cmd, 200);
+    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: evaluate context failed slot=%u\n", (uint32_t)slot_id);
+        return false;
+    }
+
+    uart::printf("xhci: evaluate context OK, max_packet_size=%u\n",
+                 (uint32_t)new_max_packet_size);
+    return true;
+}
+
+static uint16_t max_packet_size_for_speed(uint8_t speed) {
+    switch (speed) {
+    case 1: return 64;   // Full Speed
+    case 2: return 8;    // Low Speed
+    case 3: return 64;   // High Speed
+    case 4: return 512;  // SuperSpeed
+    case 5: return 512;  // SuperSpeed+
+    default: return 64;
+    }
+}
+
+static bool get_device_descriptor(uint8_t slot_id, uint8_t port_speed) {
+    // Allocate buffer for descriptor (aligned, physically contiguous)
+    usb_device_descriptor* desc = (usb_device_descriptor*)alloc_xhci_memory(
+        sizeof(usb_device_descriptor), 64, 4096);
+    uintptr_t desc_phys = xhci_virt_to_phys(desc);
+
+    // USB Setup Packet: GET_DESCRIPTOR (Device), 8 bytes first
+    uint8_t setup[8];
+    setup[0] = 0x80;       // bmRequestType: Device-to-Host, Standard, Device
+    setup[1] = 0x06;       // bRequest: GET_DESCRIPTOR
+    setup[2] = 0x00;       // wValue low: descriptor index 0
+    setup[3] = 0x01;       // wValue high: DEVICE descriptor type
+    setup[4] = 0x00;       // wIndex low
+    setup[5] = 0x00;       // wIndex high
+    setup[6] = 8;          // wLength low: first 8 bytes only
+    setup[7] = 0;          // wLength high
+
+    sint32_t got = control_transfer_in(slot_id, setup, desc, desc_phys, 8);
+    if (got < 8) {
+        uart::printf("xhci: get device desc (8B) failed, got=%d\n", got);
+        return false;
+    }
+
+    // Check if max_packet_size needs updating
+    uint8_t real_max_pkt = desc->bMaxPacketSize0;
+    uint16_t current_max_pkt = max_packet_size_for_speed(port_speed);
+
+    uart::printf("xhci: bMaxPacketSize0=%u (current=%u)\n",
+                 (uint32_t)real_max_pkt, (uint32_t)current_max_pkt);
+
+    // For SuperSpeed, bMaxPacketSize0 is encoded as 2^N (9 means 512)
+    uint16_t actual_max_pkt = real_max_pkt;
+    if (port_speed >= 4 && real_max_pkt <= 16) {
+        actual_max_pkt = (uint16_t)(1 << real_max_pkt);
+    }
+
+    if (actual_max_pkt != current_max_pkt) {
+        uart::printf("xhci: updating max_packet_size %u -> %u\n",
+                     (uint32_t)current_max_pkt, (uint32_t)actual_max_pkt);
+        if (!evaluate_context(slot_id, actual_max_pkt)) return false;
+    }
+
+    // Now read full 18-byte descriptor
+    memory::memset((uint8_t*)desc, 0, sizeof(usb_device_descriptor));
+    setup[6] = 18; // wLength = 18
+    got = control_transfer_in(slot_id, setup, desc, desc_phys, 18);
+    if (got < 18) {
+        uart::printf("xhci: get device desc (18B) failed, got=%d\n", got);
+        return false;
+    }
+
+    uart::printf("xhci: device descriptor slot=%u:\n", (uint32_t)slot_id);
+    uart::printf("  bcdUSB         : %x\n", (uint32_t)desc->bcdUSB);
+    uart::printf("  class/sub/proto: %u/%u/%u\n",
+                 (uint32_t)desc->bDeviceClass,
+                 (uint32_t)desc->bDeviceSubClass,
+                 (uint32_t)desc->bDeviceProtocol);
+    uart::printf("  VID:PID        : %x:%x\n",
+                 (uint32_t)desc->idVendor,
+                 (uint32_t)desc->idProduct);
+    uart::printf("  bMaxPacketSize0: %u\n", (uint32_t)desc->bMaxPacketSize0);
+    uart::printf("  bNumConfigs    : %u\n", (uint32_t)desc->bNumConfigurations);
+
+    return true;
+}
+
 // Extended capability: Supported Protocol (xHCI spec section 7.2)
 struct xhci_supported_protocol {
     uint8_t id;
@@ -745,26 +994,6 @@ static bool create_device_context(uint8_t slot_id) {
     return true;
 }
 
-// Allocate input context for a device
-static xhci_input_context* alloc_input_context() {
-    xhci_input_context* ctx = (xhci_input_context*)alloc_xhci_memory(
-        sizeof(xhci_input_context),
-        XHCI_INPUT_CTX_ALIGNMENT,
-        XHCI_INPUT_CTX_BOUNDARY);
-    return ctx;
-}
-
-static uint16_t max_packet_size_for_speed(uint8_t speed) {
-    switch (speed) {
-    case 1: return 64;   // Full Speed
-    case 2: return 8;    // Low Speed
-    case 3: return 64;   // High Speed
-    case 4: return 512;  // SuperSpeed
-    case 5: return 512;  // SuperSpeed+
-    default: return 64;
-    }
-}
-
 static void setup_device(uint8_t port_index) {
     xhci_portsc portsc = read_portsc(port_index);
     uint8_t port_speed = portsc.port_speed;
@@ -853,6 +1082,9 @@ static void setup_device(uint8_t port_index) {
     uart::printf("xhci: device addressed! usb_addr=%u slot_state=%u\n",
                  (uint32_t)out_ctx->slot_context.device_address,
                  (uint32_t)out_ctx->slot_context.slot_state);
+
+    // Step 6: Get Device Descriptor
+    get_device_descriptor(slot_id, port_speed);
 }
 
 namespace xhci {

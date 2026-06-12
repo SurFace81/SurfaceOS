@@ -335,6 +335,53 @@ struct xhci_input_context {
 #define XHCI_TRB_TYPE_CMD_COMPLETION_EVENT      33
 #define XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT  34
 
+// Transfer TRB types
+#define XHCI_TRB_TYPE_NORMAL          1
+#define XHCI_TRB_TYPE_SETUP_STAGE     2
+#define XHCI_TRB_TYPE_DATA_STAGE      3
+#define XHCI_TRB_TYPE_STATUS_STAGE    4
+#define XHCI_TRB_TYPE_TRANSFER_EVENT  32
+
+// Evaluate Context Command
+#define XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD  13
+
+// Transfer Event completion (for send_transfer)
+struct xhci_transfer_event_trb_t {
+    uint64_t trb_pointer;
+    struct {
+        uint32_t transfer_length : 24;
+        uint32_t completion_code : 8;
+    };
+    struct {
+        uint32_t cycle_bit    : 1;
+        uint32_t rsvd0        : 1;
+        uint32_t event_data   : 1;
+        uint32_t rsvd1        : 7;
+        uint32_t trb_type     : 6;
+        uint32_t endpoint_id  : 5;
+        uint32_t rsvd2        : 3;
+        uint32_t slot_id      : 8;
+    };
+} __attribute__((packed));
+
+// USB Device Descriptor (USB 2.0 spec table 9-8)
+struct usb_device_descriptor {
+    uint8_t  bLength;
+    uint8_t  bDescriptorType;
+    uint16_t bcdUSB;
+    uint8_t  bDeviceClass;
+    uint8_t  bDeviceSubClass;
+    uint8_t  bDeviceProtocol;
+    uint8_t  bMaxPacketSize0;
+    uint16_t idVendor;
+    uint16_t idProduct;
+    uint16_t bcdDevice;
+    uint8_t  iManufacturer;
+    uint8_t  iProduct;
+    uint8_t  iSerialNumber;
+    uint8_t  bNumConfigurations;
+} __attribute__((packed));
+
 // TRB field helpers
 #define XHCI_TRB_TYPE_SHIFT             10
 #define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
