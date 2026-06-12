@@ -570,40 +570,6 @@ static bool is_usb3_port(uint8_t port_num) {
     return false;
 }
 
-// Port Status and Control Register (xHCI spec section 5.4.8)
-// Address: Operational Base + 0x400 + (0x10 * port_index)
-struct xhci_portsc {
-    union {
-        struct {
-            uint32_t ccs        : 1;  // Current Connect Status (RO)
-            uint32_t ped        : 1;  // Port Enabled/Disabled (RW1C)
-            uint32_t rsvd0      : 1;
-            uint32_t oca        : 1;  // Over-current Active (RO)
-            uint32_t pr         : 1;  // Port Reset (RW)
-            uint32_t pls        : 4;  // Port Link State (RW)
-            uint32_t pp         : 1;  // Port Power (RW)
-            uint32_t port_speed : 4;  // Port Speed (RO)
-            uint32_t pic        : 2;  // Port Indicator Control
-            uint32_t lws        : 1;  // Port Link State Write Strobe
-            uint32_t csc        : 1;  // Connect Status Change (RW1C)
-            uint32_t pec        : 1;  // Port Enable/Disable Change (RW1C)
-            uint32_t wrc        : 1;  // Warm Port Reset Change (RW1C)
-            uint32_t occ        : 1;  // Over-current Change (RW1C)
-            uint32_t prc        : 1;  // Port Reset Change (RW1C)
-            uint32_t plc        : 1;  // Port Link State Change (RW1C)
-            uint32_t cec        : 1;  // Port Config Error Change (RW1C)
-            uint32_t cas        : 1;  // Cold Attach Status (RO)
-            uint32_t wce        : 1;  // Wake on Connect Enable
-            uint32_t wde        : 1;  // Wake on Disconnect Enable
-            uint32_t woe        : 1;  // Wake on Over-current Enable
-            uint32_t rsvd1      : 2;
-            uint32_t dr         : 1;  // Device Removable (RO)
-            uint32_t wpr        : 1;  // Warm Port Reset (RW)
-        } __attribute__((packed));
-        uint32_t raw;
-    };
-} __attribute__((packed));
-
 static xhci_portsc read_portsc(uint8_t port) {
     uint64_t addr = (uint64_t)op_regs + 0x400 + (0x10 * port);
     xhci_portsc reg;
@@ -697,6 +663,87 @@ static bool reset_port(uint8_t port_num) {
     return true;
 }
 
+// Enable a device slot, returns slot_id or 0 on failure
+static uint8_t enable_device_slot() {
+    xhci_trb_t trb;
+    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
+    trb.trb_type = XHCI_TRB_TYPE_ENABLE_SLOT_CMD;
+
+    xhci_cmd_completion_trb_t* cc = send_command(&trb, 200);
+    if (!cc) return 0;
+
+    uart::printf("xhci: enable slot: code=%u slot_id=%u\n",
+                 (uint32_t)cc->completion_code, (uint32_t)cc->slot_id);
+
+    if (cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+        return 0;
+
+    return cc->slot_id;
+}
+
+// Create output device context for a slot and register in DCBAA
+static bool create_device_context(uint8_t slot_id) {
+    void* ctx = alloc_xhci_memory(sizeof(xhci_device_context),
+                                   XHCI_DEVICE_CTX_ALIGNMENT,
+                                   XHCI_DEVICE_CTX_BOUNDARY);
+    if (!ctx) {
+        uart::printf("xhci: failed to alloc device context\n");
+        return false;
+    }
+
+    dcbaa[slot_id] = xhci_virt_to_phys(ctx);
+    dcbaa_virt[slot_id] = (uint64_t)ctx;
+
+    uart::printf("xhci: device context[%u] virt=%llx phys=%llx\n",
+                 (uint32_t)slot_id, (uint64_t)ctx, dcbaa[slot_id]);
+    return true;
+}
+
+// Allocate input context for a device
+static xhci_input_context* alloc_input_context() {
+    xhci_input_context* ctx = (xhci_input_context*)alloc_xhci_memory(
+        sizeof(xhci_input_context),
+        XHCI_INPUT_CTX_ALIGNMENT,
+        XHCI_INPUT_CTX_BOUNDARY);
+    return ctx;
+}
+
+// Setup a device after port reset: enable slot, create contexts
+static void setup_device(uint8_t port_index) {
+    xhci_portsc portsc = read_portsc(port_index);
+    uint8_t port_speed = portsc.port_speed;
+    uint8_t port_id = port_index + 1; // 1-based for slot context
+
+    // Enable a device slot
+    uint8_t slot_id = enable_device_slot();
+    if (slot_id == 0) {
+        uart::printf("xhci: failed to enable slot for port %u\n", (uint32_t)port_index);
+        return;
+    }
+
+    // Create output device context
+    if (!create_device_context(slot_id)) {
+        uart::printf("xhci: failed to create device context for slot %u\n", (uint32_t)slot_id);
+        return;
+    }
+
+    // Allocate input context
+    xhci_input_context* input_ctx = alloc_input_context();
+    if (!input_ctx) {
+        uart::printf("xhci: failed to alloc input context\n");
+        return;
+    }
+
+    uart::printf("xhci: device setup:\n");
+    uart::printf("  port   : %u (1-based: %u)\n", (uint32_t)port_index, (uint32_t)port_id);
+    uart::printf("  slot   : %u\n", (uint32_t)slot_id);
+    uart::printf("  speed  : %s\n", usb_speed_str(port_speed));
+    uart::printf("  inctx  : phys=%llx\n", (uint64_t)xhci_virt_to_phys(input_ctx));
+    uart::printf("  outctx : phys=%llx\n", dcbaa[slot_id]);
+
+    // Next step (Address Device) will come in a future lesson
+}
+
 namespace xhci {
     bool init() {
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
@@ -730,22 +777,21 @@ namespace xhci {
         // Flush pending port status change events
         process_events();
 
-        // Scan ports for connected devices and reset them
+        // Scan ports, reset connected devices, setup device contexts
         for (uint8_t i = 0; i < max_ports; i++) {
             xhci_portsc portsc = read_portsc(i);
 
             if (portsc.ccs) {
                 uart::printf("xhci: port %u: device detected (USB%u, speed=%u)\n",
-                             (uint32_t)i,
-                             is_usb3_port(i) ? 3 : 2,
+                             (uint32_t)i, is_usb3_port(i) ? 3 : 2,
                              (uint32_t)portsc.port_speed);
 
                 if (reset_port(i)) {
                     portsc = read_portsc(i);
                     uart::printf("xhci: port %u: reset OK, %s\n",
                                  (uint32_t)i, usb_speed_str(portsc.port_speed));
-                    // Flush port status change events generated by reset
                     process_events();
+                    setup_device(i);
                 } else {
                     uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
                 }
