@@ -7,10 +7,20 @@ static void delay_ms(uint32_t ms) {
             asm volatile("pause");
 }
 
-// Aligned memory allocator for xHCI structures.
-// Allocates extra space to guarantee alignment and boundary constraints.
-// Stores the original kmalloc pointer right before the aligned block
-// so kfree can recover it.
+static void write_mmio64(volatile uint64_t* reg, uint64_t val) {
+    volatile uint32_t* reg32 = (volatile uint32_t*)reg;
+    reg32[0] = (uint32_t)(val & 0xFFFFFFFF);
+    reg32[1] = (uint32_t)(val >> 32);
+}
+
+static uint64_t read_mmio64(volatile uint64_t* reg) {
+    volatile uint32_t* reg32 = (volatile uint32_t*)reg;
+    uint32_t lo = reg32[0];
+    uint32_t hi = reg32[1];
+    return ((uint64_t)hi << 32) | lo;
+}
+
+// Aligned memory allocator for xHCI structures
 static void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
     if (size == 0 || alignment == 0) {
         uart::printf("xhci: bad alloc params size=%u align=%u\n",
@@ -18,7 +28,6 @@ static void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
         while (1) asm volatile("hlt");
     }
 
-    // Worst case: need alignment + boundary padding + space to stash original ptr
     size_t total = size + alignment + boundary + sizeof(void*);
     void* raw = kmalloc(total);
     if (!raw) {
@@ -26,23 +35,18 @@ static void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary) {
         while (1) asm volatile("hlt");
     }
 
-    // Leave room for storing original pointer
     uintptr_t base = (uintptr_t)raw + sizeof(void*);
     uintptr_t aligned = (base + alignment - 1) & ~(alignment - 1);
 
-    // Check boundary crossing
     if (boundary > 0) {
         uintptr_t start_region = aligned / boundary;
         uintptr_t end_region = (aligned + size - 1) / boundary;
         if (start_region != end_region) {
-            // Jump to next boundary
             aligned = (end_region * boundary + alignment - 1) & ~(alignment - 1);
         }
     }
 
-    // Store original pointer for later freeing
     ((void**)aligned)[-1] = raw;
-
     memory::memset((uint8_t*)aligned, 0, size);
     return (void*)aligned;
 }
@@ -53,24 +57,19 @@ static void free_xhci_memory(void* ptr) {
     kfree(raw);
 }
 
-// Physical address (identity mapping through paging)
 static uintptr_t xhci_virt_to_phys(void* vaddr) {
     return paging::get_phys_addr((uint64_t)vaddr);
 }
 
-// Map MMIO region
 static uintptr_t xhci_map_mmio(uint64_t bar_addr, uint64_t bar_size) {
     return (uintptr_t)paging::map_mmio_region(bar_addr, bar_size);
 }
 
-// Read BAR size properly for 32-bit and 64-bit BARs
 static uint64_t get_bar_size_64(PCIDevice* dev, int bar_index) {
     uint8_t off_lo = PCI_BAR0 + bar_index * 4;
     uint8_t off_hi = PCI_BAR0 + (bar_index + 1) * 4;
-
     uint32_t orig_lo = pci::read32(dev, off_lo);
     uint32_t orig_hi = pci::read32(dev, off_hi);
-
     bool is_64bit = ((orig_lo >> 1) & 0x3) == 0x02;
 
     pci::write32(dev, off_lo, 0xFFFFFFFF);
@@ -87,8 +86,67 @@ static uint64_t get_bar_size_64(PCIDevice* dev, int bar_index) {
         size_mask = (uint64_t)(size_lo & 0xFFFFFFF0);
         size_mask |= 0xFFFFFFFF00000000ULL;
     }
-
     return (~size_mask) + 1;
+}
+
+// Command ring state
+struct xhci_cmd_ring {
+    xhci_trb_t* trbs;
+    uintptr_t   phys_base;
+    size_t      max_trb_count;
+    size_t      enqueue_ptr;
+    uint8_t     cycle_bit;
+};
+
+static void cmd_ring_init(xhci_cmd_ring* ring, size_t max_trbs) {
+    ring->max_trb_count = max_trbs;
+    ring->cycle_bit = XHCI_CRCR_RING_CYCLE_STATE;
+    ring->enqueue_ptr = 0;
+
+    uint64_t ring_size = max_trbs * sizeof(xhci_trb_t);
+
+    ring->trbs = (xhci_trb_t*)alloc_xhci_memory(
+        ring_size,
+        XHCI_CMD_RING_ALIGNMENT,
+        XHCI_CMD_RING_BOUNDARY
+    );
+
+    ring->phys_base = xhci_virt_to_phys(ring->trbs);
+
+    // Last TRB is a Link TRB pointing back to ring start
+    ring->trbs[max_trbs - 1].parameter = ring->phys_base;
+    ring->trbs[max_trbs - 1].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+        XHCI_LINK_TRB_TC_BIT |
+        ring->cycle_bit;
+
+    uart::printf("xhci: command ring virt=%llx phys=%llx trbs=%u\n",
+                 (uint64_t)ring->trbs, (uint64_t)ring->phys_base,
+                 (uint32_t)max_trbs);
+    uart::printf("xhci: link TRB[%u] -> phys=%llx control=%x\n",
+                 (uint32_t)(max_trbs - 1),
+                 ring->trbs[max_trbs - 1].parameter,
+                 ring->trbs[max_trbs - 1].control);
+}
+
+static void cmd_ring_enqueue(xhci_cmd_ring* ring, xhci_trb_t* trb) {
+    // Set cycle bit to current ring cycle state
+    trb->cycle_bit = ring->cycle_bit;
+
+    // Copy TRB into ring
+    ring->trbs[ring->enqueue_ptr] = *trb;
+
+    // Advance enqueue pointer; wrap before the Link TRB
+    if (++ring->enqueue_ptr == ring->max_trb_count - 1) {
+        // Update Link TRB with current cycle state
+        ring->trbs[ring->max_trb_count - 1].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_LINK_TRB_TC_BIT |
+            ring->cycle_bit;
+
+        ring->enqueue_ptr = 0;
+        ring->cycle_bit = !ring->cycle_bit;
+    }
 }
 
 // Driver state
@@ -109,10 +167,10 @@ static bool     pind;
 static bool     lhrc;
 static uint32_t xecp_offset;
 
-// DCBAA (Device Context Base Address Array)
 static uint64_t* dcbaa = nullptr;
-// Mirror array holding virtual addresses of device contexts
 static uint64_t* dcbaa_virt = nullptr;
+
+static xhci_cmd_ring cmd_ring;
 
 static void parse_cap_regs() {
     cap_regs = (volatile xhci_cap_regs*)xhc_base;
@@ -157,8 +215,8 @@ static void log_op_regs() {
     uart::printf("  usbsts  : %x\n",  op_regs->usbsts);
     uart::printf("  pagesize: %x\n",  op_regs->pagesize);
     uart::printf("  dnctrl  : %x\n",  op_regs->dnctrl);
-    uart::printf("  crcr    : %llx\n", op_regs->crcr);
-    uart::printf("  dcbaap  : %llx\n", op_regs->dcbaap);
+    uart::printf("  crcr    : %llx\n", read_mmio64(&op_regs->crcr));
+    uart::printf("  dcbaap  : %llx\n", read_mmio64(&op_regs->dcbaap));
     uart::printf("  config  : %x\n",  op_regs->config);
 }
 
@@ -233,7 +291,9 @@ static bool reset_controller() {
     delay_ms(50);
 
     if (op_regs->usbcmd != 0 || op_regs->dnctrl != 0 ||
-        op_regs->crcr != 0 || op_regs->dcbaap != 0 || op_regs->config != 0) {
+        read_mmio64(&op_regs->crcr) != 0 ||
+        read_mmio64(&op_regs->dcbaap) != 0 ||
+        op_regs->config != 0) {
         uart::printf("xhci: unexpected register values after reset\n");
         return false;
     }
@@ -242,7 +302,6 @@ static bool reset_controller() {
     return true;
 }
 
-// NEW: Setup Device Context Base Address Array
 static void setup_dcbaa() {
     size_t dcbaa_size = sizeof(uint64_t) * (max_device_slots + 1);
 
@@ -250,7 +309,6 @@ static void setup_dcbaa() {
                                           XHCI_DCBAA_ALIGNMENT,
                                           XHCI_DCBAA_BOUNDARY);
 
-    // Virtual address mirror (for driver's own bookkeeping)
     dcbaa_virt = (uint64_t*)kmalloc(sizeof(uint64_t) * (max_device_slots + 1));
     memory::memset((uint8_t*)dcbaa_virt, 0, sizeof(uint64_t) * (max_device_slots + 1));
 
@@ -259,26 +317,22 @@ static void setup_dcbaa() {
                  (uint64_t)xhci_virt_to_phys(dcbaa),
                  (uint32_t)max_device_slots);
 
-    // Allocate scratchpad buffers if the controller requires them
     if (max_scratchpad_bufs > 0) {
         uart::printf("xhci: allocating %u scratchpad buffers\n",
                      (uint32_t)max_scratchpad_bufs);
 
-        // Scratchpad buffer array: array of physical pointers to each scratchpad page
         uint64_t* sp_array = (uint64_t*)alloc_xhci_memory(
             max_scratchpad_bufs * sizeof(uint64_t),
             XHCI_DCBAA_ALIGNMENT,
             XHCI_DCBAA_BOUNDARY
         );
 
-        // Allocate individual scratchpad pages
         for (uint32_t i = 0; i < max_scratchpad_bufs; i++) {
             void* sp_page = alloc_xhci_memory(
-                4096,  // xHCI pagesize register says 4KB
+                4096,
                 XHCI_SCRATCHPAD_BUF_ALIGNMENT,
                 XHCI_SCRATCHPAD_BUF_BOUNDARY
             );
-
             uint64_t sp_phys = xhci_virt_to_phys(sp_page);
             sp_array[i] = sp_phys;
 
@@ -287,8 +341,6 @@ static void setup_dcbaa() {
         }
 
         uint64_t sp_array_phys = xhci_virt_to_phys(sp_array);
-
-        // DCBAA[0] points to scratchpad buffer array (physical address)
         dcbaa[0] = sp_array_phys;
         dcbaa_virt[0] = (uint64_t)sp_array;
 
@@ -296,26 +348,27 @@ static void setup_dcbaa() {
                      (uint64_t)sp_array, sp_array_phys);
     }
 
-    // Write DCBAA physical address to operational register
-    op_regs->dcbaap = xhci_virt_to_phys(dcbaa);
-    uart::printf("xhci: DCBAAP set to %llx\n", op_regs->dcbaap);
+    write_mmio64(&op_regs->dcbaap, xhci_virt_to_phys(dcbaa));
+    uart::printf("xhci: DCBAAP set to %llx\n", read_mmio64(&op_regs->dcbaap));
 }
 
-// NEW: Configure operational registers after reset
 static void configure_operational_regs() {
-    // Enable all device notifications
     op_regs->dnctrl = 0xFFFF;
-
-    // Set max device slots
     op_regs->config = (uint32_t)max_device_slots;
 
     uart::printf("xhci: config=%u dnctrl=%x\n",
                  op_regs->config, op_regs->dnctrl);
 
-    // Setup DCBAA and scratchpad
     setup_dcbaa();
 
-    // Command ring setup will come in a later lesson
+    // Setup command ring
+    cmd_ring_init(&cmd_ring, XHCI_COMMAND_RING_TRB_COUNT);
+
+    // Write CRCR: physical base of command ring OR'd with cycle bit
+    uint64_t crcr_val = cmd_ring.phys_base | cmd_ring.cycle_bit;
+    write_mmio64(&op_regs->crcr, crcr_val);
+    uart::printf("xhci: CRCR set to %llx\n",
+                 read_mmio64(&op_regs->crcr), crcr_val);
 }
 
 namespace xhci {
@@ -339,7 +392,6 @@ namespace xhci {
         }
 
         uint64_t bar_size = get_bar_size_64(dev, 0);
-
         uart::printf("xhci: BAR0 phys=%llx size=%llx\n", bar.base, bar_size);
 
         xhc_base = xhci_map_mmio(bar.base, bar_size);

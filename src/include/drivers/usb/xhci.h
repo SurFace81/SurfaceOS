@@ -36,6 +36,28 @@ struct xhci_op_regs {
     uint32_t reserved2[49];
 } __attribute__((packed));
 
+// TRB structure (xHCI spec section 4.11, figure 4-13)
+struct xhci_trb_t {
+    uint64_t parameter;
+    uint32_t status;
+    union {
+        struct {
+            uint32_t cycle_bit               : 1;
+            uint32_t eval_next_trb           : 1;
+            uint32_t interrupt_on_short_pkt  : 1;
+            uint32_t no_snoop                : 1;
+            uint32_t chain_bit               : 1;
+            uint32_t interrupt_on_completion : 1;
+            uint32_t immediate_data          : 1;
+            uint32_t rsvd0                   : 2;
+            uint32_t block_event_interrupt   : 1;
+            uint32_t trb_type                : 6;
+            uint32_t rsvd1                   : 16;
+        };
+        uint32_t control;
+    };
+} __attribute__((packed));
+
 // USBCMD bits
 #define XHCI_USBCMD_RUN_STOP           (1 << 0)
 #define XHCI_USBCMD_HCRESET            (1 << 1)
@@ -83,11 +105,40 @@ struct xhci_op_regs {
 #define XHCI_NEXT_EXT_CAP_PTR(ptr, next) \
     (volatile uint32_t*)((char*)(ptr) + ((next) * sizeof(uint32_t)))
 
-// Memory alignment constants (xHCI spec section 6.1)
-#define XHCI_DCBAA_ALIGNMENT    64
-#define XHCI_DCBAA_BOUNDARY     4096
-#define XHCI_SCRATCHPAD_BUF_ALIGNMENT  4096
-#define XHCI_SCRATCHPAD_BUF_BOUNDARY   4096
+// Memory alignment
+#define XHCI_DCBAA_ALIGNMENT            64
+#define XHCI_DCBAA_BOUNDARY             4096
+#define XHCI_SCRATCHPAD_BUF_ALIGNMENT   4096
+#define XHCI_SCRATCHPAD_BUF_BOUNDARY    4096
+
+// Command ring
+#define XHCI_COMMAND_RING_TRB_COUNT     256
+#define XHCI_CMD_RING_ALIGNMENT         64
+#define XHCI_CMD_RING_BOUNDARY          65536
+
+// TRB types
+#define XHCI_TRB_TYPE_LINK              6
+#define XHCI_TRB_TYPE_SHIFT             10
+#define XHCI_TRB_TYPE_MASK              0xFC00
+
+// CRCR bits
+#define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
+
+// Link TRB toggle cycle bit
+#define XHCI_LINK_TRB_TC_BIT            (1 << 1)
+
+// TRB completion codes
+#define XHCI_TRB_COMPLETION_SUCCESS     1
+
+// Construct a command TRB with given type
+#define XHCI_CONSTRUCT_CMD_TRB(type) \
+    xhci_trb_t { 0, 0, { .control = (type) << XHCI_TRB_TYPE_SHIFT } }
+
+// Slot ID and completion code extraction from event TRBs
+#define XHCI_SLOT_ID_MASK               0x3F000000
+#define XHCI_SLOT_ID_SHIFT              24
+#define XHCI_COMPLETION_CODE_MASK       0xFF0000
+#define XHCI_COMPLETION_CODE_SHIFT      16
 
 namespace xhci {
     bool init(void);
