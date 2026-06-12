@@ -54,12 +54,12 @@ struct xhci_op_regs {
 #define XHCI_USBSTS_CNR    (1 << 11)
 #define XHCI_USBSTS_HCE    (1 << 12)
 
-// HCSPARAMS1 field extraction
+// HCSPARAMS1
 #define XHCI_MAX_DEVICE_SLOTS(regs)  ((regs)->hcsparams1 & 0xFF)
 #define XHCI_MAX_INTERRUPTERS(regs)  (((regs)->hcsparams1 >> 8) & 0x7FF)
 #define XHCI_MAX_PORTS(regs)         (((regs)->hcsparams1 >> 24) & 0xFF)
 
-// HCSPARAMS2 field extraction
+// HCSPARAMS2
 #define XHCI_IST(regs)                     ((regs)->hcsparams2 & 0xF)
 #define XHCI_ERST_MAX(regs)                (((regs)->hcsparams2 >> 4) & 0xF)
 #define XHCI_MAX_SCRATCHPAD_BUFS_HI(regs)  (((regs)->hcsparams2 >> 21) & 0x1F)
@@ -67,7 +67,7 @@ struct xhci_op_regs {
 #define XHCI_MAX_SCRATCHPAD_BUFFERS(regs)  \
     ((XHCI_MAX_SCRATCHPAD_BUFS_HI(regs) << 5) | XHCI_MAX_SCRATCHPAD_BUFS_LO(regs))
 
-// HCCPARAMS1 field extraction
+// HCCPARAMS1
 #define XHCI_AC64(regs)  ((regs)->hccparams1 & 0x1)
 #define XHCI_BNC(regs)   (((regs)->hccparams1 >> 1) & 0x1)
 #define XHCI_CSZ(regs)   (((regs)->hccparams1 >> 2) & 0x1)
@@ -82,6 +82,12 @@ struct xhci_op_regs {
 #define XHCI_LEGACY_OS_OWNED             (1 << 24)
 #define XHCI_NEXT_EXT_CAP_PTR(ptr, next) \
     (volatile uint32_t*)((char*)(ptr) + ((next) * sizeof(uint32_t)))
+
+// Memory alignment constants (xHCI spec section 6.1)
+#define XHCI_DCBAA_ALIGNMENT    64
+#define XHCI_DCBAA_BOUNDARY     4096
+#define XHCI_SCRATCHPAD_BUF_ALIGNMENT  4096
+#define XHCI_SCRATCHPAD_BUF_BOUNDARY   4096
 
 namespace xhci {
     bool init(void);
