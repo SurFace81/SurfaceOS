@@ -317,10 +317,13 @@ struct usb_mass_storage_dev {
     uint8_t port_speed;
     uint8_t config_value;
     uint8_t interface_number;
-    uint8_t bulk_in_ep;      // endpoint address (e.g. 0x81)
-    uint8_t bulk_out_ep;     // endpoint address (e.g. 0x02)
+    uint8_t bulk_in_ep;
+    uint8_t bulk_out_ep;
     uint16_t bulk_in_max_packet;
     uint16_t bulk_out_max_packet;
+    xhci_transfer_ring bulk_in_ring;
+    xhci_transfer_ring bulk_out_ring;
+    bool configured;
     bool found;
 };
 
@@ -686,6 +689,53 @@ static sint32_t control_transfer_in(uint8_t slot_id, uint8_t* setup_packet,
     return transferred;
 }
 
+// Control transfer with no data stage (e.g. SET_CONFIGURATION, SET_INTERFACE)
+static bool control_transfer_no_data(uint8_t slot_id, uint8_t* setup_packet) {
+    xhci_transfer_ring* ring = &ep0_rings[slot_id];
+
+    // Setup Stage TRB (type 2), TRT=0 (No Data Stage)
+    xhci_trb_t setup_trb;
+    memory::memset((uint8_t*)&setup_trb, 0, sizeof(xhci_trb_t));
+    setup_trb.parameter = (uint64_t)setup_packet[0]
+                        | ((uint64_t)setup_packet[1] << 8)
+                        | ((uint64_t)setup_packet[2] << 16)
+                        | ((uint64_t)setup_packet[3] << 24)
+                        | ((uint64_t)setup_packet[4] << 32)
+                        | ((uint64_t)setup_packet[5] << 40)
+                        | ((uint64_t)setup_packet[6] << 48)
+                        | ((uint64_t)setup_packet[7] << 56);
+    setup_trb.status = 8;
+    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT)
+                      | (1 << 6);  // IDT=1, TRT=0 (no data)
+    transfer_ring_enqueue(ring, &setup_trb);
+
+    // Status Stage TRB (type 4), DIR=1 (IN) since no data stage
+    xhci_trb_t status_trb;
+    memory::memset((uint8_t*)&status_trb, 0, sizeof(xhci_trb_t));
+    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT)
+                       | (1 << 5)    // IOC
+                       | (1 << 16);  // DIR=1 (IN)
+    transfer_ring_enqueue(ring, &status_trb);
+
+    ring_doorbell(slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
+
+    xhci_transfer_event_trb_t* evt = wait_transfer_event(500);
+    if (!evt) {
+        uart::printf("xhci: control no-data transfer timeout slot=%u\n", (uint32_t)slot_id);
+        return false;
+    }
+
+    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: control no-data transfer failed slot=%u code=%u (%s)\n",
+                     (uint32_t)slot_id,
+                     (uint32_t)evt->completion_code,
+                     completion_code_str(evt->completion_code));
+        return false;
+    }
+
+    return true;
+}
+
 // Allocate input context for a device
 static xhci_input_context* alloc_input_context() {
     xhci_input_context* ctx = (xhci_input_context*)alloc_xhci_memory(
@@ -920,6 +970,107 @@ static bool get_config_descriptor(uint8_t slot_id, uint8_t port_speed, uint8_t p
                      (uint32_t)slot_id, (uint32_t)bulk_in_ep, (uint32_t)bulk_out_ep);
     }
 
+    return true;
+}
+
+static bool configure_mass_storage(usb_mass_storage_dev* msd) {
+    uint8_t slot_id = msd->slot_id;
+
+    // Step 1: SET_CONFIGURATION
+    uint8_t setup[8];
+    setup[0] = 0x00;  // bmRequestType: Host-to-Device, Standard, Device
+    setup[1] = 0x09;  // bRequest: SET_CONFIGURATION
+    setup[2] = msd->config_value;  // wValue low
+    setup[3] = 0x00;               // wValue high
+    setup[4] = 0x00;  // wIndex
+    setup[5] = 0x00;
+    setup[6] = 0x00;  // wLength
+    setup[7] = 0x00;
+
+    uart::printf("xhci: SET_CONFIGURATION %u for slot %u\n",
+                 (uint32_t)msd->config_value, (uint32_t)slot_id);
+
+    if (!control_transfer_no_data(slot_id, setup)) {
+        uart::printf("xhci: SET_CONFIGURATION failed\n");
+        return false;
+    }
+    uart::printf("xhci: SET_CONFIGURATION OK\n");
+
+    // Step 2: Allocate transfer rings for bulk endpoints
+    transfer_ring_init(&msd->bulk_in_ring, XHCI_TRANSFER_RING_TRB_COUNT);
+    transfer_ring_init(&msd->bulk_out_ring, XHCI_TRANSFER_RING_TRB_COUNT);
+
+    // Step 3: Build Input Context for Configure Endpoint Command
+    // Calculate DCI (Device Context Index) for each endpoint
+    // DCI = endpoint_number * 2 + direction (0=OUT, 1=IN)
+    // For bulk_in_ep=0x81: ep_num=1, dir=IN(1), DCI = 1*2+1 = 3
+    // For bulk_out_ep=0x02: ep_num=2, dir=OUT(0), DCI = 2*2+0 = 4
+    uint8_t in_ep_num = msd->bulk_in_ep & 0x0F;
+    uint8_t out_ep_num = msd->bulk_out_ep & 0x0F;
+    uint8_t in_dci = in_ep_num * 2 + 1;   // IN direction
+    uint8_t out_dci = out_ep_num * 2;      // OUT direction
+
+    // Max DCI determines context_entries in slot context
+    uint8_t max_dci = in_dci > out_dci ? in_dci : out_dci;
+
+    uart::printf("xhci: bulk_in DCI=%u, bulk_out DCI=%u, max_dci=%u\n",
+                 (uint32_t)in_dci, (uint32_t)out_dci, (uint32_t)max_dci);
+
+    xhci_input_context* input_ctx = alloc_input_context();
+    if (!input_ctx) return false;
+
+    // Add flags: Slot (bit 0) + both endpoint DCIs
+    input_ctx->control_context.add_flags = (1 << 0) | (1 << in_dci) | (1 << out_dci);
+    input_ctx->control_context.drop_flags = 0;
+
+    // Update Slot Context
+    xhci_slot_context* slot = &input_ctx->device_context.slot_context;
+    // Copy current slot context from output context
+    xhci_device_context* out_ctx = (xhci_device_context*)dcbaa_virt[slot_id];
+    *slot = out_ctx->slot_context;
+    slot->context_entries = max_dci;
+
+    // Bulk IN endpoint context (ep[] is 0-indexed, DCI 2 = ep[0], DCI 3 = ep[1], etc.)
+    // control_ep_context is DCI 1, ep[0] is DCI 2, ep[1] is DCI 3 ...
+    xhci_endpoint_context* ep_in = &input_ctx->device_context.ep[in_dci - 2];
+    ep_in->endpoint_type = XHCI_EP_TYPE_BULK_IN;
+    ep_in->max_packet_size = msd->bulk_in_max_packet;
+    ep_in->max_burst_size = 0;
+    ep_in->error_count = 3;
+    ep_in->average_trb_length = 1024;
+    ep_in->transfer_ring_dequeue_ptr = msd->bulk_in_ring.phys_base | 1; // DCS=1
+
+    // Bulk OUT endpoint context
+    xhci_endpoint_context* ep_out = &input_ctx->device_context.ep[out_dci - 2];
+    ep_out->endpoint_type = XHCI_EP_TYPE_BULK_OUT;
+    ep_out->max_packet_size = msd->bulk_out_max_packet;
+    ep_out->max_burst_size = 0;
+    ep_out->error_count = 3;
+    ep_out->average_trb_length = 1024;
+    ep_out->transfer_ring_dequeue_ptr = msd->bulk_out_ring.phys_base | 1; // DCS=1
+
+    // Step 4: Send Configure Endpoint Command
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.parameter = xhci_virt_to_phys(input_ctx);
+    cmd.control = (XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD << XHCI_TRB_TYPE_SHIFT)
+                | ((uint32_t)slot_id << 24);
+
+    xhci_cmd_completion_trb_t* cc = send_command(&cmd, 500);
+    if (!cc) {
+        uart::printf("xhci: configure endpoint timeout\n");
+        return false;
+    }
+
+    if (cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: configure endpoint FAILED code=%u (%s)\n",
+                     (uint32_t)cc->completion_code,
+                     completion_code_str(cc->completion_code));
+        return false;
+    }
+
+    msd->configured = true;
+    uart::printf("xhci: configure endpoint OK, device ready for BOT/SCSI\n");
     return true;
 }
 
@@ -1239,6 +1390,9 @@ namespace xhci {
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
         if (!dev) { uart::printf("xhci: no xHCI controller found\n"); return false; }
 
+        mass_storage_count = 0;
+        memory::memset((uint8_t*)mass_storage_devs, 0, sizeof(mass_storage_devs));
+
         uart::printf("xhci: found controller %x:%x at %u:%u.%u\n",
             (uint32_t)dev->vendor_id, (uint32_t)dev->device_id,
             (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function);
@@ -1286,6 +1440,13 @@ namespace xhci {
                     uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
                 }
             }
+        }
+
+        // Configure all found Mass Storage devices
+        for (uint8_t i = 0; i < mass_storage_count; i++) {
+            uart::printf("xhci: configuring mass storage device %u (slot=%u)\n",
+                         (uint32_t)i, (uint32_t)mass_storage_devs[i].slot_id);
+            configure_mass_storage(&mass_storage_devs[i]);
         }
 
         return true;

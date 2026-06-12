@@ -436,6 +436,12 @@ struct usb_endpoint_descriptor {
 // TRB completion codes
 #define XHCI_TRB_COMPLETION_SUCCESS     1
 
+#define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD  12
+
+// Endpoint types for endpoint context
+#define XHCI_EP_TYPE_BULK_OUT    2
+#define XHCI_EP_TYPE_BULK_IN     6
+
 // Doorbell
 #define XHCI_DOORBELL_TARGET_COMMAND_RING   0
 #define XHCI_DOORBELL_TARGET_CONTROL_EP     1
