@@ -10,6 +10,7 @@
 #include "../include/mm/memory.h"
 #include "../include/stdlib/list.h"
 #include "../include/stdlib/stdio.h"
+#include "../include/drivers/usb/xhci.h"
 
 extern "C" void kmain(BOOT_HEADER* BootHeader)
 {
@@ -30,6 +31,8 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     keyboard::init();
     console::init();
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
+
+    xhci::init();
 
     //uart::listen_loop();
     while (1);

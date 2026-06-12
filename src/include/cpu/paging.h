@@ -17,6 +17,7 @@ namespace paging
     void        init(uint64_t*);
     void        allocate_pages(uint64_t virt, uint64_t phys, uint64_t size);
     uint64_t    get_phys_addr(uint64_t virt);
+    uint64_t    map_mmio_region(uint64_t phys, uint64_t size_bytes);
 } // namespace paging
 
 #endif // PAGING_H
