@@ -1,5 +1,7 @@
 #include "../../../include/drivers/usb/xhci.h"
 
+static volatile xhci_runtime_regs* runtime_regs = nullptr;
+
 // Busy-wait delay
 static void delay_ms(uint32_t ms) {
     for (uint32_t i = 0; i < ms; i++)
@@ -88,6 +90,7 @@ static uint64_t get_bar_size_64(PCIDevice* dev, int bar_index) {
     }
     return (~size_mask) + 1;
 }
+
 
 // Command ring state
 struct xhci_cmd_ring {
@@ -189,6 +192,7 @@ static void parse_cap_regs() {
     xecp_offset          = XHCI_XECP(cap_regs) * sizeof(uint32_t);
 
     op_regs = (volatile xhci_op_regs*)(xhc_base + cap_regs->caplength);
+    runtime_regs = (volatile xhci_runtime_regs*)(xhc_base + cap_regs->rtsoff);
 }
 
 static void log_cap_regs() {
@@ -371,6 +375,41 @@ static void configure_operational_regs() {
                  read_mmio64(&op_regs->crcr), crcr_val);
 }
 
+// Acknowledge pending interrupt on a given interrupter
+static void acknowledge_irq(uint8_t interrupter) {
+    // Clear EINT in USBSTS (write-1-to-clear)
+    op_regs->usbsts = XHCI_USBSTS_EINT;
+
+    // Clear Interrupt Pending in IMAN (write-1-to-clear, preserve IE)
+    volatile xhci_interrupter_regs* ir = &runtime_regs->ir[interrupter];
+    uint32_t iman = ir->iman;
+    iman |= XHCI_IMAN_INTERRUPT_PENDING;
+    ir->iman = iman;
+}
+
+// Configure runtime registers (primary interrupter)
+static void configure_runtime_regs() {
+    volatile xhci_interrupter_regs* ir = &runtime_regs->ir[0];
+
+    // Enable interrupts on primary interrupter
+    uint32_t iman = ir->iman;
+    iman |= XHCI_IMAN_INTERRUPT_ENABLE;
+    ir->iman = iman;
+
+    uart::printf("xhci: runtime regs at %llx\n", (uint64_t)runtime_regs);
+    uart::printf("xhci: interrupter[0] iman=%x imod=%x erstsz=%u\n",
+                 ir->iman, ir->imod, ir->erstsz);
+    uart::printf("xhci: interrupter[0] erstba=%llx erdp=%llx\n",
+                 read_mmio64(&ir->erstba), read_mmio64(&ir->erdp));
+
+    // Event ring setup will come in the next lesson (ERSTSZ, ERSTBA, ERDP)
+
+    // Clear any pending interrupts
+    acknowledge_irq(0);
+
+    uart::printf("xhci: primary interrupter enabled, pending IRQs cleared\n");
+}
+
 namespace xhci {
     bool init() {
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
@@ -408,6 +447,8 @@ namespace xhci {
 
         configure_operational_regs();
         log_op_regs();
+
+        configure_runtime_regs();
 
         return true;
     }

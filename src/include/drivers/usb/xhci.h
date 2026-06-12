@@ -36,6 +36,30 @@ struct xhci_op_regs {
     uint32_t reserved2[49];
 } __attribute__((packed));
 
+// Interrupter registers (xHCI spec section 5.5.2)
+struct xhci_interrupter_regs {
+    uint32_t iman;      // Interrupter Management
+    uint32_t imod;      // Interrupter Moderation
+    uint32_t erstsz;    // Event Ring Segment Table Size
+    uint32_t rsvd;
+    uint64_t erstba;    // Event Ring Segment Table Base Address
+    union {
+        struct {
+            uint64_t dequeue_erst_segment_index : 3;
+            uint64_t event_handler_busy         : 1;
+            uint64_t event_ring_dequeue_pointer : 60;
+        };
+        uint64_t erdp;  // Event Ring Dequeue Pointer
+    };
+} __attribute__((packed));
+
+// Runtime registers (xHCI spec section 5.5)
+struct xhci_runtime_regs {
+    uint32_t mf_index;
+    uint32_t rsvdz[7];
+    xhci_interrupter_regs ir[1024];
+} __attribute__((packed));
+
 // TRB structure (xHCI spec section 4.11, figure 4-13)
 struct xhci_trb_t {
     uint64_t parameter;
@@ -75,6 +99,10 @@ struct xhci_trb_t {
 #define XHCI_USBSTS_SRE    (1 << 10)
 #define XHCI_USBSTS_CNR    (1 << 11)
 #define XHCI_USBSTS_HCE    (1 << 12)
+
+// IMAN bits (Interrupter Management)
+#define XHCI_IMAN_INTERRUPT_PENDING  (1 << 0)
+#define XHCI_IMAN_INTERRUPT_ENABLE   (1 << 1)
 
 // HCSPARAMS1
 #define XHCI_MAX_DEVICE_SLOTS(regs)  ((regs)->hcsparams1 & 0xFF)
@@ -134,7 +162,7 @@ struct xhci_trb_t {
 #define XHCI_CONSTRUCT_CMD_TRB(type) \
     xhci_trb_t { 0, 0, { .control = (type) << XHCI_TRB_TYPE_SHIFT } }
 
-// Slot ID and completion code extraction from event TRBs
+// Slot ID and completion code extraction
 #define XHCI_SLOT_ID_MASK               0x3F000000
 #define XHCI_SLOT_ID_SHIFT              24
 #define XHCI_COMPLETION_CODE_MASK       0xFF0000
