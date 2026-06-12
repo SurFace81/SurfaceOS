@@ -1,7 +1,5 @@
 #include "../../../include/drivers/usb/xhci.h"
 
-static volatile xhci_runtime_regs* runtime_regs = nullptr;
-
 // Busy-wait delay
 static void delay_ms(uint32_t ms) {
     for (uint32_t i = 0; i < ms; i++)
@@ -91,8 +89,7 @@ static uint64_t get_bar_size_64(PCIDevice* dev, int bar_index) {
     return (~size_mask) + 1;
 }
 
-
-// Command ring state
+// Command ring
 struct xhci_cmd_ring {
     xhci_trb_t* trbs;
     uintptr_t   phys_base;
@@ -109,23 +106,17 @@ static void cmd_ring_init(xhci_cmd_ring* ring, size_t max_trbs) {
     uint64_t ring_size = max_trbs * sizeof(xhci_trb_t);
 
     ring->trbs = (xhci_trb_t*)alloc_xhci_memory(
-        ring_size,
-        XHCI_CMD_RING_ALIGNMENT,
-        XHCI_CMD_RING_BOUNDARY
-    );
+        ring_size, XHCI_CMD_RING_ALIGNMENT, XHCI_CMD_RING_BOUNDARY);
 
     ring->phys_base = xhci_virt_to_phys(ring->trbs);
 
-    // Last TRB is a Link TRB pointing back to ring start
     ring->trbs[max_trbs - 1].parameter = ring->phys_base;
     ring->trbs[max_trbs - 1].control =
         (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
-        XHCI_LINK_TRB_TC_BIT |
-        ring->cycle_bit;
+        XHCI_LINK_TRB_TC_BIT | ring->cycle_bit;
 
     uart::printf("xhci: command ring virt=%llx phys=%llx trbs=%u\n",
-                 (uint64_t)ring->trbs, (uint64_t)ring->phys_base,
-                 (uint32_t)max_trbs);
+                 (uint64_t)ring->trbs, (uint64_t)ring->phys_base, (uint32_t)max_trbs);
     uart::printf("xhci: link TRB[%u] -> phys=%llx control=%x\n",
                  (uint32_t)(max_trbs - 1),
                  ring->trbs[max_trbs - 1].parameter,
@@ -133,28 +124,116 @@ static void cmd_ring_init(xhci_cmd_ring* ring, size_t max_trbs) {
 }
 
 static void cmd_ring_enqueue(xhci_cmd_ring* ring, xhci_trb_t* trb) {
-    // Set cycle bit to current ring cycle state
     trb->cycle_bit = ring->cycle_bit;
-
-    // Copy TRB into ring
     ring->trbs[ring->enqueue_ptr] = *trb;
 
-    // Advance enqueue pointer; wrap before the Link TRB
     if (++ring->enqueue_ptr == ring->max_trb_count - 1) {
-        // Update Link TRB with current cycle state
         ring->trbs[ring->max_trb_count - 1].control =
             (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
-            XHCI_LINK_TRB_TC_BIT |
-            ring->cycle_bit;
-
+            XHCI_LINK_TRB_TC_BIT | ring->cycle_bit;
         ring->enqueue_ptr = 0;
         ring->cycle_bit = !ring->cycle_bit;
     }
 }
 
+// Event ring
+struct xhci_evt_ring {
+    xhci_trb_t*       trbs;
+    uintptr_t          phys_base;
+    xhci_erst_entry*   segment_table;
+    volatile xhci_interrupter_regs* interrupter;
+    size_t             segment_trb_count;
+    uint64_t           dequeue_ptr;
+    uint8_t            cycle_bit;
+};
+
+static void evt_ring_update_erdp(xhci_evt_ring* ring) {
+    uint64_t dequeue_addr = ring->phys_base + (ring->dequeue_ptr * sizeof(xhci_trb_t));
+    write_mmio64(&ring->interrupter->erdp, dequeue_addr);
+}
+
+static void evt_ring_init(xhci_evt_ring* ring, size_t max_trbs,
+                           volatile xhci_interrupter_regs* interrupter) {
+    ring->interrupter = interrupter;
+    ring->segment_trb_count = max_trbs;
+    ring->cycle_bit = XHCI_CRCR_RING_CYCLE_STATE;
+    ring->dequeue_ptr = 0;
+
+    uint64_t segment_size = max_trbs * sizeof(xhci_trb_t);
+    uint64_t table_size = 1 * sizeof(xhci_erst_entry);
+
+    // Allocate event ring segment
+    ring->trbs = (xhci_trb_t*)alloc_xhci_memory(
+        segment_size, XHCI_EVT_RING_ALIGNMENT, XHCI_EVT_RING_BOUNDARY);
+    ring->phys_base = xhci_virt_to_phys(ring->trbs);
+
+    // Allocate segment table (single entry)
+    ring->segment_table = (xhci_erst_entry*)alloc_xhci_memory(
+        table_size, XHCI_ERST_ALIGNMENT, XHCI_ERST_BOUNDARY);
+
+    // Fill segment table entry
+    ring->segment_table[0].ring_segment_base_address = ring->phys_base;
+    ring->segment_table[0].ring_segment_size = max_trbs;
+    ring->segment_table[0].rsvd = 0;
+
+    // Write ERSTSZ (number of segments = 1)
+    interrupter->erstsz = 1;
+
+    // Write ERDP first
+    evt_ring_update_erdp(ring);
+
+    // Write ERSTBA last (spec says writing ERSTBA may cause the controller
+    // to read the segment table, so everything must be ready before this)
+    write_mmio64(&interrupter->erstba, xhci_virt_to_phys(ring->segment_table));
+
+    uart::printf("xhci: event ring virt=%llx phys=%llx trbs=%u\n",
+                 (uint64_t)ring->trbs, (uint64_t)ring->phys_base, (uint32_t)max_trbs);
+    uart::printf("xhci: ERST entry[0] base=%llx size=%u\n",
+                 ring->segment_table[0].ring_segment_base_address,
+                 ring->segment_table[0].ring_segment_size);
+    uart::printf("xhci: ERSTSZ=%u ERSTBA=%llx ERDP=%llx\n",
+                 interrupter->erstsz,
+                 read_mmio64(&interrupter->erstba),
+                 read_mmio64(&interrupter->erdp));
+}
+
+static bool evt_ring_has_events(xhci_evt_ring* ring) {
+    return (ring->trbs[ring->dequeue_ptr].cycle_bit == ring->cycle_bit);
+}
+
+static xhci_trb_t* evt_ring_dequeue_trb(xhci_evt_ring* ring) {
+    if (ring->trbs[ring->dequeue_ptr].cycle_bit != ring->cycle_bit) {
+        uart::printf("xhci: event ring dequeue: no valid TRB\n");
+        return nullptr;
+    }
+
+    xhci_trb_t* trb = &ring->trbs[ring->dequeue_ptr];
+
+    if (++ring->dequeue_ptr == ring->segment_trb_count) {
+        ring->dequeue_ptr = 0;
+        ring->cycle_bit = !ring->cycle_bit;
+    }
+
+    return trb;
+}
+
+// Dequeue all pending events, update ERDP, clear EHB
+static void evt_ring_flush(xhci_evt_ring* ring) {
+    while (evt_ring_has_events(ring)) {
+        evt_ring_dequeue_trb(ring);
+    }
+    evt_ring_update_erdp(ring);
+
+    // Clear Event Handler Busy bit
+    uint64_t erdp = read_mmio64(&ring->interrupter->erdp);
+    erdp |= XHCI_ERDP_EHB;
+    write_mmio64(&ring->interrupter->erdp, erdp);
+}
+
 // Driver state
-static volatile xhci_cap_regs* cap_regs = nullptr;
-static volatile xhci_op_regs*  op_regs  = nullptr;
+static volatile xhci_cap_regs*      cap_regs     = nullptr;
+static volatile xhci_op_regs*       op_regs      = nullptr;
+static volatile xhci_runtime_regs*  runtime_regs = nullptr;
 static uintptr_t xhc_base = 0;
 
 static uint8_t  max_device_slots;
@@ -174,6 +253,7 @@ static uint64_t* dcbaa = nullptr;
 static uint64_t* dcbaa_virt = nullptr;
 
 static xhci_cmd_ring cmd_ring;
+static xhci_evt_ring evt_ring;
 
 static void parse_cap_regs() {
     cap_regs = (volatile xhci_cap_regs*)xhc_base;
@@ -310,15 +390,12 @@ static void setup_dcbaa() {
     size_t dcbaa_size = sizeof(uint64_t) * (max_device_slots + 1);
 
     dcbaa = (uint64_t*)alloc_xhci_memory(dcbaa_size,
-                                          XHCI_DCBAA_ALIGNMENT,
-                                          XHCI_DCBAA_BOUNDARY);
-
+                                          XHCI_DCBAA_ALIGNMENT, XHCI_DCBAA_BOUNDARY);
     dcbaa_virt = (uint64_t*)kmalloc(sizeof(uint64_t) * (max_device_slots + 1));
     memory::memset((uint8_t*)dcbaa_virt, 0, sizeof(uint64_t) * (max_device_slots + 1));
 
     uart::printf("xhci: DCBAA virt=%llx phys=%llx slots=%u\n",
-                 (uint64_t)dcbaa,
-                 (uint64_t)xhci_virt_to_phys(dcbaa),
+                 (uint64_t)dcbaa, (uint64_t)xhci_virt_to_phys(dcbaa),
                  (uint32_t)max_device_slots);
 
     if (max_scratchpad_bufs > 0) {
@@ -327,29 +404,20 @@ static void setup_dcbaa() {
 
         uint64_t* sp_array = (uint64_t*)alloc_xhci_memory(
             max_scratchpad_bufs * sizeof(uint64_t),
-            XHCI_DCBAA_ALIGNMENT,
-            XHCI_DCBAA_BOUNDARY
-        );
+            XHCI_DCBAA_ALIGNMENT, XHCI_DCBAA_BOUNDARY);
 
         for (uint32_t i = 0; i < max_scratchpad_bufs; i++) {
-            void* sp_page = alloc_xhci_memory(
-                4096,
-                XHCI_SCRATCHPAD_BUF_ALIGNMENT,
-                XHCI_SCRATCHPAD_BUF_BOUNDARY
-            );
-            uint64_t sp_phys = xhci_virt_to_phys(sp_page);
-            sp_array[i] = sp_phys;
-
+            void* sp_page = alloc_xhci_memory(4096,
+                XHCI_SCRATCHPAD_BUF_ALIGNMENT, XHCI_SCRATCHPAD_BUF_BOUNDARY);
+            sp_array[i] = xhci_virt_to_phys(sp_page);
             uart::printf("xhci: scratchpad[%u] virt=%llx phys=%llx\n",
-                         i, (uint64_t)sp_page, sp_phys);
+                         i, (uint64_t)sp_page, sp_array[i]);
         }
 
-        uint64_t sp_array_phys = xhci_virt_to_phys(sp_array);
-        dcbaa[0] = sp_array_phys;
+        dcbaa[0] = xhci_virt_to_phys(sp_array);
         dcbaa_virt[0] = (uint64_t)sp_array;
-
         uart::printf("xhci: scratchpad array virt=%llx phys=%llx\n",
-                     (uint64_t)sp_array, sp_array_phys);
+                     (uint64_t)sp_array, dcbaa[0]);
     }
 
     write_mmio64(&op_regs->dcbaap, xhci_virt_to_phys(dcbaa));
@@ -360,34 +428,29 @@ static void configure_operational_regs() {
     op_regs->dnctrl = 0xFFFF;
     op_regs->config = (uint32_t)max_device_slots;
 
-    uart::printf("xhci: config=%u dnctrl=%x\n",
-                 op_regs->config, op_regs->dnctrl);
+    uart::printf("xhci: config=%u dnctrl=%x\n", op_regs->config, op_regs->dnctrl);
 
     setup_dcbaa();
 
-    // Setup command ring
     cmd_ring_init(&cmd_ring, XHCI_COMMAND_RING_TRB_COUNT);
 
-    // Write CRCR: physical base of command ring OR'd with cycle bit
     uint64_t crcr_val = cmd_ring.phys_base | cmd_ring.cycle_bit;
     write_mmio64(&op_regs->crcr, crcr_val);
-    uart::printf("xhci: CRCR set to %llx\n",
-                 read_mmio64(&op_regs->crcr), crcr_val);
+    uart::printf("xhci: CRCR written: %llx\n", crcr_val);
 }
 
-// Acknowledge pending interrupt on a given interrupter
 static void acknowledge_irq(uint8_t interrupter) {
-    // Clear EINT in USBSTS (write-1-to-clear)
-    op_regs->usbsts = XHCI_USBSTS_EINT;
-
-    // Clear Interrupt Pending in IMAN (write-1-to-clear, preserve IE)
     volatile xhci_interrupter_regs* ir = &runtime_regs->ir[interrupter];
+
+    // Clear IP in IMAN (write-1-to-clear), preserve IE
     uint32_t iman = ir->iman;
     iman |= XHCI_IMAN_INTERRUPT_PENDING;
     ir->iman = iman;
+
+    // Clear EINT in USBSTS (write-1-to-clear)
+    op_regs->usbsts = XHCI_USBSTS_EINT;
 }
 
-// Configure runtime registers (primary interrupter)
 static void configure_runtime_regs() {
     volatile xhci_interrupter_regs* ir = &runtime_regs->ir[0];
 
@@ -396,18 +459,16 @@ static void configure_runtime_regs() {
     iman |= XHCI_IMAN_INTERRUPT_ENABLE;
     ir->iman = iman;
 
-    uart::printf("xhci: runtime regs at %llx\n", (uint64_t)runtime_regs);
-    uart::printf("xhci: interrupter[0] iman=%x imod=%x erstsz=%u\n",
-                 ir->iman, ir->imod, ir->erstsz);
-    uart::printf("xhci: interrupter[0] erstba=%llx erdp=%llx\n",
-                 read_mmio64(&ir->erstba), read_mmio64(&ir->erdp));
+    // Setup event ring on primary interrupter
+    evt_ring_init(&evt_ring, XHCI_EVENT_RING_TRB_COUNT, ir);
 
-    // Event ring setup will come in the next lesson (ERSTSZ, ERSTBA, ERDP)
+    uart::printf("xhci: runtime regs at %llx\n", (uint64_t)runtime_regs);
+    uart::printf("xhci: interrupter[0] iman=%x imod=%x\n", ir->iman, ir->imod);
 
     // Clear any pending interrupts
     acknowledge_irq(0);
 
-    uart::printf("xhci: primary interrupter enabled, pending IRQs cleared\n");
+    uart::printf("xhci: primary interrupter configured\n");
 }
 
 namespace xhci {
