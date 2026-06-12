@@ -310,6 +310,24 @@ static uint64_t* dcbaa_virt = nullptr;
 
 static xhci_transfer_ring ep0_rings[65]; // indexed by slot_id (1-based, max 64 slots)
 
+// Per-device info we need for later steps
+struct usb_mass_storage_dev {
+    uint8_t slot_id;
+    uint8_t port_index;
+    uint8_t port_speed;
+    uint8_t config_value;
+    uint8_t interface_number;
+    uint8_t bulk_in_ep;      // endpoint address (e.g. 0x81)
+    uint8_t bulk_out_ep;     // endpoint address (e.g. 0x02)
+    uint16_t bulk_in_max_packet;
+    uint16_t bulk_out_max_packet;
+    bool found;
+};
+
+#define MAX_MASS_STORAGE_DEVS 8
+static usb_mass_storage_dev mass_storage_devs[MAX_MASS_STORAGE_DEVS];
+static uint8_t mass_storage_count = 0;
+
 static xhci_cmd_ring cmd_ring;
 static xhci_evt_ring evt_ring;
 
@@ -779,6 +797,132 @@ static bool get_device_descriptor(uint8_t slot_id, uint8_t port_speed) {
     return true;
 }
 
+static bool get_config_descriptor(uint8_t slot_id, uint8_t port_speed, uint8_t port_index) {
+    // Read first 9 bytes to get wTotalLength
+    uint8_t* buf = (uint8_t*)alloc_xhci_memory(512, 64, 4096);
+    uintptr_t buf_phys = xhci_virt_to_phys(buf);
+
+    uint8_t setup[8];
+    setup[0] = 0x80;  // bmRequestType: Device-to-Host, Standard, Device
+    setup[1] = 0x06;  // bRequest: GET_DESCRIPTOR
+    setup[2] = 0x00;  // wValue low: index 0
+    setup[3] = 0x02;  // wValue high: CONFIGURATION descriptor
+    setup[4] = 0x00;  // wIndex
+    setup[5] = 0x00;
+    setup[6] = 9;     // wLength: just the header
+    setup[7] = 0;
+
+    sint32_t got = control_transfer_in(slot_id, setup, buf, buf_phys, 9);
+    if (got < 9) {
+        uart::printf("xhci: get config desc header failed, got=%d\n", got);
+        return false;
+    }
+
+    usb_config_descriptor* cfg = (usb_config_descriptor*)buf;
+    uint16_t total_len = cfg->wTotalLength;
+    uint8_t config_value = cfg->bConfigurationValue;
+
+    uart::printf("xhci: config descriptor slot=%u: wTotalLength=%u bNumInterfaces=%u bConfigValue=%u\n",
+                 (uint32_t)slot_id, (uint32_t)total_len,
+                 (uint32_t)cfg->bNumInterfaces, (uint32_t)config_value);
+
+    if (total_len > 512) total_len = 512;
+
+    // Read full configuration descriptor
+    memory::memset(buf, 0, 512);
+    setup[6] = (uint8_t)(total_len & 0xFF);
+    setup[7] = (uint8_t)(total_len >> 8);
+
+    got = control_transfer_in(slot_id, setup, buf, buf_phys, total_len);
+    if (got < (sint32_t)total_len) {
+        uart::printf("xhci: get config desc full failed, got=%d expected=%u\n",
+                     got, (uint32_t)total_len);
+        return false;
+    }
+
+    // Parse descriptor chain
+    uint16_t offset = 0;
+    bool in_mass_storage = false;
+    uint8_t bulk_in_ep = 0;
+    uint8_t bulk_out_ep = 0;
+    uint16_t bulk_in_max_pkt = 0;
+    uint16_t bulk_out_max_pkt = 0;
+    uint8_t iface_number = 0;
+
+    while (offset + 2 <= total_len) {
+        uint8_t desc_len = buf[offset];
+        uint8_t desc_type = buf[offset + 1];
+
+        if (desc_len == 0) break; // safety
+
+        if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9) {
+            usb_interface_descriptor* iface = (usb_interface_descriptor*)(buf + offset);
+
+            uart::printf("xhci:   interface %u: class=%u sub=%u proto=%u endpoints=%u\n",
+                         (uint32_t)iface->bInterfaceNumber,
+                         (uint32_t)iface->bInterfaceClass,
+                         (uint32_t)iface->bInterfaceSubClass,
+                         (uint32_t)iface->bInterfaceProtocol,
+                         (uint32_t)iface->bNumEndpoints);
+
+            if (iface->bInterfaceClass == USB_CLASS_MASS_STORAGE &&
+                iface->bInterfaceSubClass == USB_SUBCLASS_SCSI &&
+                iface->bInterfaceProtocol == USB_PROTOCOL_BBB) {
+                uart::printf("xhci:   -> Mass Storage BBB found!\n");
+                in_mass_storage = true;
+                iface_number = iface->bInterfaceNumber;
+            } else {
+                in_mass_storage = false;
+            }
+        }
+
+        if (desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7 && in_mass_storage) {
+            usb_endpoint_descriptor* ep = (usb_endpoint_descriptor*)(buf + offset);
+            uint8_t ep_addr = ep->bEndpointAddress;
+            uint8_t ep_type = ep->bmAttributes & 0x03;
+
+            uart::printf("xhci:   endpoint addr=0x%x type=%u maxpkt=%u\n",
+                         (uint32_t)ep_addr, (uint32_t)ep_type,
+                         (uint32_t)ep->wMaxPacketSize);
+
+            // Bulk endpoint (type 2)
+            if (ep_type == 2) {
+                if (ep_addr & 0x80) {
+                    // IN endpoint
+                    bulk_in_ep = ep_addr;
+                    bulk_in_max_pkt = ep->wMaxPacketSize;
+                } else {
+                    // OUT endpoint
+                    bulk_out_ep = ep_addr;
+                    bulk_out_max_pkt = ep->wMaxPacketSize;
+                }
+            }
+        }
+
+        offset += desc_len;
+    }
+
+    // Store mass storage device info if found
+    if (bulk_in_ep && bulk_out_ep && mass_storage_count < MAX_MASS_STORAGE_DEVS) {
+        usb_mass_storage_dev* msd = &mass_storage_devs[mass_storage_count++];
+        msd->slot_id = slot_id;
+        msd->port_index = port_index;
+        msd->port_speed = port_speed;
+        msd->config_value = config_value;
+        msd->interface_number = iface_number;
+        msd->bulk_in_ep = bulk_in_ep;
+        msd->bulk_out_ep = bulk_out_ep;
+        msd->bulk_in_max_packet = bulk_in_max_pkt;
+        msd->bulk_out_max_packet = bulk_out_max_pkt;
+        msd->found = true;
+
+        uart::printf("xhci: mass storage registered: slot=%u bulk_in=0x%x bulk_out=0x%x\n",
+                     (uint32_t)slot_id, (uint32_t)bulk_in_ep, (uint32_t)bulk_out_ep);
+    }
+
+    return true;
+}
+
 // Extended capability: Supported Protocol (xHCI spec section 7.2)
 struct xhci_supported_protocol {
     uint8_t id;
@@ -1085,6 +1229,9 @@ static void setup_device(uint8_t port_index) {
 
     // Step 6: Get Device Descriptor
     get_device_descriptor(slot_id, port_speed);
+
+    // Step 7: Get Configuration Descriptor and find Mass Storage
+    get_config_descriptor(slot_id, port_speed, port_index);
 }
 
 namespace xhci {

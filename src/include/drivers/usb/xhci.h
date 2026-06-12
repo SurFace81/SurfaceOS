@@ -382,6 +382,52 @@ struct usb_device_descriptor {
     uint8_t  bNumConfigurations;
 } __attribute__((packed));
 
+// USB Configuration Descriptor (USB 2.0 spec table 9-10)
+struct usb_config_descriptor {
+    uint8_t  bLength;
+    uint8_t  bDescriptorType;
+    uint16_t wTotalLength;
+    uint8_t  bNumInterfaces;
+    uint8_t  bConfigurationValue;
+    uint8_t  iConfiguration;
+    uint8_t  bmAttributes;
+    uint8_t  bMaxPower;
+} __attribute__((packed));
+
+// USB Interface Descriptor (USB 2.0 spec table 9-12)
+struct usb_interface_descriptor {
+    uint8_t  bLength;
+    uint8_t  bDescriptorType;
+    uint8_t  bInterfaceNumber;
+    uint8_t  bAlternateSetting;
+    uint8_t  bNumEndpoints;
+    uint8_t  bInterfaceClass;
+    uint8_t  bInterfaceSubClass;
+    uint8_t  bInterfaceProtocol;
+    uint8_t  iInterface;
+} __attribute__((packed));
+
+// USB Endpoint Descriptor (USB 2.0 spec table 9-13)
+struct usb_endpoint_descriptor {
+    uint8_t  bLength;
+    uint8_t  bDescriptorType;
+    uint8_t  bEndpointAddress;
+    uint8_t  bmAttributes;
+    uint16_t wMaxPacketSize;
+    uint8_t  bInterval;
+} __attribute__((packed));
+
+// USB descriptor types
+#define USB_DESC_TYPE_DEVICE        1
+#define USB_DESC_TYPE_CONFIG        2
+#define USB_DESC_TYPE_INTERFACE     4
+#define USB_DESC_TYPE_ENDPOINT      5
+
+// USB Mass Storage class constants
+#define USB_CLASS_MASS_STORAGE      0x08
+#define USB_SUBCLASS_SCSI           0x06
+#define USB_PROTOCOL_BBB            0x50
+
 // TRB field helpers
 #define XHCI_TRB_TYPE_SHIFT             10
 #define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
