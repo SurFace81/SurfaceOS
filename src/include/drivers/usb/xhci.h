@@ -89,6 +89,34 @@ struct xhci_trb_t {
     };
 } __attribute__((packed));
 
+// Command Completion Event TRB (xHCI spec section 6.4.2.2)
+struct xhci_cmd_completion_trb_t {
+    uint64_t command_trb_pointer;
+    struct {
+        uint32_t rsvd0           : 24;
+        uint32_t completion_code : 8;
+    };
+    struct {
+        uint32_t cycle_bit   : 1;
+        uint32_t rsvd1       : 9;
+        uint32_t trb_type    : 6;
+        uint32_t vfid        : 8;
+        uint32_t slot_id     : 8;
+    };
+} __attribute__((packed));
+
+// Doorbell register (xHCI spec section 5.6)
+struct xhci_doorbell_reg {
+    union {
+        struct {
+            uint8_t  db_target;
+            uint8_t  rsvd;
+            uint16_t db_stream_id;
+        };
+        uint32_t raw;
+    };
+} __attribute__((packed));
+
 // USBCMD bits
 #define XHCI_USBCMD_RUN_STOP           (1 << 0)
 #define XHCI_USBCMD_HCRESET            (1 << 1)
@@ -162,28 +190,60 @@ struct xhci_trb_t {
 #define XHCI_ERST_BOUNDARY              4096
 
 // TRB types
-#define XHCI_TRB_TYPE_LINK              6
+#define XHCI_TRB_TYPE_RESERVED                  0
+#define XHCI_TRB_TYPE_NORMAL                    1
+#define XHCI_TRB_TYPE_SETUP_STAGE               2
+#define XHCI_TRB_TYPE_DATA_STAGE                3
+#define XHCI_TRB_TYPE_STATUS_STAGE              4
+#define XHCI_TRB_TYPE_ISOCH                     5
+#define XHCI_TRB_TYPE_LINK                      6
+#define XHCI_TRB_TYPE_EVENT_DATA                7
+#define XHCI_TRB_TYPE_NOOP                      8
+#define XHCI_TRB_TYPE_ENABLE_SLOT_CMD           9
+#define XHCI_TRB_TYPE_DISABLE_SLOT_CMD          10
+#define XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD        11
+#define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD    12
+#define XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD      13
+#define XHCI_TRB_TYPE_RESET_ENDPOINT_CMD        14
+#define XHCI_TRB_TYPE_STOP_ENDPOINT_CMD         15
+#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD    16
+#define XHCI_TRB_TYPE_RESET_DEVICE_CMD          17
+#define XHCI_TRB_TYPE_FORCE_EVENT_CMD           18
+#define XHCI_TRB_TYPE_NOOP_CMD                  23
+#define XHCI_TRB_TYPE_TRANSFER_EVENT            32
+#define XHCI_TRB_TYPE_CMD_COMPLETION_EVENT      33
+#define XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT  34
+#define XHCI_TRB_TYPE_HOST_CONTROLLER_EVENT     37
+
+// TRB field helpers
 #define XHCI_TRB_TYPE_SHIFT             10
 #define XHCI_TRB_TYPE_MASK              0xFC00
-
-// CRCR bits
 #define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
-
-// Link TRB toggle cycle bit
 #define XHCI_LINK_TRB_TC_BIT            (1 << 1)
 
 // TRB completion codes
-#define XHCI_TRB_COMPLETION_SUCCESS     1
+#define XHCI_TRB_COMPLETION_INVALID                 0
+#define XHCI_TRB_COMPLETION_SUCCESS                 1
+#define XHCI_TRB_COMPLETION_DATA_BUFFER_ERROR       2
+#define XHCI_TRB_COMPLETION_BABBLE_DETECTED         3
+#define XHCI_TRB_COMPLETION_USB_TRANSACTION_ERROR   4
+#define XHCI_TRB_COMPLETION_TRB_ERROR               5
+#define XHCI_TRB_COMPLETION_STALL_ERROR             6
+#define XHCI_TRB_COMPLETION_RESOURCE_ERROR          7
+#define XHCI_TRB_COMPLETION_BANDWIDTH_ERROR         8
+#define XHCI_TRB_COMPLETION_NO_SLOTS_AVAILABLE      9
+#define XHCI_TRB_COMPLETION_SHORT_PACKET            13
+#define XHCI_TRB_COMPLETION_EVENT_RING_FULL         21
+#define XHCI_TRB_COMPLETION_COMMAND_RING_STOPPED    24
+#define XHCI_TRB_COMPLETION_COMMAND_ABORTED         25
+
+// Doorbell targets
+#define XHCI_DOORBELL_TARGET_COMMAND_RING   0
+#define XHCI_DOORBELL_TARGET_CONTROL_EP     1
 
 // Construct a command TRB
 #define XHCI_CONSTRUCT_CMD_TRB(type) \
     xhci_trb_t { 0, 0, { .control = (type) << XHCI_TRB_TYPE_SHIFT } }
-
-// Slot ID and completion code extraction
-#define XHCI_SLOT_ID_MASK               0x3F000000
-#define XHCI_SLOT_ID_SHIFT              24
-#define XHCI_COMPLETION_CODE_MASK       0xFF0000
-#define XHCI_COMPLETION_CODE_SHIFT      16
 
 namespace xhci {
     bool init(void);
