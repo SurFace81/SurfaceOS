@@ -471,6 +471,46 @@ static void configure_runtime_regs() {
     uart::printf("xhci: primary interrupter configured\n");
 }
 
+static void log_usbsts() {
+    uint32_t status = op_regs->usbsts;
+    uart::printf("xhci: USBSTS = %x\n", status);
+    if (status & XHCI_USBSTS_HCH)  uart::printf("  HCH  - Host Controller Halted\n");
+    if (status & XHCI_USBSTS_HSE)  uart::printf("  HSE  - Host System Error\n");
+    if (status & XHCI_USBSTS_EINT) uart::printf("  EINT - Event Interrupt\n");
+    if (status & XHCI_USBSTS_PCD)  uart::printf("  PCD  - Port Change Detect\n");
+    if (status & XHCI_USBSTS_SSS)  uart::printf("  SSS  - Save State Status\n");
+    if (status & XHCI_USBSTS_RSS)  uart::printf("  RSS  - Restore State Status\n");
+    if (status & XHCI_USBSTS_SRE)  uart::printf("  SRE  - Save/Restore Error\n");
+    if (status & XHCI_USBSTS_CNR)  uart::printf("  CNR  - Controller Not Ready\n");
+    if (status & XHCI_USBSTS_HCE)  uart::printf("  HCE  - Host Controller Error\n");
+}
+
+static bool start_controller() {
+    uint32_t usbcmd = op_regs->usbcmd;
+    usbcmd |= XHCI_USBCMD_RUN_STOP;
+    usbcmd |= XHCI_USBCMD_INTERRUPTER_ENABLE;
+    usbcmd |= XHCI_USBCMD_HOSTSYS_ERR_EN;
+    op_regs->usbcmd = usbcmd;
+
+    // Wait for HCH to clear (controller is running)
+    uint32_t timeout = 1000;
+    while (op_regs->usbsts & XHCI_USBSTS_HCH) {
+        if (--timeout == 0) {
+            uart::printf("xhci: controller failed to start\n");
+            return false;
+        }
+        delay_ms(1);
+    }
+
+    if (op_regs->usbsts & XHCI_USBSTS_CNR) {
+        uart::printf("xhci: controller not ready after start\n");
+        return false;
+    }
+
+    uart::printf("xhci: controller started, usbcmd=%x\n", op_regs->usbcmd);
+    return true;
+}
+
 namespace xhci {
     bool init() {
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
@@ -510,6 +550,19 @@ namespace xhci {
         log_op_regs();
 
         configure_runtime_regs();
+
+        // Log status before start
+        uart::printf("xhci: before start:\n");
+        log_usbsts();
+
+        // Start the controller
+        if (!start_controller()) {
+            return false;
+        }
+
+        // Log status after start
+        uart::printf("xhci: after start:\n");
+        log_usbsts();
 
         return true;
     }
