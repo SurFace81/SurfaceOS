@@ -347,6 +347,11 @@ struct xhci_input_context {
 #define XHCI_DOORBELL_TARGET_COMMAND_RING   0
 #define XHCI_DOORBELL_TARGET_CONTROL_EP     1
 
+// Transfer ring
+#define XHCI_TRANSFER_RING_TRB_COUNT   256
+#define XHCI_TRANSFER_RING_ALIGNMENT   64
+#define XHCI_TRANSFER_RING_BOUNDARY    65536
+
 // Endpoint types
 #define XHCI_EP_TYPE_CONTROL_BIDIR  4
 

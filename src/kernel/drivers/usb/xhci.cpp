@@ -246,6 +246,50 @@ static void ring_command_doorbell() {
     ring_doorbell(0, XHCI_DOORBELL_TARGET_COMMAND_RING);
 }
 
+// Transfer ring (same structure as command ring, but per-endpoint)
+struct xhci_transfer_ring {
+    xhci_trb_t* trbs;
+    uintptr_t   phys_base;
+    size_t      max_trb_count;
+    size_t      enqueue_ptr;
+    uint8_t     cycle_bit;
+};
+
+static void transfer_ring_init(xhci_transfer_ring* ring, size_t max_trbs) {
+    ring->max_trb_count = max_trbs;
+    ring->cycle_bit = 1;
+    ring->enqueue_ptr = 0;
+
+    ring->trbs = (xhci_trb_t*)alloc_xhci_memory(
+        max_trbs * sizeof(xhci_trb_t),
+        XHCI_TRANSFER_RING_ALIGNMENT,
+        XHCI_TRANSFER_RING_BOUNDARY);
+    ring->phys_base = xhci_virt_to_phys(ring->trbs);
+
+    // Link TRB at the end, pointing back to start
+    ring->trbs[max_trbs - 1].parameter = ring->phys_base;
+    ring->trbs[max_trbs - 1].status = 0;
+    ring->trbs[max_trbs - 1].control =
+        (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+        XHCI_LINK_TRB_TC_BIT | ring->cycle_bit;
+
+    uart::printf("xhci: transfer ring virt=%llx phys=%llx\n",
+                 (uint64_t)ring->trbs, (uint64_t)ring->phys_base);
+}
+
+static void transfer_ring_enqueue(xhci_transfer_ring* ring, xhci_trb_t* trb) {
+    trb->cycle_bit = ring->cycle_bit;
+    ring->trbs[ring->enqueue_ptr] = *trb;
+
+    if (++ring->enqueue_ptr == ring->max_trb_count - 1) {
+        ring->trbs[ring->max_trb_count - 1].control =
+            (XHCI_TRB_TYPE_LINK << XHCI_TRB_TYPE_SHIFT) |
+            XHCI_LINK_TRB_TC_BIT | ring->cycle_bit;
+        ring->enqueue_ptr = 0;
+        ring->cycle_bit = !ring->cycle_bit;
+    }
+}
+
 // Driver state
 static volatile xhci_cap_regs*      cap_regs     = nullptr;
 static volatile xhci_op_regs*       op_regs      = nullptr;
@@ -263,6 +307,8 @@ static uint32_t xecp_offset;
 
 static uint64_t* dcbaa = nullptr;
 static uint64_t* dcbaa_virt = nullptr;
+
+static xhci_transfer_ring ep0_rings[65]; // indexed by slot_id (1-based, max 64 slots)
 
 static xhci_cmd_ring cmd_ring;
 static xhci_evt_ring evt_ring;
@@ -708,40 +754,105 @@ static xhci_input_context* alloc_input_context() {
     return ctx;
 }
 
-// Setup a device after port reset: enable slot, create contexts
+static uint16_t max_packet_size_for_speed(uint8_t speed) {
+    switch (speed) {
+    case 1: return 64;   // Full Speed
+    case 2: return 8;    // Low Speed
+    case 3: return 64;   // High Speed
+    case 4: return 512;  // SuperSpeed
+    case 5: return 512;  // SuperSpeed+
+    default: return 64;
+    }
+}
+
 static void setup_device(uint8_t port_index) {
     xhci_portsc portsc = read_portsc(port_index);
     uint8_t port_speed = portsc.port_speed;
     uint8_t port_id = port_index + 1; // 1-based for slot context
 
-    // Enable a device slot
+    // Step 1: Enable a device slot
     uint8_t slot_id = enable_device_slot();
     if (slot_id == 0) {
         uart::printf("xhci: failed to enable slot for port %u\n", (uint32_t)port_index);
         return;
     }
 
-    // Create output device context
+    // Step 2: Create output device context and register in DCBAA
     if (!create_device_context(slot_id)) {
         uart::printf("xhci: failed to create device context for slot %u\n", (uint32_t)slot_id);
         return;
     }
 
-    // Allocate input context
+    // Step 3: Allocate transfer ring for EP0
+    xhci_transfer_ring* ep0_ring = &ep0_rings[slot_id];
+    transfer_ring_init(ep0_ring, XHCI_TRANSFER_RING_TRB_COUNT);
+
+    // Step 4: Build Input Context
     xhci_input_context* input_ctx = alloc_input_context();
     if (!input_ctx) {
         uart::printf("xhci: failed to alloc input context\n");
         return;
     }
 
-    uart::printf("xhci: device setup:\n");
-    uart::printf("  port   : %u (1-based: %u)\n", (uint32_t)port_index, (uint32_t)port_id);
-    uart::printf("  slot   : %u\n", (uint32_t)slot_id);
-    uart::printf("  speed  : %s\n", usb_speed_str(port_speed));
-    uart::printf("  inctx  : phys=%llx\n", (uint64_t)xhci_virt_to_phys(input_ctx));
-    uart::printf("  outctx : phys=%llx\n", dcbaa[slot_id]);
+    // Input Control Context: add Slot (bit 0) and EP0 (bit 1)
+    input_ctx->control_context.add_flags = (1 << 0) | (1 << 1);
+    input_ctx->control_context.drop_flags = 0;
 
-    // Next step (Address Device) will come in a future lesson
+    // Slot Context
+    xhci_slot_context* slot = &input_ctx->device_context.slot_context;
+    slot->route_string = 0;
+    slot->speed = port_speed;
+    slot->context_entries = 1; // only EP0 is active
+    slot->root_hub_port_num = port_id;
+
+    // Endpoint 0 Context (index 0 in device_context = control_ep_context)
+    xhci_endpoint_context* ep0 = &input_ctx->device_context.control_ep_context;
+    ep0->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR; // 4
+    ep0->max_packet_size = max_packet_size_for_speed(port_speed);
+    ep0->max_burst_size = 0;
+    ep0->error_count = 3;
+    ep0->average_trb_length = 8;
+    // Dequeue pointer: physical address of transfer ring with DCS=1
+    ep0->transfer_ring_dequeue_ptr = ep0_ring->phys_base | 1;
+
+    uart::printf("xhci: address device:\n");
+    uart::printf("  port      : %u (1-based: %u)\n", (uint32_t)port_index, (uint32_t)port_id);
+    uart::printf("  slot      : %u\n", (uint32_t)slot_id);
+    uart::printf("  speed     : %u (%s)\n", (uint32_t)port_speed, usb_speed_str(port_speed));
+    uart::printf("  max_pkt   : %u\n", (uint32_t)ep0->max_packet_size);
+    uart::printf("  ep0 ring  : phys=%llx\n", (uint64_t)ep0_ring->phys_base);
+    uart::printf("  input_ctx : phys=%llx\n", (uint64_t)xhci_virt_to_phys(input_ctx));
+    uart::printf("  output_ctx: phys=%llx\n", dcbaa[slot_id]);
+
+    // Step 5: Send Address Device Command (TRB type 11)
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.parameter = xhci_virt_to_phys(input_ctx);
+    cmd.status = 0;
+    cmd.control = (XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD << XHCI_TRB_TYPE_SHIFT)
+                | ((uint32_t)slot_id << 24);
+
+    xhci_cmd_completion_trb_t* cc = send_command(&cmd, 500);
+    if (!cc) {
+        uart::printf("xhci: address device command timeout\n");
+        return;
+    }
+
+    uart::printf("xhci: address device result: code=%u (%s) slot=%u\n",
+                 (uint32_t)cc->completion_code,
+                 completion_code_str(cc->completion_code),
+                 (uint32_t)cc->slot_id);
+
+    if (cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: address device FAILED\n");
+        return;
+    }
+
+    // Verify: read back assigned USB address from output device context
+    xhci_device_context* out_ctx = (xhci_device_context*)dcbaa_virt[slot_id];
+    uart::printf("xhci: device addressed! usb_addr=%u slot_state=%u\n",
+                 (uint32_t)out_ctx->slot_context.device_address,
+                 (uint32_t)out_ctx->slot_context.slot_state);
 }
 
 namespace xhci {
