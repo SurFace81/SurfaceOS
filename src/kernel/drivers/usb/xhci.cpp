@@ -484,6 +484,219 @@ static xhci_cmd_completion_trb_t* send_command(xhci_trb_t* cmd_trb, uint32_t tim
     return nullptr;
 }
 
+// Extended capability: Supported Protocol (xHCI spec section 7.2)
+struct xhci_supported_protocol {
+    uint8_t id;
+    uint8_t next;
+    uint8_t minor_rev;
+    uint8_t major_rev;
+    uint32_t name;
+    uint8_t compatible_port_offset;
+    uint8_t compatible_port_count;
+    uint8_t protocol_defined;
+    uint8_t psic;
+    uint32_t dword3;
+};
+
+static void read_supported_protocol(volatile uint32_t* cap, xhci_supported_protocol* out) {
+    uint32_t dw0 = cap[0];
+    out->id        = dw0 & 0xFF;
+    out->next      = (dw0 >> 8) & 0xFF;
+    out->minor_rev = (dw0 >> 16) & 0xFF;
+    out->major_rev = (dw0 >> 24) & 0xFF;
+    out->name      = cap[1];
+    uint32_t dw2   = cap[2];
+    out->compatible_port_offset = dw2 & 0xFF;
+    out->compatible_port_count  = (dw2 >> 8) & 0xFF;
+    out->protocol_defined       = (dw2 >> 16) & 0xFF;
+    out->psic                   = (dw2 >> 24) & 0xFF;
+    out->dword3    = cap[3];
+}
+
+#define XHCI_EXT_CAP_LEGACY        1
+#define XHCI_EXT_CAP_PROTOCOL      2
+
+#define XHCI_MAX_USB3_PORTS 32
+
+static uint8_t usb3_ports[XHCI_MAX_USB3_PORTS];
+static uint8_t usb3_port_count = 0;
+
+static void parse_extended_capabilities() {
+    if (xecp_offset == 0) return;
+
+    volatile uint32_t* cap = (volatile uint32_t*)(xhc_base + xecp_offset);
+    usb3_port_count = 0;
+
+    while (true) {
+        uint32_t dw0 = *cap;
+        uint8_t cap_id = dw0 & 0xFF;
+        uint8_t next = (dw0 >> 8) & 0xFF;
+
+        if (cap_id == XHCI_EXT_CAP_PROTOCOL) {
+            xhci_supported_protocol proto;
+            read_supported_protocol(cap, &proto);
+
+            // port_offset is 1-based in the spec, convert to 0-based
+            uint8_t first_port = proto.compatible_port_offset - 1;
+            uint8_t port_count = proto.compatible_port_count;
+
+            char name_str[5];
+            *((uint32_t*)name_str) = proto.name;
+            name_str[4] = '\0';
+
+            uart::printf("xhci: protocol '%s' rev=%u.%u ports %u-%u\n",
+                         name_str,
+                         (uint32_t)proto.major_rev, (uint32_t)proto.minor_rev,
+                         (uint32_t)first_port, (uint32_t)(first_port + port_count - 1));
+
+            if (proto.major_rev == 3) {
+                for (uint8_t i = 0; i < port_count && usb3_port_count < XHCI_MAX_USB3_PORTS; i++) {
+                    usb3_ports[usb3_port_count++] = first_port + i;
+                }
+            }
+        }
+
+        if (next == 0) break;
+        cap = (volatile uint32_t*)((char*)cap + (next * sizeof(uint32_t)));
+    }
+
+    uart::printf("xhci: %u USB3 ports found\n", (uint32_t)usb3_port_count);
+}
+
+static bool is_usb3_port(uint8_t port_num) {
+    for (uint8_t i = 0; i < usb3_port_count; i++) {
+        if (usb3_ports[i] == port_num) return true;
+    }
+    return false;
+}
+
+// Port Status and Control Register (xHCI spec section 5.4.8)
+// Address: Operational Base + 0x400 + (0x10 * port_index)
+struct xhci_portsc {
+    union {
+        struct {
+            uint32_t ccs        : 1;  // Current Connect Status (RO)
+            uint32_t ped        : 1;  // Port Enabled/Disabled (RW1C)
+            uint32_t rsvd0      : 1;
+            uint32_t oca        : 1;  // Over-current Active (RO)
+            uint32_t pr         : 1;  // Port Reset (RW)
+            uint32_t pls        : 4;  // Port Link State (RW)
+            uint32_t pp         : 1;  // Port Power (RW)
+            uint32_t port_speed : 4;  // Port Speed (RO)
+            uint32_t pic        : 2;  // Port Indicator Control
+            uint32_t lws        : 1;  // Port Link State Write Strobe
+            uint32_t csc        : 1;  // Connect Status Change (RW1C)
+            uint32_t pec        : 1;  // Port Enable/Disable Change (RW1C)
+            uint32_t wrc        : 1;  // Warm Port Reset Change (RW1C)
+            uint32_t occ        : 1;  // Over-current Change (RW1C)
+            uint32_t prc        : 1;  // Port Reset Change (RW1C)
+            uint32_t plc        : 1;  // Port Link State Change (RW1C)
+            uint32_t cec        : 1;  // Port Config Error Change (RW1C)
+            uint32_t cas        : 1;  // Cold Attach Status (RO)
+            uint32_t wce        : 1;  // Wake on Connect Enable
+            uint32_t wde        : 1;  // Wake on Disconnect Enable
+            uint32_t woe        : 1;  // Wake on Over-current Enable
+            uint32_t rsvd1      : 2;
+            uint32_t dr         : 1;  // Device Removable (RO)
+            uint32_t wpr        : 1;  // Warm Port Reset (RW)
+        } __attribute__((packed));
+        uint32_t raw;
+    };
+} __attribute__((packed));
+
+static xhci_portsc read_portsc(uint8_t port) {
+    uint64_t addr = (uint64_t)op_regs + 0x400 + (0x10 * port);
+    xhci_portsc reg;
+    reg.raw = *(volatile uint32_t*)addr;
+    return reg;
+}
+
+static void write_portsc(xhci_portsc reg, uint8_t port) {
+    uint64_t addr = (uint64_t)op_regs + 0x400 + (0x10 * port);
+    *(volatile uint32_t*)addr = reg.raw;
+}
+
+static const char* usb_speed_str(uint8_t speed) {
+    switch (speed) {
+    case 1: return "Full Speed (12 Mb/s)";
+    case 2: return "Low Speed (1.5 Mb/s)";
+    case 3: return "High Speed (480 Mb/s)";
+    case 4: return "SuperSpeed (5 Gb/s)";
+    case 5: return "SuperSpeed+ (10 Gb/s)";
+    default: return "Unknown";
+    }
+}
+
+static bool reset_port(uint8_t port_num) {
+    xhci_portsc portsc = read_portsc(port_num);
+    bool usb3 = is_usb3_port(port_num);
+
+    // Power on if needed
+    if (portsc.pp == 0) {
+        portsc.pp = 1;
+        write_portsc(portsc, port_num);
+        delay_ms(20);
+        portsc = read_portsc(port_num);
+        if (portsc.pp == 0) {
+            uart::printf("xhci: port %u failed to power on\n", (uint32_t)port_num);
+            return false;
+        }
+    }
+
+    // Clear lingering status change bits
+    portsc.csc = 1;
+    portsc.pec = 1;
+    portsc.prc = 1;
+    write_portsc(portsc, port_num);
+
+    // Initiate reset
+    portsc = read_portsc(port_num);
+    if (usb3) {
+        portsc.wpr = 1; // Warm reset for USB3
+    } else {
+        portsc.pr = 1;  // Standard reset for USB2
+    }
+    write_portsc(portsc, port_num);
+
+    // Wait for reset completion
+    uint32_t timeout = 100;
+    while (timeout > 0) {
+        portsc = read_portsc(port_num);
+        if ((usb3 && portsc.wrc) || (!usb3 && portsc.prc)) {
+            break;
+        }
+        timeout--;
+        delay_ms(1);
+    }
+
+    if (timeout == 0) {
+        uart::printf("xhci: port %u reset timed out\n", (uint32_t)port_num);
+        return false;
+    }
+
+    delay_ms(3);
+
+    // Clear reset completion bits (write-1-to-clear), preserve PED
+    portsc = read_portsc(port_num);
+    portsc.prc = 1;
+    portsc.wrc = 1;
+    portsc.csc = 1;
+    portsc.pec = 1;
+    portsc.ped = 0; // Don't accidentally clear PED
+    write_portsc(portsc, port_num);
+
+    delay_ms(3);
+
+    // Verify port is enabled
+    portsc = read_portsc(port_num);
+    if (portsc.ped == 0) {
+        uart::printf("xhci: port %u not enabled after reset\n", (uint32_t)port_num);
+        return false;
+    }
+
+    return true;
+}
+
 namespace xhci {
     bool init() {
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
@@ -504,6 +717,7 @@ namespace xhci {
         xhc_base = xhci_map_mmio(bar.base, bar_size);
         parse_cap_regs();
         log_cap_regs();
+        parse_extended_capabilities();
 
         if (!take_ownership_from_bios()) return false;
         if (!reset_controller()) return false;
@@ -511,30 +725,30 @@ namespace xhci {
         configure_operational_regs();
         configure_runtime_regs();
 
-        uart::printf("xhci: before start:\n");
-        log_usbsts();
-
         if (!start_controller()) return false;
-
-        uart::printf("xhci: after start:\n");
-        log_usbsts();
 
         // Flush pending port status change events
         process_events();
 
-        // Send 6 Enable Slot commands as a test
-        for (int i = 0; i < 6; i++) {
-            xhci_trb_t trb;
-            memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
-            trb.trb_type = XHCI_TRB_TYPE_ENABLE_SLOT_CMD;
+        // Scan ports for connected devices and reset them
+        for (uint8_t i = 0; i < max_ports; i++) {
+            xhci_portsc portsc = read_portsc(i);
 
-            xhci_cmd_completion_trb_t* cc = send_command(&trb, 200);
-            if (cc) {
-                uart::printf("xhci: enable_slot result: %s slot_id=%u\n",
-                             completion_code_str(cc->completion_code),
-                             (uint32_t)cc->slot_id);
-            } else {
-                uart::printf("xhci: enable_slot command failed\n");
+            if (portsc.ccs) {
+                uart::printf("xhci: port %u: device detected (USB%u, speed=%u)\n",
+                             (uint32_t)i,
+                             is_usb3_port(i) ? 3 : 2,
+                             (uint32_t)portsc.port_speed);
+
+                if (reset_port(i)) {
+                    portsc = read_portsc(i);
+                    uart::printf("xhci: port %u: reset OK, %s\n",
+                                 (uint32_t)i, usb_speed_str(portsc.port_speed));
+                    // Flush port status change events generated by reset
+                    process_events();
+                } else {
+                    uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
+                }
             }
         }
 
