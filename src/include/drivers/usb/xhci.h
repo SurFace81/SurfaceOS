@@ -451,6 +451,40 @@ struct usb_endpoint_descriptor {
 #define XHCI_TRANSFER_RING_ALIGNMENT   64
 #define XHCI_TRANSFER_RING_BOUNDARY    65536
 
+// Bulk-Only Transport: Command Block Wrapper (USB Mass Storage spec)
+struct usb_cbw {
+    uint32_t dCBWSignature;         // 0x43425355
+    uint32_t dCBWTag;
+    uint32_t dCBWDataTransferLength;
+    uint8_t  bmCBWFlags;            // 0x80=IN, 0x00=OUT
+    uint8_t  bCBWLUN;
+    uint8_t  bCBWCBLength;
+    uint8_t  CBWCB[16];
+} __attribute__((packed));
+
+// Bulk-Only Transport: Command Status Wrapper
+struct usb_csw {
+    uint32_t dCSWSignature;         // 0x53425355
+    uint32_t dCSWTag;
+    uint32_t dCSWDataResidue;
+    uint8_t  bCSWStatus;            // 0=pass, 1=fail, 2=phase error
+} __attribute__((packed));
+
+#define USB_CBW_SIGNATURE  0x43425355
+#define USB_CSW_SIGNATURE  0x53425355
+#define USB_CBW_FLAG_IN    0x80
+#define USB_CBW_FLAG_OUT   0x00
+
+// SCSI opcodes
+#define SCSI_INQUIRY            0x12
+#define SCSI_TEST_UNIT_READY    0x00
+#define SCSI_READ_CAPACITY_10   0x25
+#define SCSI_READ_10            0x28
+#define SCSI_WRITE_10           0x2A
+
+#define XHCI_TRB_TYPE_RESET_ENDPOINT_CMD       14
+#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD   10
+
 // Endpoint types
 #define XHCI_EP_TYPE_CONTROL_BIDIR  4
 

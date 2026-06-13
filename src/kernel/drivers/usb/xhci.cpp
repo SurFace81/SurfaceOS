@@ -736,6 +736,387 @@ static bool control_transfer_no_data(uint8_t slot_id, uint8_t* setup_packet) {
     return true;
 }
 
+// Send data via Bulk OUT endpoint
+static bool bulk_transfer_out(usb_mass_storage_dev* msd, void* data,
+                               uintptr_t data_phys, uint32_t length) {
+    xhci_transfer_ring* ring = &msd->bulk_out_ring;
+    uint8_t out_ep_num = msd->bulk_out_ep & 0x0F;
+    uint8_t out_dci = out_ep_num * 2; // OUT direction
+
+    xhci_trb_t trb;
+    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
+    trb.parameter = (uint64_t)data_phys;
+    trb.status = length;
+    trb.control = (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT)
+                | (1 << 5); // IOC
+    transfer_ring_enqueue(ring, &trb);
+
+    ring_doorbell(msd->slot_id, out_dci);
+
+    xhci_transfer_event_trb_t* evt = wait_transfer_event(2000);
+    if (!evt) {
+        uart::printf("xhci: bulk OUT timeout\n");
+        return false;
+    }
+    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS &&
+        evt->completion_code != 13) {
+        uart::printf("xhci: bulk OUT failed code=%u (%s)\n",
+                     (uint32_t)evt->completion_code,
+                     completion_code_str(evt->completion_code));
+        return false;
+    }
+    return true;
+}
+
+// Clear STALL on an endpoint via control transfer (Clear Feature ENDPOINT_HALT)
+static bool clear_endpoint_halt(uint8_t slot_id, uint8_t endpoint_address) {
+    uint8_t setup[8];
+    setup[0] = 0x02;  // bmRequestType: Host-to-Device, Standard, Endpoint
+    setup[1] = 0x01;  // bRequest: CLEAR_FEATURE
+    setup[2] = 0x00;  // wValue: ENDPOINT_HALT (feature selector 0)
+    setup[3] = 0x00;
+    setup[4] = endpoint_address;  // wIndex: endpoint address
+    setup[5] = 0x00;
+    setup[6] = 0x00;  // wLength: 0
+    setup[7] = 0x00;
+
+    return control_transfer_no_data(slot_id, setup);
+}
+
+// Reset an endpoint after STALL and set new dequeue pointer
+static bool reset_endpoint(uint8_t slot_id, uint8_t dci, xhci_transfer_ring* ring) {
+    // Reset Endpoint Command
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.control = (XHCI_TRB_TYPE_RESET_ENDPOINT_CMD << XHCI_TRB_TYPE_SHIFT)
+                | ((uint32_t)slot_id << 24);
+    // DCI goes in bits 16-20 of control for this command
+    cmd.control |= ((uint32_t)dci << 16);
+
+    xhci_cmd_completion_trb_t* cc = send_command(&cmd, 200);
+    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: reset endpoint failed dci=%u\n", (uint32_t)dci);
+        return false;
+    }
+
+    // Set TR Dequeue Pointer Command — point to current enqueue position
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    uintptr_t new_dequeue = ring->phys_base + (ring->enqueue_ptr * sizeof(xhci_trb_t));
+    cmd.parameter = (uint64_t)(new_dequeue | ring->cycle_bit); // DCS in bit 0
+    cmd.control = (XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD << XHCI_TRB_TYPE_SHIFT)
+                | ((uint32_t)slot_id << 24);
+    cmd.control |= ((uint32_t)dci << 16);
+
+    cc = send_command(&cmd, 200);
+    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS) {
+        uart::printf("xhci: set TR dequeue ptr failed dci=%u\n", (uint32_t)dci);
+        return false;
+    }
+
+    return true;
+}
+
+// Recover from STALL on a bulk endpoint
+static bool recover_from_stall(usb_mass_storage_dev* msd, uint8_t endpoint_address) {
+    uint8_t ep_num = endpoint_address & 0x0F;
+    bool is_in = (endpoint_address & 0x80) != 0;
+    uint8_t dci = ep_num * 2 + (is_in ? 1 : 0);
+    xhci_transfer_ring* ring = is_in ? &msd->bulk_in_ring : &msd->bulk_out_ring;
+
+    uart::printf("xhci: recovering from STALL on ep=0x%x dci=%u\n",
+                 (uint32_t)endpoint_address, (uint32_t)dci);
+
+    if (!clear_endpoint_halt(msd->slot_id, endpoint_address)) return false;
+    if (!reset_endpoint(msd->slot_id, dci, ring)) return false;
+
+    uart::printf("xhci: STALL recovery OK\n");
+    return true;
+}
+
+static sint32_t bulk_transfer_in(usb_mass_storage_dev* msd, void* data,
+                                  uintptr_t data_phys, uint32_t length) {
+    xhci_transfer_ring* ring = &msd->bulk_in_ring;
+    uint8_t in_ep_num = msd->bulk_in_ep & 0x0F;
+    uint8_t in_dci = in_ep_num * 2 + 1;
+
+    xhci_trb_t trb;
+    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
+    trb.parameter = (uint64_t)data_phys;
+    trb.status = length;
+    trb.control = (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT)
+                | (1 << 5); // IOC
+    transfer_ring_enqueue(ring, &trb);
+
+    ring_doorbell(msd->slot_id, in_dci);
+
+    xhci_transfer_event_trb_t* evt = wait_transfer_event(2000);
+    if (!evt) {
+        uart::printf("xhci: bulk IN timeout\n");
+        return -1;
+    }
+    if (evt->completion_code == 6) { // STALL
+        uart::printf("xhci: bulk IN STALL, recovering...\n");
+        recover_from_stall(msd, msd->bulk_in_ep);
+        return -2; // special code for STALL
+    }
+    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS &&
+        evt->completion_code != 13) {
+        uart::printf("xhci: bulk IN failed code=%u (%s)\n",
+                     (uint32_t)evt->completion_code,
+                     completion_code_str(evt->completion_code));
+        return -1;
+    }
+
+    sint32_t transferred = (sint32_t)length - (sint32_t)evt->transfer_length;
+    // Debug dump
+    volatile uint8_t* dbg = (volatile uint8_t*)data;
+    uart::printf("xhci: bulk_in buf[0..7]: %x %x %x %x %x %x %x %x (transferred=%d)\n",
+                 (uint32_t)dbg[0], (uint32_t)dbg[1], (uint32_t)dbg[2], (uint32_t)dbg[3],
+                 (uint32_t)dbg[4], (uint32_t)dbg[5], (uint32_t)dbg[6], (uint32_t)dbg[7],
+                 transferred);
+    return transferred;
+    return (sint32_t)length - (sint32_t)evt->transfer_length;
+}
+
+// Shared BOT buffers (allocated once)
+static usb_cbw* shared_cbw = nullptr;
+static usb_csw* shared_csw = nullptr;
+static uintptr_t shared_cbw_phys = 0;
+static uintptr_t shared_csw_phys = 0;
+static uint32_t bot_tag = 1;
+
+static void bot_init_buffers() {
+    if (!shared_cbw) {
+        shared_cbw = (usb_cbw*)alloc_xhci_memory(sizeof(usb_cbw), 64, 4096);
+        shared_cbw_phys = xhci_virt_to_phys(shared_cbw);
+        shared_csw = (usb_csw*)alloc_xhci_memory(sizeof(usb_csw), 64, 4096);
+        shared_csw_phys = xhci_virt_to_phys(shared_csw);
+    }
+}
+
+static sint32_t bot_scsi_command(usb_mass_storage_dev* msd,
+                                  uint8_t* scsi_cmd, uint8_t scsi_cmd_len,
+                                  void* data_buf, uintptr_t data_phys,
+                                  uint32_t data_length, uint8_t direction) {
+    bot_init_buffers();
+    uart::printf("bot: cbw virt=%llx phys=%llx\n",
+                 (uint64_t)shared_cbw, (uint64_t)shared_cbw_phys);
+
+    // Build CBW
+    memory::memset((uint8_t*)shared_cbw, 0, sizeof(usb_cbw));
+    shared_cbw->dCBWSignature = USB_CBW_SIGNATURE;
+    shared_cbw->dCBWTag = bot_tag++;
+    shared_cbw->dCBWDataTransferLength = data_length;
+    shared_cbw->bmCBWFlags = direction;
+    shared_cbw->bCBWLUN = 0;
+    shared_cbw->bCBWCBLength = scsi_cmd_len;
+    memory::memcpy(scsi_cmd, shared_cbw->CBWCB, scsi_cmd_len);
+
+    // Command phase: send CBW
+    if (!bulk_transfer_out(msd, shared_cbw, shared_cbw_phys, 31)) {
+        uart::printf("bot: CBW send failed\n");
+        return -1;
+    }
+
+    // Data phase
+    if (data_length > 0 && data_buf) {
+        if (direction == USB_CBW_FLAG_IN) {
+            sint32_t got = bulk_transfer_in(msd, data_buf, data_phys, data_length);
+            if (got == -2) {
+                // STALL recovered, try to read CSW anyway
+                goto read_csw;
+            }
+            if (got < 0) {
+                uart::printf("bot: data IN failed\n");
+                return -1;
+            }
+        } else {
+            if (!bulk_transfer_out(msd, data_buf, data_phys, data_length)) {
+                uart::printf("bot: data OUT failed\n");
+                return -1;
+            }
+        }
+    }
+
+read_csw:
+    // Status phase: receive CSW
+    memory::memset((uint8_t*)shared_csw, 0, sizeof(usb_csw));
+    sint32_t csw_got = bulk_transfer_in(msd, shared_csw, shared_csw_phys, 13);
+    uart::printf("bot: CSW raw: %x %x %x %x %x %x %x %x %x %x %x %x %x\n",
+                 ((uint8_t*)shared_csw)[0], ((uint8_t*)shared_csw)[1],
+                 ((uint8_t*)shared_csw)[2], ((uint8_t*)shared_csw)[3],
+                 ((uint8_t*)shared_csw)[4], ((uint8_t*)shared_csw)[5],
+                 ((uint8_t*)shared_csw)[6], ((uint8_t*)shared_csw)[7],
+                 ((uint8_t*)shared_csw)[8], ((uint8_t*)shared_csw)[9],
+                 ((uint8_t*)shared_csw)[10], ((uint8_t*)shared_csw)[11],
+                 ((uint8_t*)shared_csw)[12]);
+    if (csw_got < 13) {
+        uart::printf("bot: CSW receive failed (got=%d)\n", csw_got);
+        return -1;
+    }
+
+    if (shared_csw->dCSWSignature != USB_CSW_SIGNATURE) {
+        uart::printf("bot: invalid CSW signature 0x%x\n", shared_csw->dCSWSignature);
+        return -1;
+    }
+
+    if (shared_csw->bCSWStatus != 0) {
+        uart::printf("bot: CSW status=%u residue=%u\n",
+                     (uint32_t)shared_csw->bCSWStatus, shared_csw->dCSWDataResidue);
+        return (sint32_t)shared_csw->bCSWStatus;
+    }
+
+    return 0;
+}
+
+static bool scsi_inquiry(usb_mass_storage_dev* msd) {
+    uint8_t* data = (uint8_t*)alloc_xhci_memory(36, 64, 4096);
+    uintptr_t data_phys = xhci_virt_to_phys(data);
+
+    // Fill with pattern to detect if DMA actually writes
+    for (int i = 0; i < 36; i++) data[i] = 0xAA;
+
+    uint8_t cmd[6];
+    memory::memset(cmd, 0, 6);
+    cmd[0] = SCSI_INQUIRY;
+    cmd[4] = 36;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 6, data, data_phys, 36, USB_CBW_FLAG_IN);
+    
+    uart::printf("scsi: INQUIRY data (volatile read):\n  ");
+    volatile uint8_t* vdata = (volatile uint8_t*)data;
+    for (int i = 0; i < 36; i++)
+        uart::printf("%x ", (uint32_t)vdata[i]);
+    uart::printf("\n");
+
+    if (result != 0) {
+        uart::printf("scsi: INQUIRY failed (%d)\n", result);
+        return false;
+    }
+
+    char vendor[9], product[17];
+    memory::memcpy(data + 8, (uint8_t*)vendor, 8);
+    vendor[8] = '\0';
+    memory::memcpy(data + 16, (uint8_t*)product, 16);
+    product[16] = '\0';
+
+    uart::printf("scsi: INQUIRY OK: vendor='%s' product='%s'\n", vendor, product);
+    return true;
+}
+
+static bool scsi_test_unit_ready(usb_mass_storage_dev* msd) {
+    uint8_t cmd[6];
+    memory::memset(cmd, 0, 6);
+    cmd[0] = SCSI_TEST_UNIT_READY;
+
+    // No data phase
+    sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+    if (result != 0) {
+        uart::printf("scsi: TEST UNIT READY failed (%d), retrying...\n", result);
+        // Retry a few times (device may need time to spin up)
+        for (int i = 0; i < 5; i++) {
+            delay_ms(500);
+            result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+            if (result == 0) break;
+        }
+        if (result != 0) return false;
+    }
+
+    uart::printf("scsi: TEST UNIT READY OK\n");
+    return true;
+}
+
+static bool scsi_read_capacity(usb_mass_storage_dev* msd,
+                                uint32_t* out_last_lba, uint32_t* out_block_size) {
+    uint8_t* data = (uint8_t*)alloc_xhci_memory(8, 64, 4096);
+    uintptr_t data_phys = xhci_virt_to_phys(data);
+
+    // Fill with pattern
+    for (int i = 0; i < 8; i++) data[i] = 0xBB;
+
+    uint8_t cmd[10];
+    memory::memset(cmd, 0, 10);
+    cmd[0] = SCSI_READ_CAPACITY_10;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 10, data, data_phys, 8, USB_CBW_FLAG_IN);
+
+    uart::printf("scsi: READ_CAPACITY data: ");
+    for (int i = 0; i < 8; i++)
+        uart::printf("%x ", (uint32_t)data[i]);
+    uart::printf("\n");
+
+    if (result != 0) {
+        uart::printf("scsi: READ CAPACITY failed (%d)\n", result);
+        return false;
+    }
+
+    *out_last_lba = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16)
+                  | ((uint32_t)data[2] << 8)  | (uint32_t)data[3];
+    *out_block_size = ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16)
+                    | ((uint32_t)data[6] << 8)  | (uint32_t)data[7];
+
+    uint64_t total_bytes = ((uint64_t)*out_last_lba + 1) * (uint64_t)*out_block_size;
+    uint32_t size_mb = (uint32_t)(total_bytes / (1024 * 1024));
+
+    uart::printf("scsi: READ CAPACITY OK: last_lba=%u block_size=%u total=%u MB\n",
+                 *out_last_lba, *out_block_size, size_mb);
+    return true;
+}
+
+// Read sectors from the device
+static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba,
+                          uint16_t sector_count, void* buffer, uintptr_t buffer_phys) {
+    uint8_t cmd[10];
+    memory::memset(cmd, 0, 10);
+    cmd[0] = SCSI_READ_10;
+    // LBA (big-endian)
+    cmd[2] = (uint8_t)(lba >> 24);
+    cmd[3] = (uint8_t)(lba >> 16);
+    cmd[4] = (uint8_t)(lba >> 8);
+    cmd[5] = (uint8_t)(lba);
+    // Transfer length in sectors (big-endian)
+    cmd[7] = (uint8_t)(sector_count >> 8);
+    cmd[8] = (uint8_t)(sector_count);
+
+    // Use actual block size from the device (passed separately or use 512 as fallback)
+    uint32_t byte_count = (uint32_t)sector_count * 512;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys,
+                                        byte_count, USB_CBW_FLAG_IN);
+    if (result != 0) {
+        uart::printf("scsi: READ(10) failed lba=%u count=%u (%d)\n",
+                     lba, (uint32_t)sector_count, result);
+        return false;
+    }
+    return true;
+}
+
+// Write sectors to the device
+static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba,
+                           uint16_t sector_count, void* buffer, uintptr_t buffer_phys) {
+    uint8_t cmd[10];
+    memory::memset(cmd, 0, 10);
+    cmd[0] = SCSI_WRITE_10;
+    cmd[2] = (uint8_t)(lba >> 24);
+    cmd[3] = (uint8_t)(lba >> 16);
+    cmd[4] = (uint8_t)(lba >> 8);
+    cmd[5] = (uint8_t)(lba);
+    cmd[7] = (uint8_t)(sector_count >> 8);
+    cmd[8] = (uint8_t)(sector_count);
+
+    // Use actual block size from the device (passed separately or use 512 as fallback)
+    uint32_t byte_count = (uint32_t)sector_count * 512;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys,
+                                        byte_count, USB_CBW_FLAG_OUT);
+    if (result != 0) {
+        uart::printf("scsi: WRITE(10) failed lba=%u count=%u (%d)\n",
+                     lba, (uint32_t)sector_count, result);
+        return false;
+    }
+    return true;
+}
+
 // Allocate input context for a device
 static xhci_input_context* alloc_input_context() {
     xhci_input_context* ctx = (xhci_input_context*)alloc_xhci_memory(
@@ -1387,6 +1768,12 @@ static void setup_device(uint8_t port_index) {
 
 namespace xhci {
     bool init() {
+        shared_cbw = nullptr;
+        shared_csw = nullptr;
+        shared_cbw_phys = 0;
+        shared_csw_phys = 0;
+        bot_tag = 1;
+
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
         if (!dev) { uart::printf("xhci: no xHCI controller found\n"); return false; }
 
@@ -1448,6 +1835,81 @@ namespace xhci {
                          (uint32_t)i, (uint32_t)mass_storage_devs[i].slot_id);
             configure_mass_storage(&mass_storage_devs[i]);
         }
+
+
+        // Test first mass storage device
+        if (mass_storage_count > 0) {
+            usb_mass_storage_dev* msd = &mass_storage_devs[0];
+            if (msd->configured) {
+                uart::printf("\n\nxhci: === Testing Mass Storage (slot=%u) ===\n",
+                             (uint32_t)msd->slot_id);
+
+                if (!scsi_inquiry(msd)) return false;
+                if (!scsi_test_unit_ready(msd)) return false;
+
+                uint32_t last_lba, block_size;
+                if (!scsi_read_capacity(msd, &last_lba, &block_size)) return false;
+
+                // Read sector 0 (MBR / partition table)
+                uint8_t* sector = (uint8_t*)alloc_xhci_memory(512, 64, 4096);
+                uintptr_t sector_phys = xhci_virt_to_phys(sector);
+
+                uart::printf("scsi: sector buf virt=%llx phys=%llx\n",
+                             (uint64_t)sector, (uint64_t)sector_phys);
+                // Also check: are virt and phys the same?
+                if ((uint64_t)sector != sector_phys) {
+                    uart::printf("scsi: WARNING: virt != phys! DMA will write to phys but we read from virt\n");
+                }
+                
+                if (scsi_read_10(msd, 0, 1, sector, sector_phys)) {
+                    uart::printf("scsi: READ sector 0 OK, first 16 bytes:\n  ");
+                    for (int i = 0; i < 16; i++)
+                        uart::printf("%x ", (uint32_t)sector[i]);
+                    uart::printf("\n");
+
+                    // Check MBR signature
+                    if (sector[510] == 0x55 && sector[511] == 0xAA)
+                        uart::printf("scsi: MBR signature found (0x55AA)\n");
+                    else
+                        uart::printf("scsi: no MBR signature (got 0x%x 0x%x)\n",
+                                     (uint32_t)sector[510], (uint32_t)sector[511]);
+                }
+
+                // Test write: read sector 1, modify, write back, verify
+                uint8_t* test_buf = (uint8_t*)alloc_xhci_memory(512, 64, 4096);
+                uintptr_t test_phys = xhci_virt_to_phys(test_buf);
+
+                uart::printf("scsi: write test on sector 1...\n");
+                if (scsi_read_10(msd, 1, 1, test_buf, test_phys)) {
+                    uart::printf("scsi: sector 1 before write: %x %x %x %x\n",
+                                 (uint32_t)test_buf[0], (uint32_t)test_buf[1],
+                                 (uint32_t)test_buf[2], (uint32_t)test_buf[3]);
+
+                    // Write a test pattern
+                    test_buf[0] = 0xDE;
+                    test_buf[1] = 0xAE;
+                    test_buf[2] = 0xBE;
+                    test_buf[3] = 0xEF;
+
+                    if (scsi_write_10(msd, 1, 1, test_buf, test_phys)) {
+                        uart::printf("scsi: WRITE sector 1 OK\n");
+
+                        // Read back to verify
+                        memory::memset(test_buf, 0, 512);
+                        if (scsi_read_10(msd, 1, 1, test_buf, test_phys)) {
+                            uart::printf("scsi: verify: %x %x %x %x\n",
+                                         (uint32_t)test_buf[0], (uint32_t)test_buf[1],
+                                         (uint32_t)test_buf[2], (uint32_t)test_buf[3]);
+                            if (test_buf[0] == 0xDE && test_buf[1] == 0xAE &&
+                                test_buf[2] == 0xBE && test_buf[3] == 0xEF) {
+                                uart::printf("scsi: === READ/WRITE VERIFIED OK ===\n");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
 
         return true;
     }
