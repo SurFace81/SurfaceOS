@@ -1619,6 +1619,14 @@ static usb_status ensure_capacity_cached(uint8_t dev_index)
 
 namespace usb
 {
+    // Example using
+    //  uint8_t sector[512];
+    //  uint8_t data[512] = {0xDE, 0xAD, 0xBE, 0xEF}; // test data
+    //  usb::read_sectors(0, 0, 1, sector);           // read MBR
+    //  usb::write_sectors(0, 2, 1, data);            // write sector 2
+    
+    //  usb_block_device bdev;
+    //  usb::get_block_device_info(0, &bdev);         // capacity info
 
     bool init()
     {

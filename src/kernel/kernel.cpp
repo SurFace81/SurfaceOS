@@ -33,19 +33,6 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
 
     usb::init();
-
-    uint8_t sector[512];
-    uint8_t data[512] = {0xDE, 0xAD, 0xBE, 0xEF}; // test data
-    usb::read_sectors(0, 0, 1, sector);       // read MBR
-    usb::write_sectors(0, 2, 1, data);      // write sector 100
-
-    usb_block_device bdev;
-    usb::get_block_device_info(0, &bdev);     // capacity info
-    uart::printf("USB Mass Storage Device:\n");
-    uart::printf("  Total Size: %llu bytes\n", bdev.total_bytes);
-    uart::printf("  Block Size: %u bytes\n", bdev.block_size);
-    uart::printf("  Last LBA: %u\n", bdev.last_lba);
-
-    //uart::listen_loop();
+    
     while (1);
 }
