@@ -7,13 +7,12 @@
 - Hardware interrupts (using PIC 8259)
 - PS/2 keyboard driver
 - Framebuffer text console (UEFI GOP)
-- Serial output (using UART 16550, ports/PCIe)
+- Serial output (using UART 16550, PCIe)
 - Paging with 2 MiB pages
-- Buddy-based memory allocator
+- Memory allocator
 - Basic shell with built-in commands
 - PCI bus enumeration
-- xHCI USB controller support
-- Basic USB device listing
+- xHCI USB read/write
 
 # Build & Run
 

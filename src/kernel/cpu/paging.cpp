@@ -49,4 +49,20 @@ namespace paging {
         return virt;
     }
 
+    static uint64_t next_mmio_virt = 0x10000000ULL; // 256 MB, free region for MMIO
+
+    uint64_t map_mmio_region(uint64_t phys, uint64_t size_bytes) {
+        uint64_t phys_aligned = phys & ~(uint64_t)(PAGE_SIZE_BYTES - 1);
+        uint64_t offset_in_page = phys - phys_aligned;
+        uint64_t pages = (size_bytes + offset_in_page + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES;
+
+        // Align next_mmio_virt to page boundary
+        uint64_t virt = next_mmio_virt;
+        next_mmio_virt += pages * PAGE_SIZE_BYTES;
+
+        allocate_pages(virt, phys_aligned, pages);
+
+        return virt + offset_in_page;
+    }
+
 } // namespace
