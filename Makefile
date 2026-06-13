@@ -47,6 +47,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
 
+.PHONY: run clean create_disk version
+
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
 	mkdir -p $(dir $@)
@@ -92,14 +94,19 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	$(NASM) -f elf64 -o $@ $<
 
 
+# Generating version
+version:
+	@bash ./version.sh
+
+
 # Kernel
 bin/kernel/kentry.o: src/kernel/kentry.asm
 	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
-bin/kernel/kernel.o: src/kernel/kernel.cpp
+bin/kernel/kernel.o: src/kernel/kernel.cpp version
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) -o $@ $<
 
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	mkdir -p $(dir $@)
@@ -142,3 +149,4 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
+	@rm -f src/kernel/version.h

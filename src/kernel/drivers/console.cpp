@@ -1,5 +1,6 @@
 #include "../../include/drivers/console.h"
 #include "../../include/drivers/uart.h"
+#include "../version.h"
 
 #define MAX_COMMANDS 32
 
@@ -184,7 +185,7 @@ namespace console
         char freq[12];
         int_to_str(cpuid::get_base_freq(), freq);
 
-        screen::printf("\n\tSurfaceOS v0.1 (C) 2025\n\r\tMem: ");
+        screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: ", VERSION_STRING);
         screen::printf("%u", (uint32_t)(memory::total() / 1048576 + 1));
         screen::printf(" Mb\n\r\tCpu: %s @ %s MHz", cpu_name, freq);
         screen::printf("\n\r------------------------------------------------\n\n\r> ");
