@@ -47,6 +47,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
 				bin/kernel/drivers/fs/fat32.o \
+				bin/kernel/drivers/commands.o \
 
 .PHONY: run clean create_disk version
 
@@ -133,6 +134,7 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 	sudo cp -R ./disk/EFI ./tmp
 	sudo cp ./bin/kernel/kernel.bin ./tmp/KERNEL.BIN
 	sudo cp ./bin/kernel/data/stdfont.fnt ./tmp/FONT.FNT
+	sudo sh -c 'echo "Hello from file!" > ./tmp/FILE.TXT'
 	sleep 0.3
 	sudo umount ./tmp
 

@@ -236,4 +236,30 @@ namespace pci
         cfg_write16(d->bus, d->device, d->function, off, val);
     }
 
+    const char* class_name(uint8_t class_code)
+    {
+        switch (class_code)
+        {
+            case 0x00: return "Unclassified";
+            case 0x01: return "Storage";
+            case 0x02: return "Network";
+            case 0x03: return "Display";
+            case 0x04: return "Multimedia";
+            case 0x05: return "Memory";
+            case 0x06: return "Bridge";
+            case 0x07: return "Communication";
+            case 0x08: return "System";
+            case 0x09: return "Input";
+            case 0x0A: return "Docking";
+            case 0x0B: return "Processor";
+            case 0x0C: return "Serial Bus";
+            case 0x0D: return "Wireless";
+            case 0x0E: return "Intelligent I/O";
+            case 0x0F: return "Satellite";
+            case 0x10: return "Encryption";
+            case 0x11: return "Signal Proc";
+            default:   return "Unknown";
+        }
+    }
+
 } // namespace pci

@@ -64,7 +64,7 @@ int strlen(const char* s)
 {
     int i = 0;
     while (s[i]) i++;
-    
+
     return i;
 }
 
@@ -77,4 +77,69 @@ int strcmp(const char* s1, const char* s2)
     }
 
     return (uint8_t)*s1 - (uint8_t)*s2;
+}
+
+int strncmp(const char* s1, const char* s2, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        if (s1[i] != s2[i] || s1[i] == '\0' || s2[i] == '\0')
+        {
+            return (uint8_t)s1[i] - (uint8_t)s2[i];
+        }            
+    }
+
+    return 0;
+}
+
+char* strcpy(char* dest, const char* src)
+{
+    char* start = dest;
+    while ((*dest++ = *src++));
+
+    return start;
+}
+
+char* strncpy(char* dest, const char* src, int n)
+{
+    char* start = dest;
+    int i = 0;
+
+    while (i < n && src[i])
+    {
+        dest[i] = src[i];
+        i++;
+    }
+
+    // Pad remaining space with null bytes
+    while (i < n)
+    {
+        dest[i] = '\0';
+        i++;
+    }
+
+    return start;
+}
+
+void* memset(void* dest, int val, uint64_t count)
+{
+    uint8_t* p = (uint8_t*)dest;
+    for (uint64_t i = 0; i < count; i++)
+    {
+        p[i] = (uint8_t)val;
+    }
+
+    return dest;
+}
+
+void* memcpy(void* dest, const void* src, uint64_t count)
+{
+    uint8_t* d = (uint8_t*)dest;
+    const uint8_t* s = (const uint8_t*)src;
+    for (uint64_t i = 0; i < count; i++)
+    {
+        d[i] = s[i];
+    }
+
+    return dest;
 }

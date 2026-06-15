@@ -50,6 +50,7 @@ enum Keys {
     ARROW_UP        = 200,
     ARROW_DOWN      = 208,
     ARROW_RIGHT     = 205,
+    DELETE          = 211,
 };
 
 typedef struct {

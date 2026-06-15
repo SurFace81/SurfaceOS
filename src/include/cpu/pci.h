@@ -86,6 +86,8 @@ namespace pci
     uint16_t read16 (PCIDevice* d, uint8_t off);
     void     write32(PCIDevice* d, uint8_t off, uint32_t val);
     void     write16(PCIDevice* d, uint8_t off, uint16_t val);
+    
+    const char* class_name(uint8_t class_code);
 }
 
 #endif

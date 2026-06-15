@@ -8,13 +8,19 @@
 #include "keyboard.h"
 #include "screen.h"
 
-// Command handler: receives raw input buffer, writes output via screen::write/printf
-typedef void (*command_fn)(list::List<char>* args);
+#define CONSOLE_MAX_ARGS 16
+#define CONSOLE_INPUT_MAX 256
+
+// Сommand signature: argc/argv like in standard C
+typedef void (*command_fn)(int argc, const char** argv);
 
 namespace console
 {
     void init();
     void register_command(const char* name, command_fn handler);
+
+    uint32_t command_count();
+    const char* command_name(uint32_t index);
 } // namespace console
 
 #endif

@@ -38,6 +38,11 @@ namespace screen
     uint32_t cursor_x();
     uint32_t cursor_y();
 
+    // Cursor appearance
+    void show_cursor();
+    void hide_cursor();
+    void update_cursor(); // call from timer to implement blinking
+
     // Output
     void putc(char c);
     void write(const char* s);
@@ -48,6 +53,7 @@ namespace screen
     void scroll_up();
     void erase_at(uint32_t x, uint32_t y);
     void set_color(Colors color);
+    
 } // namespace screen
 
 #endif // SCREEN_H
