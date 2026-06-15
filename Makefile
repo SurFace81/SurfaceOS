@@ -46,6 +46,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
+				bin/kernel/drivers/fs/fat32.o \
 
 .PHONY: run clean create_disk version
 
@@ -74,6 +75,10 @@ bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/drivers/usb/%.o: src/kernel/drivers/usb/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(CCFLAGS) -o $@ $^
+
+bin/kernel/drivers/fs/%.o: src/kernel/drivers/fs/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 

@@ -1,5 +1,6 @@
 #include "../../include/drivers/console.h"
 #include "../../include/drivers/uart.h"
+#include "../include/drivers/fs/fat32.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 32

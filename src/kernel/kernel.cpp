@@ -11,6 +11,40 @@
 #include "../include/stdlib/list.h"
 #include "../include/stdlib/stdio.h"
 #include "../include/drivers/usb/xhci.h"
+#include "../include/drivers/fs/fat32.h"
+
+// Console command handlers (before kmain or in a separate file)
+static void cmd_mount(list::List<char>*)
+{
+    if (fat32::mount(0))
+        screen::printf("\n\rFAT32 mounted\n\r");
+    else
+        screen::printf("\n\rMount failed\n\r");
+}
+
+static void cmd_ls(list::List<char>*)
+{
+    screen::printf("\n\r");
+    fat32::ls("/");
+}
+
+static void cmd_cat(list::List<char>* args)
+{
+    // For now just hardcode a test — later parse args
+    // Example: read first 1024 bytes of a file
+    uint8_t buf[1024];
+    uint32_t n = fat32::read_file("TEST.TXT", buf, 1023);
+    screen::printf("\n\r");
+    if (n > 0)
+    {
+        buf[n] = 0;
+        screen::printf("%s", (char*)buf);
+    }
+    else
+    {
+        screen::printf("File not found or read error\n\r");
+    }
+}
 
 extern "C" void kmain(BOOT_HEADER* BootHeader)
 {
@@ -33,6 +67,10 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
 
     usb::init();
+
+    console::register_command("mount", cmd_mount);
+    console::register_command("ls", cmd_ls);
+    console::register_command("cat", cmd_cat);
     
     while (1);
 }
