@@ -147,18 +147,37 @@ static const char* usb_speed_str(uint8_t speed)
 {
     switch (speed)
     {
-        case 1:
-            return "Full Speed (12 Mb/s)";
-        case 2:
-            return "Low Speed (1.5 Mb/s)";
-        case 3:
-            return "High Speed (480 Mb/s)";
-        case 4:
-            return "SuperSpeed (5 Gb/s)";
-        case 5:
-            return "SuperSpeed+ (10 Gb/s)";
-        default:
-            return "Unknown";
+        case 1: return "Full (12 Mb/s)";
+        case 2: return "Low (1.5 Mb/s)";
+        case 3: return "High (480 Mb/s)";
+        case 4: return "SS (5 Gb/s)";
+        case 5: return "SS+ (10 Gb/s)";
+        default: return "Unknown";
+    }
+}
+
+static const char* usb_class_name(uint8_t cls)
+{
+    switch (cls)
+    {
+        case 0x00: return "Composite";
+        case 0x01: return "Audio";
+        case 0x02: return "CDC";
+        case 0x03: return "HID";
+        case 0x05: return "Physical";
+        case 0x06: return "Image";
+        case 0x07: return "Printer";
+        case 0x08: return "Mass Storage";
+        case 0x09: return "Hub";
+        case 0x0A: return "CDC-Data";
+        case 0x0B: return "Smart Card";
+        case 0x0E: return "Video";
+        case 0x0F: return "Healthcare";
+        case 0xE0: return "Wireless";
+        case 0xEF: return "Misc";
+        case 0xFE: return "App Specific";
+        case 0xFF: return "Vendor Specific";
+        default:   return "Unknown";
     }
 }
 
@@ -1706,6 +1725,16 @@ namespace usb
         }
 
         return true;
+    }
+
+    const char* get_usb_class_name(uint8_t cls)
+    {
+        return usb_class_name(cls);
+    }
+
+    const char* get_usb_speed_str(uint8_t speed)
+    {
+        return usb_speed_str(speed);
     }
 
     uint8_t get_device_count()

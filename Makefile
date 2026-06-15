@@ -135,7 +135,7 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 	sudo cp ./bin/kernel/kernel.bin ./tmp/KERNEL.BIN
 	sudo cp ./bin/kernel/data/stdfont.fnt ./tmp/FONT.FNT
 	sudo sh -c 'echo "Hello from file!" > ./tmp/FILE.TXT'
-	sleep 0.3
+	sleep 0.6
 	sudo umount ./tmp
 
 run: $(DISK_IMG)

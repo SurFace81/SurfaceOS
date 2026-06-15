@@ -1,6 +1,7 @@
 #include "../../include/drivers/commands.h"
 #include "../../include/drivers/fs/fat32.h"
 #include "../../include/stdlib/string.h"
+#include "../../include/drivers/usb/xhci.h"
 #include "../version.h"
 
 // Built-in commands
@@ -122,6 +123,152 @@ static void cmd_cat(int argc, const char** argv)
     }
 }
 
+static void cmd_lsusb(int argc, const char** argv)
+{
+    uint8_t count = usb::get_device_count();
+    screen::printf("\n\r");
+    screen::printf("\n\r USB devices: %u", (uint32_t)count);
+    screen::printf("\n\r");
+
+    if (count == 0)
+    {
+        screen::printf("\n\r No devices found");
+        return;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        usb_device_info info;
+        if (usb::get_device_info(i, &info) != USB_OK)
+            continue;
+
+        char vid[5], pid[5];
+        hex_to_str(info.vendor_id, vid, 4);
+        hex_to_str(info.product_id, pid, 4);
+
+        screen::printf("\n\r  [%u] %s:%s  slot=%u port=%u  %s",
+            (uint32_t)i, vid, pid,
+            (uint32_t)info.slot_id, (uint32_t)info.port_index, 
+            usb::get_usb_speed_str(info.port_speed));
+        screen::printf("\n\r      class=%s  %s", 
+            usb::get_usb_class_name(info.device_class),
+            info.is_mass_storage ? "[mass storage]" : "");
+    }
+}
+
+static void cmd_usbinfo(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: usbinfo <index>");
+        return;
+    }
+
+    // Simple atoi: parse decimal index from argv[1]
+    uint8_t index = 0;
+    for (int i = 0; argv[1][i] != '\0'; i++)
+    {
+        if (argv[1][i] < '0' || argv[1][i] > '9')
+        {
+            screen::printf("\n\rInvalid index");
+            return;
+        }
+        index = index * 10 + (argv[1][i] - '0');
+    }
+
+    usb_device_info info;
+    if (usb::get_device_info(index, &info) != USB_OK)
+    {
+        screen::printf("\n\rDevice %u not found", (uint32_t)index);
+        return;
+    }
+
+    char vid[5], pid[5];
+    hex_to_str(info.vendor_id, vid, 4);
+    hex_to_str(info.product_id, pid, 4);
+
+    char bcd[5];
+    hex_to_str(info.bcd_usb, bcd, 4);
+
+    screen::printf("\n\r");
+    screen::printf("\n\r USB Device %u", (uint32_t)index);
+    screen::printf("\n\r  Vendor ID:     0x%s", vid);
+    screen::printf("\n\r  Product ID:    0x%s", pid);
+    screen::printf("\n\r  USB Version:   %c.%c%c",
+        bcd[1], bcd[2], bcd[3]);
+    screen::printf("\n\r  Speed:         %s", usb::get_usb_speed_str(info.port_speed));
+    screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
+    screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
+    screen::printf("\n\r  Class:         %s (0x%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
+    screen::printf("\n\r  Subclass:      0x%x", (uint32_t)info.device_subclass);
+    screen::printf("\n\r  Protocol:      0x%x", (uint32_t)info.device_protocol);
+    screen::printf("\n\r  Mass Storage:  %s", info.is_mass_storage ? "Yes" : "No");
+    screen::printf("\n\r  Connected:     %s", info.connected ? "Yes" : "No");
+
+    if (info.vendor_str[0] != '\0')
+        screen::printf("\n\r  Vendor:        %s", info.vendor_str);
+    if (info.product_str[0] != '\0')
+        screen::printf("\n\r  Product:       %s", info.product_str);
+
+    // If this is a mass storage device, show block device info
+    if (info.is_mass_storage)
+    {
+        uint8_t blk_count = usb::get_block_device_count();
+        for (uint8_t b = 0; b < blk_count; b++)
+        {
+            usb_block_device bdev;
+            if (usb::get_block_device_info(b, &bdev) != USB_OK)
+                continue;
+
+            screen::printf("\n\r  Block device:");
+            screen::printf("\n\r    Block size:  %u bytes", bdev.block_size);
+            screen::printf("\n\r    Last LBA:    %u", bdev.last_lba);
+
+            uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
+            if (total_mb > 1024)
+                screen::printf("\n\r    Capacity:    %u GB", (uint32_t)(total_mb / 1024));
+            else
+                screen::printf("\n\r    Capacity:    %u MB", (uint32_t)total_mb);
+
+            screen::printf("\n\r    Ready:       %s", bdev.ready ? "Yes" : "No");
+            break;
+        }
+    }
+}
+
+static void cmd_lsblk(int argc, const char** argv)
+{
+    uint8_t count = usb::get_block_device_count();
+    screen::printf("\n\r");
+    screen::printf("\n\r Block devices: %u", (uint32_t)count);
+    screen::printf("\n\r");
+
+    if (count == 0)
+    {
+        screen::printf("\n\r No block devices found");
+        return;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+    {
+        usb_block_device bdev;
+        if (usb::get_block_device_info(i, &bdev) != USB_OK)
+            continue;
+
+        uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
+
+        screen::printf("\n\r  [%u] block_size=%u  sectors=%u",
+            (uint32_t)i, bdev.block_size, bdev.last_lba + 1);
+
+        if (total_mb > 1024)
+            screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
+        else
+            screen::printf("  size=%u MB", (uint32_t)total_mb);
+
+        screen::printf("  %s", bdev.ready ? "ready" : "not ready");
+    }
+}
+
 namespace commands
 {
     void init()
@@ -133,5 +280,8 @@ namespace commands
         console::register_command("mount", cmd_mount);
         console::register_command("ls",    cmd_ls);
         console::register_command("cat",   cmd_cat);
+        console::register_command("lsusb",   cmd_lsusb);
+        console::register_command("usbinfo", cmd_usbinfo);
+        console::register_command("lsblk",   cmd_lsblk);
     }
 } // namespace commands

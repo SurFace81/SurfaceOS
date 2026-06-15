@@ -528,6 +528,9 @@ namespace usb {
     usb_status get_block_device_info(uint8_t index, usb_block_device* out);
     usb_status read_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, void* buffer);
     usb_status write_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, const void* buffer);
+
+    const char* get_usb_class_name(uint8_t cls);
+    const char* get_usb_speed_str(uint8_t speed);
 }
 
 #endif // XHCI_H
