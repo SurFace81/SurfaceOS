@@ -2,7 +2,8 @@
 #include "../../include/drivers/fs/fat32.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/usb/xhci.h"
-#include "../version.h"
+#include "../../include/mm/heap.h"
+#include "../../include/mm/memory.h"
 
 // Built-in commands
 
@@ -148,9 +149,10 @@ static void cmd_lsusb(int argc, const char** argv)
 
         screen::printf("\n\r  [%u] %s:%s  slot=%u port=%u  %s",
             (uint32_t)i, vid, pid,
-            (uint32_t)info.slot_id, (uint32_t)info.port_index, 
+            (uint32_t)info.slot_id, 
+            (uint32_t)info.port_index, 
             usb::get_usb_speed_str(info.port_speed));
-        screen::printf("\n\r      class=%s  %s", 
+        screen::printf("\n\r      class=%s  %s\n\r", 
             usb::get_usb_class_name(info.device_class),
             info.is_mass_storage ? "[mass storage]" : "");
     }
@@ -269,6 +271,34 @@ static void cmd_lsblk(int argc, const char** argv)
     }
 }
 
+static void cmd_meminfo(int argc, const char** argv)
+{
+    screen::printf("\n\r");
+
+    // Total physical RAM
+    uint64_t total_ram = memory::total();
+    uint64_t total_ram_mb = total_ram / (1024 * 1024);
+    screen::printf("\n\r Physical RAM:      %u MB", (uint32_t)total_ram_mb);
+
+    // Heap statistics
+    HeapStats stats;
+    heap::get_stats(&stats);
+
+    uint32_t total_kb = (uint32_t)(stats.total_size / 1024);
+    uint32_t used_kb  = (uint32_t)(stats.used_size / 1024);
+    uint32_t free_kb  = (uint32_t)(stats.free_size / 1024);
+
+    screen::printf("\n\r");
+    screen::printf("\n\r Heap total:        %u KB", total_kb);
+    screen::printf("\n\r Heap used:         %u KB", used_kb);
+    screen::printf("\n\r Heap free:         %u KB", free_kb);
+    screen::printf("\n\r Largest free:      %u KB", (uint32_t)(stats.largest_free_block / 1024));
+    screen::printf("\n\r");
+    screen::printf("\n\r Blocks total:      %u", (uint32_t)stats.block_count);
+    screen::printf("\n\r Blocks used:       %u", (uint32_t)stats.used_block_count);
+    screen::printf("\n\r Blocks free:       %u", (uint32_t)stats.free_block_count);
+}
+
 namespace commands
 {
     void init()
@@ -283,5 +313,6 @@ namespace commands
         console::register_command("lsusb",   cmd_lsusb);
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
+        console::register_command("meminfo", cmd_meminfo);
     }
 } // namespace commands

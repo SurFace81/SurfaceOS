@@ -26,6 +26,40 @@ namespace heap
         heap_start->free = true;
         heap_start->next = nullptr;
     }
+
+    void get_stats(HeapStats* out)
+    {
+        out->total_size = 0;
+        out->used_size = 0;
+        out->free_size = 0;
+        out->block_count = 0;
+        out->free_block_count = 0;
+        out->used_block_count = 0;
+        out->largest_free_block = 0;
+
+        BlockHeader* current = heap_start;
+        while (current)
+        {
+            out->block_count++;
+            out->total_size += current->size;
+
+            if (current->free)
+            {
+                out->free_block_count++;
+                out->free_size += current->size;
+                if (current->size > out->largest_free_block)
+                    out->largest_free_block = current->size;
+            }
+            else
+            {
+                out->used_block_count++;
+                out->used_size += current->size;
+            }
+
+            current = current->next;
+        }
+    }
+
 } // namespace heap
 
 // Search for a free block of sufficient size, split it if it's too large,
