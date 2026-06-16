@@ -323,8 +323,7 @@ static void cmd_uptime(int argc, const char** argv)
     uint32_t millis = (uint32_t)(ms % 1000);
 
     screen::printf("\n\r");
-    screen::printf("\n\r Uptime: %u:%02u:%02u.%03u",
-        hours, minutes, seconds, millis);
+    screen::printf("\n\r Uptime: %u:%02u:%02u.%03u", hours, minutes, seconds, millis);
     screen::printf("\n\r Ticks:  %u", (uint32_t)pit::ticks());
     screen::printf("\n\r Freq:   %u Hz", pit::frequency());
 }

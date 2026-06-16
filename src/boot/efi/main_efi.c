@@ -111,6 +111,23 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     // work with GOP
     Framebuffer* newBuffer = initGOP(SystemTable);
 
+    // Comment out to use full screen
+    // #define CONSOLE_WIDTH  1920
+    // #define CONSOLE_HEIGHT 1080
+
+    #ifdef CONSOLE_WIDTH
+        UINT32 vw = (newBuffer->Width  >= CONSOLE_WIDTH)  ? CONSOLE_WIDTH  : newBuffer->Width;
+        UINT32 vh = (newBuffer->Height >= CONSOLE_HEIGHT) ? CONSOLE_HEIGHT : newBuffer->Height;
+    #else
+        UINT32 vw = newBuffer->Width;
+        UINT32 vh = newBuffer->Height;
+    #endif
+
+    BootHeader.ViewportX      = (newBuffer->Width  - vw) / 2;
+    BootHeader.ViewportY      = (newBuffer->Height - vh) / 2;
+    BootHeader.ViewportWidth  = vw;
+    BootHeader.ViewportHeight = vh;
+
     // Set FB entry in BootHeader
     BootHeader.FrameBufferAddress = newBuffer->BaseAddress;
     BootHeader.FrameBufferSize = newBuffer->BufferSize;

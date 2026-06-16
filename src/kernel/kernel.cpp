@@ -27,7 +27,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     uart::init();
     usb::init();
 
-    paging::allocate_pages(0x600000, (uint64_t)BootHeader->FrameBufferAddress, 
+    paging::allocate_pages(0x8000000, (uint64_t)BootHeader->FrameBufferAddress, 
         (BootHeader->FrameBufferSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
 
     screen::init(BootHeader);

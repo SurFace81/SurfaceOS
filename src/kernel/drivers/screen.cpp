@@ -3,6 +3,7 @@
 static struct
 {
     uint8_t* buffer;
+    uint8_t* vram;
     uint64_t buffer_size;
     uint32_t pixels_per_scanline;
 
@@ -22,23 +23,28 @@ static struct
     bool cursor_visible;
     bool cursor_drawn;
     uint32_t cursor_tick;
+
+    uint32_t vp_x;      // viewport pixel offset from left
+    uint32_t vp_y;      // viewport pixel offset from top
+    uint32_t vp_width;  // viewport width in pixels
+    uint32_t vp_height; // viewport height in pixels
 } scr;
 
 static const uint32_t BBP = 4;
 
 static inline uint32_t max_cols()
 {
-    return scr.width / scr.sym_w;
+    return scr.vp_width / scr.sym_w;
 }
 
 static inline uint32_t max_rows()
 {
-    return scr.height / scr.sym_h;
+    return scr.vp_height / scr.sym_h;
 }
 
 static inline uint32_t* pixel_at(uint32_t x, uint32_t y)
 {
-    return (uint32_t*)(scr.buffer + (x + y * scr.pixels_per_scanline) * BBP);
+    return (uint32_t*)(scr.buffer + (scr.vp_x + x + (scr.vp_y + y) * scr.pixels_per_scanline) * BBP);
 }
 
 static void invert_cell(uint32_t col, uint32_t row)
@@ -92,8 +98,8 @@ static void draw_char(char chr, uint32_t col, uint32_t row)
 
 static void erase_rect(uint32_t px, uint32_t py, uint32_t w, uint32_t h)
 {
-    for (uint32_t y = py; y < py + h && y < scr.height; y++)
-        for (uint32_t x = px; x < px + w && x < scr.width; x++)
+    for (uint32_t y = py; y < py + h && y < scr.vp_height; y++)
+        for (uint32_t x = px; x < px + w && x < scr.vp_width; x++)
             *pixel_at(x, y) = 0x00000000;
 }
 
@@ -181,6 +187,7 @@ namespace screen
     void init(BOOT_HEADER* header)
     {
         scr.buffer = (uint8_t*)0x600000;
+        scr.vram   = (uint8_t*)0x8000000; 
         scr.buffer_size = header->FrameBufferSize;
         scr.pixels_per_scanline = header->ScreenPixelsPerScanLine;
         scr.width = header->ScreenWidth;
@@ -195,6 +202,10 @@ namespace screen
         scr.cursor_visible = false;
         scr.cursor_drawn = false;
         scr.cursor_tick = 0;
+        scr.vp_x      = header->ViewportX;
+        scr.vp_y      = header->ViewportY;
+        scr.vp_width  = header->ViewportWidth;
+        scr.vp_height = header->ViewportHeight;
 
         clear();
     }
@@ -250,14 +261,24 @@ namespace screen
         }
     }
 
+    void flush()
+    {
+        uint64_t* dst = (uint64_t*)scr.vram;
+        uint64_t* src = (uint64_t*)scr.buffer;
+        uint64_t count = scr.buffer_size / 8;
+        for (uint64_t i = 0; i < count; i++) 
+        {
+            dst[i] = src[i];
+        }            
+    }
+
     void clear()
     {
         cursor_undraw();
 
-        uint64_t total = (uint64_t)scr.pixels_per_scanline * scr.height;
-        uint32_t* buf = (uint32_t*)scr.buffer;
-        for (uint64_t i = 0; i < total; i++)
-            buf[i] = 0x00000000;
+        for (uint32_t y = 0; y < scr.vp_height; y++)
+            for (uint32_t x = 0; x < scr.vp_width; x++)
+                *pixel_at(x, y) = 0x00000000;
 
         scr.cursor_x = 0;
         scr.cursor_y = 0;
@@ -272,22 +293,25 @@ namespace screen
         cursor_undraw();
 
         uint32_t line_h = scr.sym_h;
-        uint32_t stride = scr.pixels_per_scanline * BBP;
+        uint32_t row_count = max_rows();
 
-        uint64_t* src = (uint64_t*)(scr.buffer + line_h * stride);
-        uint64_t* dst = (uint64_t*)scr.buffer;
+        // Shift rows up within viewport
+        for (uint32_t row = 1; row < row_count; row++)
+            for (uint32_t y = 0; y < line_h; y++)
+            {
+                uint32_t* dst = pixel_at(0, (row - 1) * line_h + y);
+                uint32_t* src = pixel_at(0, row * line_h + y);
+                for (uint32_t x = 0; x < scr.vp_width; x++)
+                    dst[x] = src[x];
+            }
 
-        uint32_t copy_qwords = ((max_rows() - 1) * line_h * stride) / 8;
-        for (uint32_t i = 0; i < copy_qwords; i++)
-            dst[i] = src[i];
-
-        uint64_t* last = (uint64_t*)(scr.buffer + (max_rows() - 1) * line_h * stride);
-        uint32_t last_qwords = (line_h * stride) / 8;
-        for (uint32_t i = 0; i < last_qwords; i++)
-            last[i] = 0;
+        // Clear last row
+        for (uint32_t y = 0; y < line_h; y++)
+            for (uint32_t x = 0; x < scr.vp_width; x++)
+                *pixel_at(x, (row_count - 1) * line_h + y) = 0;
 
         scr.cursor_x = 0;
-        scr.cursor_y = max_rows() - 1;
+        scr.cursor_y = row_count - 1;
         scr.cursor_tick = 0;
     }
 

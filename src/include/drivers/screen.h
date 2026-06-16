@@ -54,6 +54,8 @@ namespace screen
     void erase_at(uint32_t x, uint32_t y);
     void set_color(Colors color);
     
+    void flush();
+
 } // namespace screen
 
 #endif // SCREEN_H

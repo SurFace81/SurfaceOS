@@ -10,6 +10,11 @@ typedef struct {
     uint32_t ScreenWidth;
     uint32_t ScreenHeight;
     uint32_t ScreenPixelsPerScanLine;
+    // Console viewport (centered on screen)
+    uint32_t ViewportX;
+    uint32_t ViewportY;
+    uint32_t ViewportWidth;
+    uint32_t ViewportHeight;
     // Console Font
     void* StandartFontBuffer;
     uint16_t FontSymbolSizeX;

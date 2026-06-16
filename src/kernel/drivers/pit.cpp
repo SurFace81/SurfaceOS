@@ -8,9 +8,6 @@ static uint32_t tick_remainder = 0;   // accumulator for sub-ms precision
 static uint32_t remainder_step = 0;   // fractional part per tick (* 1000)
 static volatile uint64_t uptime = 0;  // accumulated milliseconds
 
-// Cursor blink interval in ticks
-#define CURSOR_BLINK_TICKS 500
-
 namespace pit
 {
     static void set_frequency(uint32_t hz)
@@ -40,7 +37,7 @@ namespace pit
         port::byte_out(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
     }
 
-void handler()
+    void handler()
     {
         tick_count++;
 
@@ -55,6 +52,10 @@ void handler()
 
         // Cursor blinking - call every tick, screen controls the rate
         screen::update_cursor();
+
+        // Flush back buffer to VRAM ~45 fps
+        if (tick_count % 22 == 0)
+            screen::flush();
     }
 
     void init()
