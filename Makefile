@@ -48,6 +48,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/usb/xhci.o \
 				bin/kernel/drivers/fs/fat32.o \
 				bin/kernel/drivers/commands.o \
+				bin/kernel/drivers/pit.o \
+				bin/kernel/drivers/rtc.o \
 
 .PHONY: run clean create_disk version
 

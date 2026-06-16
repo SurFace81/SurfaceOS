@@ -239,7 +239,7 @@ namespace screen
 
         // Toggle every N ticks. Caller controls blink speed
         // by how often it calls update_cursor().
-        const uint32_t BLINK_HALF_PERIOD = 30;
+        const uint32_t BLINK_HALF_PERIOD = 500;
         if (scr.cursor_tick >= BLINK_HALF_PERIOD)
         {
             scr.cursor_tick = 0;
@@ -352,6 +352,23 @@ namespace screen
             }
             fmt++;
 
+            // Parse flags
+            char pad_char = ' ';
+            if (*fmt == '0')
+            {
+                pad_char = '0';
+                fmt++;
+            }
+
+            // Parse width
+            uint32_t width = 0;
+            while (*fmt >= '0' && *fmt <= '9')
+            {
+                width = width * 10 + (*fmt - '0');
+                fmt++;
+            }
+
+            // Parse 'll' length modifier
             bool ll = (*fmt == 'l' && fmt[1] == 'l');
             if (ll)
                 fmt += 2;
@@ -366,16 +383,29 @@ namespace screen
                     break;
                 case 'u':
                 case 'i':
+                {
                     utoa(ll ? __builtin_va_arg(a, uint64_t)
                             : __builtin_va_arg(a, uint32_t), buf, 10);
+                    // Pad if needed
+                    uint32_t len = 0;
+                    while (buf[len]) len++;
+                    for (uint32_t p = len; p < width; p++)
+                        emit_char(pad_char);
                     emit_str(buf);
                     break;
+                }
                 case 'x':
+                {
                     emit_str("0x");
                     utoa(ll ? __builtin_va_arg(a, uint64_t)
                             : __builtin_va_arg(a, uint32_t), buf, 16);
+                    uint32_t len = 0;
+                    while (buf[len]) len++;
+                    for (uint32_t p = len; p < width; p++)
+                        emit_char(pad_char);
                     emit_str(buf);
                     break;
+                }
                 case '%':
                     emit_char('%');
                     break;

@@ -4,6 +4,8 @@
 #include "../../include/drivers/usb/xhci.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
+#include "../../include/drivers/pit.h"
+#include "../../include/drivers/rtc.h"
 
 // Built-in commands
 
@@ -299,6 +301,34 @@ static void cmd_meminfo(int argc, const char** argv)
     screen::printf("\n\r Blocks free:       %u", (uint32_t)stats.free_block_count);
 }
 
+static void cmd_time(int argc, const char** argv)
+{
+    rtc_time t;
+    rtc::read(&t);
+
+    screen::printf("\n\r");
+    screen::printf("\n\r %02u:%02u:%02u  %02u.%02u.%u",
+        (uint32_t)t.hours, (uint32_t)t.minutes, (uint32_t)t.seconds,
+        (uint32_t)t.day, (uint32_t)t.month, (uint32_t)t.year);
+}
+
+static void cmd_uptime(int argc, const char** argv)
+{
+    uint64_t ms = pit::uptime_ms();
+
+    uint32_t total_sec = (uint32_t)(ms / 1000);
+    uint32_t hours = total_sec / 3600;
+    uint32_t minutes = (total_sec % 3600) / 60;
+    uint32_t seconds = total_sec % 60;
+    uint32_t millis = (uint32_t)(ms % 1000);
+
+    screen::printf("\n\r");
+    screen::printf("\n\r Uptime: %u:%02u:%02u.%03u",
+        hours, minutes, seconds, millis);
+    screen::printf("\n\r Ticks:  %u", (uint32_t)pit::ticks());
+    screen::printf("\n\r Freq:   %u Hz", pit::frequency());
+}
+
 namespace commands
 {
     void init()
@@ -314,5 +344,7 @@ namespace commands
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
         console::register_command("meminfo", cmd_meminfo);
+        console::register_command("time",   cmd_time);
+        console::register_command("uptime", cmd_uptime);
     }
 } // namespace commands
