@@ -1,3 +1,4 @@
+// src/kernel/drivers/commands.cpp
 #include "../../include/drivers/commands.h"
 #include "../../include/drivers/fs/fat32.h"
 #include "../../include/stdlib/string.h"
@@ -115,7 +116,7 @@ static void cmd_cat(int argc, const char** argv)
     uint8_t buf[1024];
     uint32_t n = fat32::read_file(argv[1], buf, 1023);
     screen::printf("\n\r");
-    if (n > 0)
+    if (n != (uint32_t)-1 && n > 0)
     {
         buf[n] = 0;
         screen::printf("%s", (char*)buf);
@@ -124,6 +125,66 @@ static void cmd_cat(int argc, const char** argv)
     {
         screen::printf("File not found or read error");
     }
+}
+
+static void cmd_write(int argc, const char** argv)
+{
+    if (argc < 3)
+    {
+        screen::printf("\n\rUsage: write <filename> <text...>");
+        return;
+    }
+
+    // Concatenate all args after filename
+    char data[512];
+    uint32_t pos = 0;
+    for (int i = 2; i < argc && pos < 510; i++)
+    {
+        if (i > 2 && pos < 510)
+            data[pos++] = ' ';
+
+        uint32_t len = strlen(argv[i]);
+        for (uint32_t j = 0; j < len && pos < 510; j++)
+            data[pos++] = argv[i][j];
+    }
+    data[pos] = '\0';
+
+    uint32_t written = fat32::write_file(argv[1], (const uint8_t*)data, pos);
+    screen::printf("\n\r");
+    if (written != (uint32_t)-1)
+        screen::printf("%u bytes written to %s", written, argv[1]);
+    else
+        screen::printf("Write failed");
+}
+
+static void cmd_mkdir(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: mkdir <dirname>");
+        return;
+    }
+
+    screen::printf("\n\r");
+    if (fat32::mkdir(argv[1]))
+        screen::printf("Directory created: %s", argv[1]);
+    else
+        screen::printf("mkdir failed");
+}
+
+static void cmd_rm(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: rm <path>");
+        return;
+    }
+
+    screen::printf("\n\r");
+    if (fat32::remove(argv[1]))
+        screen::printf("Removed: %s", argv[1]);
+    else
+        screen::printf("Remove failed");
 }
 
 static void cmd_lsusb(int argc, const char** argv)
@@ -168,7 +229,6 @@ static void cmd_usbinfo(int argc, const char** argv)
         return;
     }
 
-    // Simple atoi: parse decimal index from argv[1]
     uint8_t index = 0;
     for (int i = 0; argv[1][i] != '\0'; i++)
     {
@@ -214,7 +274,6 @@ static void cmd_usbinfo(int argc, const char** argv)
     if (info.product_str[0] != '\0')
         screen::printf("\n\r  Product:       %s", info.product_str);
 
-    // If this is a mass storage device, show block device info
     if (info.is_mass_storage)
     {
         uint8_t blk_count = usb::get_block_device_count();
@@ -277,12 +336,10 @@ static void cmd_meminfo(int argc, const char** argv)
 {
     screen::printf("\n\r");
 
-    // Total physical RAM
     uint64_t total_ram = memory::total();
     uint64_t total_ram_mb = total_ram / (1024 * 1024);
     screen::printf("\n\r Physical RAM:      %u MB", (uint32_t)total_ram_mb);
 
-    // Heap statistics
     HeapStats stats;
     heap::get_stats(&stats);
 
@@ -332,18 +389,21 @@ namespace commands
 {
     void init()
     {
-        console::register_command("help",  cmd_help);
-        console::register_command("clear", cmd_clear);
-        console::register_command("cpuid", cmd_cpuid);
-        console::register_command("lspci", cmd_lspci);
-        console::register_command("mount", cmd_mount);
-        console::register_command("ls",    cmd_ls);
-        console::register_command("cat",   cmd_cat);
+        console::register_command("help",    cmd_help);
+        console::register_command("clear",   cmd_clear);
+        console::register_command("cpuid",   cmd_cpuid);
+        console::register_command("lspci",   cmd_lspci);
+        console::register_command("mount",   cmd_mount);
+        console::register_command("ls",      cmd_ls);
+        console::register_command("cat",     cmd_cat);
+        console::register_command("write",   cmd_write);
+        console::register_command("mkdir",   cmd_mkdir);
+        console::register_command("rm",      cmd_rm);
         console::register_command("lsusb",   cmd_lsusb);
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
         console::register_command("meminfo", cmd_meminfo);
-        console::register_command("time",   cmd_time);
-        console::register_command("uptime", cmd_uptime);
+        console::register_command("time",    cmd_time);
+        console::register_command("uptime",  cmd_uptime);
     }
-} // namespace commands
+}
