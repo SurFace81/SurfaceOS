@@ -7,6 +7,12 @@
 #include "../../../include/mm/heap.h"
 #include "../../../include/stdlib/string.h"
 
+#define CWD_PATH_MAX 256
+#define PATH_SEPARATOR '\\'
+
+static uint32_t cwd_cluster = 0;
+static char     cwd_path_buf[CWD_PATH_MAX] = "\\";
+
 // Cached volume parameters after mount
 static bool mounted = false;
 static uint8_t dev_index = 0;
@@ -51,6 +57,129 @@ static bool write_cluster_data(uint32_t cluster, const void* buffer)
 {
     uint32_t lba = cluster_to_lba(cluster);
     return usb::write_sectors(dev_index, lba, sectors_per_cluster, buffer) == USB_OK;
+}
+
+// Build a clean absolute path from current cwd + relative component
+// Handles "..", ".", leading/trailing slashes
+static bool normalize_path(const char* base, const char* rel, char* out, uint32_t max)
+{
+    // Start with base path split into components
+    // We use a simple stack of component start-offsets
+
+    char temp[CWD_PATH_MAX];
+    uint32_t temp_len = 0;
+
+    // Copy base into temp (skip leading /)
+    const char* bp = base;
+    while (*bp == PATH_SEPARATOR) bp++;
+    while (*bp && temp_len < CWD_PATH_MAX - 2)
+    {
+        temp[temp_len++] = *bp++;
+    }
+
+    // Append separator if base is non-empty
+    if (temp_len > 0 && temp[temp_len - 1] != PATH_SEPARATOR)
+        temp[temp_len++] = PATH_SEPARATOR;
+
+    // Append relative path
+    const char* rp = rel;
+    while (*rp == PATH_SEPARATOR) rp++;
+    while (*rp && temp_len < CWD_PATH_MAX - 2)
+    {
+        temp[temp_len++] = *rp++;
+    }
+    temp[temp_len] = '\0';
+
+    // Now process components, resolving . and ..
+    // Component pointers stored as a simple stack
+    const char* comps[32];
+    uint32_t comp_count = 0;
+
+    char* p = temp;
+    while (*p)
+    {
+        // Skip slashes
+        while (*p == PATH_SEPARATOR) p++;
+        if (*p == '\0') break;
+
+        char* start = p;
+        while (*p && *p != PATH_SEPARATOR) p++;
+
+        uint32_t len = (uint32_t)(p - start);
+
+        if (len == 1 && start[0] == '.')
+            continue;
+
+        if (len == 2 && start[0] == '.' && start[1] == '.')
+        {
+            if (comp_count > 0)
+                comp_count--;
+            continue;
+        }
+
+        // Null-terminate this component in place
+        if (*p) { *p = '\0'; p++; }
+
+        if (comp_count < 32)
+            comps[comp_count++] = start;
+    }
+
+    // Build output
+    out[0] = PATH_SEPARATOR;
+    uint32_t pos = 1;
+
+    for (uint32_t i = 0; i < comp_count; i++)
+    {
+        uint32_t clen = strlen(comps[i]);
+        if (pos + clen + 1 >= max)
+            return false;
+
+        memcpy(out + pos, comps[i], clen);
+        pos += clen;
+
+        if (i + 1 < comp_count)
+            out[pos++] = PATH_SEPARATOR;
+    }
+
+    out[pos] = '\0';
+    return true;
+}
+
+// FAT date: bits 15-9 = year-1980, bits 8-5 = month, bits 4-0 = day
+// FAT time: bits 15-11 = hours, bits 10-5 = minutes, bits 4-0 = seconds/2
+static void format_datetime(uint16_t date, uint16_t time,
+                            char* out)
+{
+    if (date == 0 && time == 0)
+    {
+        strcpy(out, "                ");
+        return;
+    }
+
+    uint16_t day   = date & 0x1F;
+    uint16_t month = (date >> 5) & 0x0F;
+    uint16_t year  = ((date >> 9) & 0x7F) + 1980;
+    uint16_t hour  = (time >> 11) & 0x1F;
+    uint16_t min   = (time >> 5) & 0x3F;
+
+    // Format: DD.MM.YYYY HH:MM
+    out[0]  = '0' + day / 10;
+    out[1]  = '0' + day % 10;
+    out[2]  = '.';
+    out[3]  = '0' + month / 10;
+    out[4]  = '0' + month % 10;
+    out[5]  = '.';
+    out[6]  = '0' + (year / 1000) % 10;
+    out[7]  = '0' + (year / 100) % 10;
+    out[8]  = '0' + (year / 10) % 10;
+    out[9]  = '0' + year % 10;
+    out[10] = ' ';
+    out[11] = '0' + hour / 10;
+    out[12] = '0' + hour % 10;
+    out[13] = ':';
+    out[14] = '0' + min / 10;
+    out[15] = '0' + min % 10;
+    out[16] = '\0';
 }
 
 // FAT table operations
@@ -298,33 +427,44 @@ static void set_entry_cluster(fat32_dir_entry* entry, uint32_t cluster)
 }
 
 // Resolve path, also returns parent directory cluster if needed
-static bool resolve_path(const char* path, fat32_dir_entry* out_entry,
-                          uint32_t* out_parent_cluster = nullptr)
+static bool resolve_path(const char* path, fat32_dir_entry* out_entry, uint32_t* out_parent_cluster = nullptr)
 {
     if (!path || path[0] == '\0')
         return false;
 
-    while (*path == '/') path++;
-    if (*path == '\0')
+    // If relative path, build absolute first
+    char abs_buf[CWD_PATH_MAX];
+    const char* resolved = path;
+
+    if (path[0] != PATH_SEPARATOR)
+    {
+        if (!normalize_path(cwd_path_buf, path, abs_buf, CWD_PATH_MAX))
+            return false;
+        resolved = abs_buf;
+    }
+
+    const char* p = resolved;
+    while (*p == PATH_SEPARATOR) p++;
+    if (*p == '\0')
         return false;
 
     uint32_t current_cluster = root_cluster;
 
-    while (*path)
+    while (*p)
     {
         char component[13];
         uint32_t clen = 0;
-        while (*path && *path != '/' && clen < 12)
-            component[clen++] = *path++;
+        while (*p && *p != PATH_SEPARATOR && clen < 12)
+            component[clen++] = *p++;
         component[clen] = '\0';
 
-        while (*path == '/') path++;
+        while (*p == '/') p++;
 
         fat32_dir_entry entry;
         if (!find_in_dir(current_cluster, component, &entry))
             return false;
 
-        if (*path == '\0')
+        if (*p == '\0')
         {
             if (out_parent_cluster)
                 *out_parent_cluster = current_cluster;
@@ -345,7 +485,7 @@ static bool resolve_path(const char* path, fat32_dir_entry* out_entry,
 static bool split_path(const char* path, char* parent_out, uint32_t parent_max,
                         char* name_out)
 {
-    while (*path == '/') path++;
+    while (*path == PATH_SEPARATOR) path++;
     if (*path == '\0') return false;
 
     uint32_t len = strlen(path);
@@ -353,7 +493,7 @@ static bool split_path(const char* path, char* parent_out, uint32_t parent_max,
     int last_slash = -1;
     for (uint32_t i = 0; i < len; i++)
     {
-        if (path[i] == '/')
+        if (path[i] == PATH_SEPARATOR)
             last_slash = (int)i;
     }
 
@@ -382,20 +522,38 @@ static bool split_path(const char* path, char* parent_out, uint32_t parent_max,
 static uint32_t resolve_dir_cluster(const char* path)
 {
     if (!path || path[0] == '\0')
-        return root_cluster;
+        return cwd_cluster;
 
     const char* p = path;
-    while (*p == '/') p++;
+    while (*p == PATH_SEPARATOR) p++;
     if (*p == '\0')
         return root_cluster;
 
-    fat32_dir_entry entry;
-    if (!resolve_path(path, &entry))
+    // Absolute path
+    if (path[0] == PATH_SEPARATOR)
+    {
+        fat32_dir_entry entry;
+        if (!resolve_path(path, &entry))
+            return 0;
+        if (!(entry.attr & FAT32_ATTR_DIRECTORY))
+            return 0;
+        return get_entry_cluster(&entry);
+    }
+
+    // Relative path - resolve from cwd
+    char abs_path[CWD_PATH_MAX];
+    if (!normalize_path(cwd_path_buf, path, abs_path, CWD_PATH_MAX))
         return 0;
 
+    // Root case after normalization
+    if (abs_path[0] == '/' && abs_path[1] == '\0')
+        return root_cluster;
+
+    fat32_dir_entry entry;
+    if (!resolve_path(abs_path, &entry))
+        return 0;
     if (!(entry.attr & FAT32_ATTR_DIRECTORY))
         return 0;
-
     return get_entry_cluster(&entry);
 }
 
@@ -588,6 +746,21 @@ static bool is_dir_empty(uint32_t dir_cluster)
 
 namespace fat32
 {
+    void umount()
+    {
+        mounted = false;
+        cwd_cluster = 0;
+        cwd_path_buf[0] = PATH_SEPARATOR;
+        cwd_path_buf[1] = '\0';
+        bytes_per_sector = 0;
+        sectors_per_cluster = 0;
+    }
+
+    bool is_mounted()
+    {
+        return mounted;
+    }
+
     bool mount(uint8_t usb_dev)
     {
         mounted = false;
@@ -621,16 +794,12 @@ namespace fat32
         data_start_lba = bpb->reserved_sectors + (uint32_t)bpb->num_fats * bpb->fat_size_32;
         total_sectors = bpb->total_sectors_32;
 
-        uart::printf("fat32: mounted OK\n");
-        uart::printf("  bytes/sector:    %u\n", bytes_per_sector);
-        uart::printf("  sectors/cluster: %u\n", (uint32_t)sectors_per_cluster);
-        uart::printf("  FAT start LBA:   %u\n", fat_start_lba);
-        uart::printf("  data start LBA:  %u\n", data_start_lba);
-        uart::printf("  root cluster:    %u\n", root_cluster);
-        uart::printf("  FAT size:        %u sectors (%u KB)\n",
-                     fat_size_sectors, fat_size_sectors * bytes_per_sector / 1024);
-
         mounted = true;
+
+        cwd_cluster = root_cluster;
+        cwd_path_buf[0] = PATH_SEPARATOR;
+        cwd_path_buf[1] = '\0';
+
         kfree(sector);
         return true;
     }
@@ -639,9 +808,13 @@ namespace fat32
     {
         if (!mounted) return false;
 
-        uint32_t dir_cluster = root_cluster;
+        uint32_t dir_cluster = cwd_cluster;
 
-        if (path && path[0] != '\0' && !(path[0] == '/' && path[1] == '\0'))
+        if (path && path[0] == PATH_SEPARATOR && path[1] == '\0')
+        {
+            dir_cluster = root_cluster;
+        }
+        else if (path && path[0] != '\0')
         {
             fat32_dir_entry entry;
             if (!resolve_path(path, &entry))
@@ -684,10 +857,13 @@ namespace fat32
                 char name[13];
                 format_83_name(dir[i].name, name);
 
+                char dt[17];
+                format_datetime(dir[i].write_date, dir[i].write_time, dt);
+
                 if (dir[i].attr & FAT32_ATTR_DIRECTORY)
-                    screen::printf("  <DIR>  %s\n\r", name);
+                    screen::printf("  %s       <DIR>  %s\n\r", dt, name);
                 else
-                    screen::printf("  %u\t %s\n\r", dir[i].file_size, name);
+                    screen::printf("  %s  %10u  %s\n\r", dt, dir[i].file_size, name);
             }
 
             cluster = fat_read_entry(cluster);
@@ -941,5 +1117,60 @@ namespace fat32
         memory::memcpy(entry.name, name83, 11);
 
         return delete_dir_entry(parent_cluster, name83);
+    }
+
+    bool set_cwd(const char* path)
+    {
+        if (!mounted) return false;
+
+        // "/" — go to root
+        if (path[0] == PATH_SEPARATOR && path[1] == '\0')
+        {
+            cwd_cluster = root_cluster;
+            cwd_path_buf[0] = PATH_SEPARATOR;
+            cwd_path_buf[1] = '\0';
+            return true;
+        }
+
+        // Build absolute path
+        char new_path[CWD_PATH_MAX];
+        if (path[0] == PATH_SEPARATOR)
+        {
+            // Absolute
+            if (!normalize_path("\\", path, new_path, CWD_PATH_MAX))
+                return false;
+        }
+        else
+        {
+            // Relative to cwd
+            if (!normalize_path(cwd_path_buf, path, new_path, CWD_PATH_MAX))
+                return false;
+        }
+
+        // Root after normalization (e.g. "cd .." from top-level dir)
+        if (new_path[0] == PATH_SEPARATOR && new_path[1] == '\0')
+        {
+            cwd_cluster = root_cluster;
+            cwd_path_buf[0] = PATH_SEPARATOR;
+            cwd_path_buf[1] = '\0';
+            return true;
+        }
+
+        // Verify it exists and is a directory
+        fat32_dir_entry entry;
+        if (!resolve_path(new_path, &entry))
+            return false;
+
+        if (!(entry.attr & FAT32_ATTR_DIRECTORY))
+            return false;
+
+        cwd_cluster = get_entry_cluster(&entry);
+        strcpy(cwd_path_buf, new_path);
+        return true;
+    }
+
+    const char* cwd_path()
+    {
+        return cwd_path_buf;
     }
 }

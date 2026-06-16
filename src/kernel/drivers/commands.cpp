@@ -92,15 +92,42 @@ static void cmd_lspci(int argc, const char** argv)
 
 static void cmd_mount(int argc, const char** argv)
 {
-    if (fat32::mount(0))
-        screen::printf("\n\rFAT32 mounted");
+    uint8_t index = 0;
+
+    if (argc > 1)
+    {
+        for (int i = 0; argv[1][i] != '\0'; i++)
+        {
+            if (argv[1][i] < '0' || argv[1][i] > '9')
+            {
+                screen::printf("\n\rUsage: mount [device_index]");
+                return;
+            }
+            index = index * 10 + (argv[1][i] - '0');
+        }
+    }
+
+    if (fat32::mount(index))
+        screen::printf("\n\rFAT32 mounted (device %u)", (uint32_t)index);
     else
         screen::printf("\n\rMount failed");
 }
 
+static void cmd_umount(int argc, const char** argv)
+{
+    if (!fat32::is_mounted())
+    {
+        screen::printf("\n\rNothing is mounted");
+        return;
+    }
+
+    fat32::umount();
+    screen::printf("\n\rUnmounted");
+}
+
 static void cmd_ls(int argc, const char** argv)
 {
-    const char* path = argc > 1 ? argv[1] : "/";
+    const char* path = argc > 1 ? argv[1] : "";
     screen::printf("\n\r");
     fat32::ls(path);
 }
@@ -258,8 +285,7 @@ static void cmd_usbinfo(int argc, const char** argv)
     screen::printf("\n\r USB Device %u", (uint32_t)index);
     screen::printf("\n\r  Vendor ID:     0x%s", vid);
     screen::printf("\n\r  Product ID:    0x%s", pid);
-    screen::printf("\n\r  USB Version:   %c.%c%c",
-        bcd[1], bcd[2], bcd[3]);
+    screen::printf("\n\r  USB Version:   %c.%c%c", bcd[1], bcd[2], bcd[3]);
     screen::printf("\n\r  Speed:         %s", usb::get_usb_speed_str(info.port_speed));
     screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
     screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
@@ -385,6 +411,18 @@ static void cmd_uptime(int argc, const char** argv)
     screen::printf("\n\r Freq:   %u Hz", pit::frequency());
 }
 
+static void cmd_cd(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\r%s", fat32::cwd_path());
+        return;
+    }
+
+    if (!fat32::set_cwd(argv[1]))
+        screen::printf("\n\rDirectory not found: %s", argv[1]);
+}
+
 namespace commands
 {
     void init()
@@ -394,6 +432,7 @@ namespace commands
         console::register_command("cpuid",   cmd_cpuid);
         console::register_command("lspci",   cmd_lspci);
         console::register_command("mount",   cmd_mount);
+        console::register_command("umount",  cmd_umount);
         console::register_command("ls",      cmd_ls);
         console::register_command("cat",     cmd_cat);
         console::register_command("write",   cmd_write);
@@ -405,5 +444,6 @@ namespace commands
         console::register_command("meminfo", cmd_meminfo);
         console::register_command("time",    cmd_time);
         console::register_command("uptime",  cmd_uptime);
+        console::register_command("cd",      cmd_cd);
     }
 }

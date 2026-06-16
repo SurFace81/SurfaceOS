@@ -2,6 +2,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/commands.h"
+#include "../../include/drivers/fs/fat32.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 32
@@ -213,7 +214,7 @@ static void on_key(keyboard_event_t e)
         exec(cmd_line);
         list::clear(input_buf);
         input_pos = 0;
-        screen::printf("\n\r> ");
+        screen::printf("\n\r%s> ", fat32::cwd_path());
         return;
     }
 
@@ -431,7 +432,7 @@ namespace console
         screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: ", VERSION_STRING);
         screen::printf("%u", (uint32_t)(memory::total() / 1048576 + 1));
         screen::printf(" Mb\n\r\tCpu: %s @ %s MHz", cpu_name, freq);
-        screen::printf("\n\r------------------------------------------------\n\n\r> ");
+        screen::printf("\n\r------------------------------------------------\n\n\r%s> ", fat32::cwd_path());
     }
 
 } // namespace console
