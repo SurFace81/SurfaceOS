@@ -70,11 +70,14 @@ struct fat32_dir_entry {
 #define FAT32_DIR_ENTRY_FREE  0xE5
 #define FAT32_DIR_ENTRY_END   0x00
 
+uint32_t format_83_name(const uint8_t* raw, char* out);
+void format_datetime(uint16_t date, uint16_t time, char* out);
+
 namespace fat32 {
     bool     mount(uint8_t usb_dev_index);
     void     umount();
     bool     is_mounted();
-    bool     ls(const char* path);
+    uint32_t ls(const char* path, fat32_dir_entry* entries, uint32_t max_entries);
     uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size);
     uint32_t write_file(const char* path, const uint8_t* data, uint32_t size);
     bool     mkdir(const char* path);

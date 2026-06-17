@@ -128,8 +128,31 @@ static void cmd_umount(int argc, const char** argv)
 static void cmd_ls(int argc, const char** argv)
 {
     const char* path = argc > 1 ? argv[1] : "";
-    screen::printf("\n\r");
-    fat32::ls(path);
+
+    const uint32_t max_entries = 64;
+    fat32_dir_entry entries[max_entries];
+
+    uint32_t count = fat32::ls(path, entries, max_entries);
+
+    if (count == 0 && argc > 1)
+    {
+        screen::printf("\n\rDirectory not found: %s", argv[1]);
+        return;
+    }
+
+    for (uint32_t i = 0; i < count && i < max_entries; i++)
+    {
+        char name[13];
+        format_83_name(entries[i].name, name);
+
+        char dt[17];
+        format_datetime(entries[i].write_date, entries[i].write_time, dt);
+
+        if (entries[i].attr & FAT32_ATTR_DIRECTORY)
+            screen::printf("\n\r  %s       <DIR>  %s", dt, name);
+        else
+            screen::printf("\n\r  %s  %10u  %s", dt, entries[i].file_size, name);
+    }
 }
 
 static void cmd_cat(int argc, const char** argv)

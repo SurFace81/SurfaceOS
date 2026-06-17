@@ -147,8 +147,7 @@ static bool normalize_path(const char* base, const char* rel, char* out, uint32_
 
 // FAT date: bits 15-9 = year-1980, bits 8-5 = month, bits 4-0 = day
 // FAT time: bits 15-11 = hours, bits 10-5 = minutes, bits 4-0 = seconds/2
-static void format_datetime(uint16_t date, uint16_t time,
-                            char* out)
+void format_datetime(uint16_t date, uint16_t time, char* out)
 {
     if (date == 0 && time == 0)
     {
@@ -298,7 +297,7 @@ static bool str_eq_nocase(const char* a, const char* b, uint32_t len)
     return true;
 }
 
-static uint32_t format_83_name(const uint8_t* raw, char* out)
+uint32_t format_83_name(const uint8_t* raw, char* out)
 {
     uint32_t pos = 0;
 
@@ -458,7 +457,7 @@ static bool resolve_path(const char* path, fat32_dir_entry* out_entry, uint32_t*
             component[clen++] = *p++;
         component[clen] = '\0';
 
-        while (*p == '/') p++;
+        while (*p == PATH_SEPARATOR) p++;
 
         fat32_dir_entry entry;
         if (!find_in_dir(current_cluster, component, &entry))
@@ -546,7 +545,7 @@ static uint32_t resolve_dir_cluster(const char* path)
         return 0;
 
     // Root case after normalization
-    if (abs_path[0] == '/' && abs_path[1] == '\0')
+    if (abs_path[0] == PATH_SEPARATOR && abs_path[1] == '\0')
         return root_cluster;
 
     fat32_dir_entry entry;
@@ -804,9 +803,9 @@ namespace fat32
         return true;
     }
 
-    bool ls(const char* path)
+    uint32_t ls(const char* path, fat32_dir_entry* entries, uint32_t max_entries)
     {
-        if (!mounted) return false;
+        if (!mounted) return 0;
 
         uint32_t dir_cluster = cwd_cluster;
 
@@ -818,59 +817,48 @@ namespace fat32
         {
             fat32_dir_entry entry;
             if (!resolve_path(path, &entry))
-            {
-                screen::printf("not found: %s\n\r", path);
-                return false;
-            }
+                return 0;
             if (!(entry.attr & FAT32_ATTR_DIRECTORY))
-            {
-                screen::printf("not a directory: %s\n\r", path);
-                return false;
-            }
+                return 0;
             dir_cluster = get_entry_cluster(&entry);
         }
 
         uint32_t csize = cluster_size();
         uint8_t* buf = (uint8_t*)kmalloc(csize);
-        if (!buf) return false;
+        if (!buf) return 0;
 
+        uint32_t count = 0;
         uint32_t cluster = dir_cluster;
+
         while (cluster >= 2 && cluster < FAT32_CLUSTER_END)
         {
             if (!read_cluster_data(cluster, buf))
                 break;
 
-            uint32_t entries = csize / sizeof(fat32_dir_entry);
+            uint32_t entries_per = csize / sizeof(fat32_dir_entry);
             fat32_dir_entry* dir = (fat32_dir_entry*)buf;
 
-            for (uint32_t i = 0; i < entries; i++)
+            for (uint32_t i = 0; i < entries_per; i++)
             {
                 if (dir[i].name[0] == FAT32_DIR_ENTRY_END)
                 {
                     kfree(buf);
-                    return true;
+                    return count;
                 }
                 if (dir[i].name[0] == FAT32_DIR_ENTRY_FREE) continue;
                 if (dir[i].attr == FAT32_ATTR_LFN) continue;
                 if (dir[i].attr & FAT32_ATTR_VOLUME_ID) continue;
 
-                char name[13];
-                format_83_name(dir[i].name, name);
-
-                char dt[17];
-                format_datetime(dir[i].write_date, dir[i].write_time, dt);
-
-                if (dir[i].attr & FAT32_ATTR_DIRECTORY)
-                    screen::printf("  %s       <DIR>  %s\n\r", dt, name);
-                else
-                    screen::printf("  %s  %10u  %s\n\r", dt, dir[i].file_size, name);
+                if (count < max_entries)
+                    entries[count] = dir[i];
+                count++;
             }
 
             cluster = fat_read_entry(cluster);
         }
 
         kfree(buf);
-        return true;
+        return count;
     }
 
     uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size)
