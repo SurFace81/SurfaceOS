@@ -128,8 +128,8 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 	mkdir -p ./disk/EFI/Boot
 	cp bin/boot/efi/BOOTX64.EFI ./disk/EFI/Boot
 
-#	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync
-#	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync bs=512 seek=6		# copy of bootloader
+	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync
+	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync bs=512 seek=6		# copy of bootloader
 #	dd if=bin/boot/bios/stage2.bin of=$(DISK_IMG) conv=notrunc,fsync bs=512 seek=16		# if you want support BIOS
 
 	sudo mount $(DISK_IMG) ./tmp

@@ -155,6 +155,41 @@ static void cmd_ls(int argc, const char** argv)
     }
 }
 
+static void cmd_copy(int argc, const char** argv)
+{
+    if (argc < 3)
+    {
+        screen::printf("\n\rUsage: copy <source> <destination>");
+        return;
+    }
+
+    screen::printf("\n\r");
+    if (fat32::copy(argv[1], argv[2]))
+        screen::printf("Copied %s -> %s", argv[1], argv[2]);
+    else
+        screen::printf("Copy failed");
+}
+
+static void cmd_rename(int argc, const char** argv)
+{
+    if (argc < 3)
+    {
+        screen::printf("\n\rUsage: rename <path> <new_name>");
+        return;
+    }
+
+    screen::printf("\n\r");
+    if (fat32::rename(argv[1], argv[2]))
+        screen::printf("Renamed %s -> %s", argv[1], argv[2]);
+    else
+        screen::printf("Rename failed");
+}
+
+static bool is_printable(uint8_t c)
+{
+    return (c >= 0x20 && c <= 0x7E) || c == '\n' || c == '\r' || c == '\t';
+}
+
 static void cmd_cat(int argc, const char** argv)
 {
     if (argc < 2)
@@ -163,18 +198,90 @@ static void cmd_cat(int argc, const char** argv)
         return;
     }
 
-    uint8_t buf[1024];
-    uint32_t n = fat32::read_file(argv[1], buf, 1023);
+    // Read entire file (up to 64 KB)
+    const uint32_t max_size = 64 * 1024;
+    uint8_t* buf = (uint8_t*)kmalloc(max_size);
+    if (!buf)
+    {
+        screen::printf("\n\rOut of memory");
+        return;
+    }
+
+    uint32_t n = fat32::read_file(argv[1], buf, max_size);
+    if (n == (uint32_t)-1 || n == 0)
+    {
+        screen::printf("\n\rFile not found or read error");
+        kfree(buf);
+        return;
+    }
+
+    // Detect binary content
+    bool binary = false;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        if (!is_printable(buf[i]))
+        {
+            binary = true;
+            break;
+        }
+    }
+
     screen::printf("\n\r");
-    if (n != (uint32_t)-1 && n > 0)
+
+    if (!binary)
     {
         buf[n] = 0;
         screen::printf("%s", (char*)buf);
     }
     else
     {
-        screen::printf("File not found or read error");
+        // Hex dump: offset  hex bytes  ASCII
+        const char* hex = "0123456789ABCDEF";
+
+        for (uint32_t off = 0; off < n; off += 16)
+        {
+            // Offset (8 hex digits)
+            char addr[9];
+            for (int i = 7; i >= 0; i--)
+            {
+                addr[i] = hex[(off >> ((7 - i) * 4)) & 0xF];
+            }
+            addr[8] = '\0';
+            screen::printf("%s  ", addr);
+
+            // Hex bytes
+            for (uint32_t i = 0; i < 16; i++)
+            {
+                if (off + i < n)
+                {
+                    uint8_t b = buf[off + i];
+                    screen::printf("%c%c ", hex[b >> 4], hex[b & 0xF]);
+                }
+                else
+                {
+                    screen::printf("   ");
+                }
+
+                if (i == 7) screen::printf(" ");
+            }
+
+            // ASCII column
+            screen::printf(" |");
+            for (uint32_t i = 0; i < 16 && off + i < n; i++)
+            {
+                uint8_t b = buf[off + i];
+                if (b >= 0x20 && b <= 0x7E)
+                    screen::printf("%c", b);
+                else
+                    screen::printf(".");
+            }
+            screen::printf("|\n\r");
+        }
+
+        screen::printf("\n\r%u bytes", n);
     }
+
+    kfree(buf);
 }
 
 static void cmd_write(int argc, const char** argv)
@@ -468,5 +575,7 @@ namespace commands
         console::register_command("time",    cmd_time);
         console::register_command("uptime",  cmd_uptime);
         console::register_command("cd",      cmd_cd);
+        console::register_command("copy",   cmd_copy);
+        console::register_command("rename", cmd_rename);
     }
 }

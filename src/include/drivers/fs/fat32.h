@@ -82,6 +82,8 @@ namespace fat32 {
     uint32_t write_file(const char* path, const uint8_t* data, uint32_t size);
     bool     mkdir(const char* path);
     bool     remove(const char* path);
+    bool     rename(const char* old_path, const char* new_name);
+    bool     copy(const char* src_path, const char* dst_path);
 
     bool        set_cwd(const char* path);
     const char* cwd_path();

@@ -1107,6 +1107,77 @@ namespace fat32
         return delete_dir_entry(parent_cluster, name83);
     }
 
+    bool rename(const char* old_path, const char* new_name)
+    {
+        if (!mounted) return false;
+
+        // new_name must be a plain filename, not a path
+        for (uint32_t i = 0; new_name[i]; i++)
+        {
+            if (new_name[i] == PATH_SEPARATOR)
+                return false;
+        }
+
+        uint8_t new83[11];
+        if (!to_83_name(new_name, new83))
+            return false;
+
+        uint32_t parent_cluster;
+        fat32_dir_entry entry;
+        if (!resolve_path(old_path, &entry, &parent_cluster))
+            return false;
+
+        // Check that new name doesn't already exist in the same directory
+        fat32_dir_entry conflict;
+        if (find_in_dir(parent_cluster, new_name, &conflict))
+            return false;
+
+        // Build the updated entry with the new name
+        uint8_t old83[11];
+        memory::memcpy(entry.name, old83, 11);
+
+        fat32_dir_entry updated = entry;
+        memory::memcpy(new83, updated.name, 11);
+
+        return update_dir_entry(parent_cluster, old83, &updated);
+    }
+
+    bool copy(const char* src_path, const char* dst_path)
+    {
+        if (!mounted) return false;
+
+        fat32_dir_entry src_entry;
+        if (!resolve_path(src_path, &src_entry))
+            return false;
+
+        // Cannot copy directories
+        if (src_entry.attr & FAT32_ATTR_DIRECTORY)
+            return false;
+
+        uint32_t file_size = src_entry.file_size;
+
+        // Zero-length file: just create an empty entry
+        if (file_size == 0)
+            return write_file(dst_path, nullptr, 0) != (uint32_t)-1;
+
+        // Read source data
+        uint8_t* data = (uint8_t*)kmalloc(file_size);
+        if (!data) return false;
+
+        uint32_t bytes_read = read_file(src_path, data, file_size);
+        if (bytes_read == (uint32_t)-1 || bytes_read == 0)
+        {
+            kfree(data);
+            return false;
+        }
+
+        // Write to destination (will overwrite if exists)
+        uint32_t written = write_file(dst_path, data, bytes_read);
+        kfree(data);
+
+        return written != (uint32_t)-1;
+    }
+
     bool set_cwd(const char* path)
     {
         if (!mounted) return false;
