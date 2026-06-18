@@ -14,8 +14,18 @@ static uint8_t bcd_to_bin(uint8_t bcd)
 // Wait until RTC update-in-progress flag clears
 static void wait_ready()
 {
-    while (cmos_read(RTC_REG_STATUS_A) & 0x80)
-        ;
+    while (cmos_read(RTC_REG_STATUS_A) & 0x80);
+}
+
+static uint8_t bin_to_bcd(uint8_t bin)
+{
+    return ((bin / 10) << 4) | (bin % 10);
+}
+
+static void cmos_write(uint8_t reg, uint8_t val)
+{
+    port::byte_out(CMOS_ADDRESS, reg);
+    port::byte_out(CMOS_DATA, val);
 }
 
 // Read raw values and convert from BCD if needed
@@ -80,6 +90,47 @@ namespace rtc
                  a.hours   != b.hours);
 
         *t = a;
+    }
+
+    void write(const rtc_time* t)
+    {
+        // Disable interrupts during CMOS write
+        asm volatile("cli");
+
+        // Disable RTC updates (set bit 7 of Status Register B)
+        uint8_t status_b = cmos_read(RTC_REG_STATUS_B);
+        cmos_write(RTC_REG_STATUS_B, status_b | 0x80);
+
+        bool bcd_mode = !(status_b & 0x04);
+
+        uint8_t sec  = t->seconds;
+        uint8_t min  = t->minutes;
+        uint8_t hour = t->hours;
+        uint8_t day  = t->day;
+        uint8_t mon  = t->month;
+        uint8_t year = (uint8_t)(t->year % 100);
+
+        if (bcd_mode)
+        {
+            sec  = bin_to_bcd(sec);
+            min  = bin_to_bcd(min);
+            hour = bin_to_bcd(hour);
+            day  = bin_to_bcd(day);
+            mon  = bin_to_bcd(mon);
+            year = bin_to_bcd(year);
+        }
+
+        cmos_write(RTC_REG_SECONDS, sec);
+        cmos_write(RTC_REG_MINUTES, min);
+        cmos_write(RTC_REG_HOURS,   hour);
+        cmos_write(RTC_REG_DAY,     day);
+        cmos_write(RTC_REG_MONTH,   mon);
+        cmos_write(RTC_REG_YEAR,    year);
+
+        // Re-enable RTC updates (clear bit 7)
+        cmos_write(RTC_REG_STATUS_B, status_b & ~0x80);
+
+        asm volatile("sti");
     }
 
     uint8_t seconds()

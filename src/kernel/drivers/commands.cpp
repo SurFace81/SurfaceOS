@@ -541,6 +541,127 @@ static void cmd_uptime(int argc, const char** argv)
     screen::printf("\n\r Freq:   %u Hz", pit::frequency());
 }
 
+static uint32_t parse_uint(const char* s)
+{
+    uint32_t val = 0;
+    while (*s >= '0' && *s <= '9')
+    {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    return val;
+}
+
+static void cmd_settime(int argc, const char** argv)
+{
+    // Usage: settime HH:MM:SS [DD.MM.YYYY]
+    if (argc < 2)
+    {
+        screen::printf("\n\r Usage: settime HH:MM:SS [DD.MM.YYYY]");
+        return;
+    }
+
+    // Parse time: HH:MM:SS
+    const char* ts = argv[1];
+
+    // Validate minimum length "H:M:S" = 5 chars
+    uint32_t len = strlen(ts);
+    if (len < 5)
+    {
+        screen::printf("\n\r Invalid time format");
+        return;
+    }
+
+    // Read current RTC as base values
+    rtc_time t;
+    rtc::read(&t);
+
+    // Find colons and parse
+    char time_buf[16];
+    if (len > 15) len = 15;
+    memcpy(time_buf, ts, len);
+    time_buf[len] = '\0';
+
+    // Replace ':' with '\0' to split
+    char* parts[3];
+    uint32_t part_count = 0;
+    parts[part_count++] = time_buf;
+    for (uint32_t i = 0; i < len && part_count < 3; i++)
+    {
+        if (time_buf[i] == ':')
+        {
+            time_buf[i] = '\0';
+            parts[part_count++] = &time_buf[i + 1];
+        }
+    }
+
+    if (part_count < 3)
+    {
+        screen::printf("\n\r Invalid time format, use HH:MM:SS");
+        return;
+    }
+
+    t.hours   = (uint8_t)parse_uint(parts[0]);
+    t.minutes = (uint8_t)parse_uint(parts[1]);
+    t.seconds = (uint8_t)parse_uint(parts[2]);
+
+    // Validate
+    if (t.hours > 23 || t.minutes > 59 || t.seconds > 59)
+    {
+        screen::printf("\n\r Invalid time values");
+        return;
+    }
+
+    // Parse optional date: DD.MM.YYYY
+    if (argc >= 3)
+    {
+        const char* ds = argv[2];
+        uint32_t dlen = strlen(ds);
+
+        char date_buf[16];
+        if (dlen > 15) dlen = 15;
+        memcpy(date_buf, ds, dlen);
+        date_buf[dlen] = '\0';
+
+        char* dparts[3];
+        uint32_t dpart_count = 0;
+        dparts[dpart_count++] = date_buf;
+        for (uint32_t i = 0; i < dlen && dpart_count < 3; i++)
+        {
+            if (date_buf[i] == '.')
+            {
+                date_buf[i] = '\0';
+                dparts[dpart_count++] = &date_buf[i + 1];
+            }
+        }
+
+        if (dpart_count < 3)
+        {
+            screen::printf("\n\r Invalid date format, use DD.MM.YYYY");
+            return;
+        }
+
+        t.day   = (uint8_t)parse_uint(dparts[0]);
+        t.month = (uint8_t)parse_uint(dparts[1]);
+        t.year  = (uint16_t)parse_uint(dparts[2]);
+
+        if (t.day < 1 || t.day > 31 || t.month < 1 || t.month > 12)
+        {
+            screen::printf("\n\r Invalid date values");
+            return;
+        }
+    }
+
+    rtc::write(&t);
+
+    screen::printf("\n\r Time set to %02u:%02u:%02u", (uint32_t)t.hours, (uint32_t)t.minutes, (uint32_t)t.seconds);
+
+    if (argc >= 3) 
+    {
+        screen::printf("  %02u.%02u.%u", (uint32_t)t.day, (uint32_t)t.month, (uint32_t)t.year);
+    }        
+}
+
 static void cmd_cd(int argc, const char** argv)
 {
     if (argc < 2)
@@ -574,6 +695,7 @@ namespace commands
         console::register_command("meminfo", cmd_meminfo);
         console::register_command("time",    cmd_time);
         console::register_command("uptime",  cmd_uptime);
+        console::register_command("settime", cmd_settime);
         console::register_command("cd",      cmd_cd);
         console::register_command("copy",   cmd_copy);
         console::register_command("rename", cmd_rename);

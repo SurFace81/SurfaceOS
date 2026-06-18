@@ -36,6 +36,8 @@ namespace rtc
 
     // Read current time from CMOS
     void read(rtc_time* t);
+    // Write time to CMOS RTC
+    void write(const rtc_time* t);
 
     // Individual field readers
     uint8_t seconds();
