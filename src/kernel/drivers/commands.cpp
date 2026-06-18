@@ -198,8 +198,7 @@ static void cmd_cat(int argc, const char** argv)
         return;
     }
 
-    // Read entire file (up to 64 KB)
-    const uint32_t max_size = 64 * 1024;
+    const uint32_t max_size = 512;
     uint8_t* buf = (uint8_t*)kmalloc(max_size);
     if (!buf)
     {
@@ -226,60 +225,103 @@ static void cmd_cat(int argc, const char** argv)
         }
     }
 
-    screen::printf("\n\r");
-
-    if (!binary)
+    if (binary)
     {
-        buf[n] = 0;
-        screen::printf("%s", (char*)buf);
+        screen::printf("\n\rBinary file (%u bytes), use xxd to view", n);
+        kfree(buf);
+        return;
     }
-    else
+
+    screen::printf("\n\r");
+    buf[n] = 0;
+    screen::printf("%s", (char*)buf);
+
+    if (n == max_size)
     {
-        // Hex dump: offset  hex bytes  ASCII
-        const char* hex = "0123456789ABCDEF";
-
-        for (uint32_t off = 0; off < n; off += 16)
-        {
-            // Offset (8 hex digits)
-            char addr[9];
-            for (int i = 7; i >= 0; i--)
-            {
-                addr[i] = hex[(off >> ((7 - i) * 4)) & 0xF];
-            }
-            addr[8] = '\0';
-            screen::printf("%s  ", addr);
-
-            // Hex bytes
-            for (uint32_t i = 0; i < 16; i++)
-            {
-                if (off + i < n)
-                {
-                    uint8_t b = buf[off + i];
-                    screen::printf("%c%c ", hex[b >> 4], hex[b & 0xF]);
-                }
-                else
-                {
-                    screen::printf("   ");
-                }
-
-                if (i == 7) screen::printf(" ");
-            }
-
-            // ASCII column
-            screen::printf(" |");
-            for (uint32_t i = 0; i < 16 && off + i < n; i++)
-            {
-                uint8_t b = buf[off + i];
-                if (b >= 0x20 && b <= 0x7E)
-                    screen::printf("%c", b);
-                else
-                    screen::printf(".");
-            }
-            screen::printf("|\n\r");
-        }
-
+        screen::printf("\n\r[truncated at %u bytes]", max_size);
+    }
+    else 
+    {
         screen::printf("\n\r%u bytes", n);
     }
+
+    kfree(buf);
+}
+
+static void cmd_xxd(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: xxd <filename>");
+        return;
+    }
+
+    const uint32_t max_size = 512;
+    uint8_t* buf = (uint8_t*)kmalloc(max_size);
+    if (!buf)
+    {
+        screen::printf("\n\rOut of memory");
+        return;
+    }
+
+    uint32_t n = fat32::read_file(argv[1], buf, max_size);
+    if (n == (uint32_t)-1 || n == 0)
+    {
+        screen::printf("\n\rFile not found or read error");
+        kfree(buf);
+        return;
+    }
+
+    screen::printf("\n\r");
+
+    const char* hex = "0123456789ABCDEF";
+
+    for (uint32_t off = 0; off < n; off += 16)
+    {
+        // Offset (8 hex digits)
+        char addr[9];
+        for (int i = 7; i >= 0; i--)
+            addr[i] = hex[(off >> ((7 - i) * 4)) & 0xF];
+        addr[8] = '\0';
+        screen::printf("%s  ", addr);
+
+        // Hex bytes
+        for (uint32_t i = 0; i < 16; i++)
+        {
+            if (off + i < n)
+            {
+                uint8_t b = buf[off + i];
+                screen::printf("%c%c ", hex[b >> 4], hex[b & 0xF]);
+            }
+            else
+            {
+                screen::printf("   ");
+            }
+
+            if (i == 7) screen::printf(" ");
+        }
+
+        // ASCII column
+        screen::printf(" |");
+        for (uint32_t i = 0; i < 16 && off + i < n; i++)
+        {
+            uint8_t b = buf[off + i];
+            if (b >= 0x20 && b <= 0x7E)
+                screen::printf("%c", b);
+            else
+                screen::printf(".");
+        }
+        screen::printf("|\n\r");
+    }
+
+    if (n == max_size) 
+    {
+        screen::printf("[truncated at %u bytes]\n\r", max_size);
+    }
+    else 
+    {
+        screen::printf("\n\r%u bytes", n);
+    }   
 
     kfree(buf);
 }
@@ -686,6 +728,7 @@ namespace commands
         console::register_command("umount",  cmd_umount);
         console::register_command("ls",      cmd_ls);
         console::register_command("cat",     cmd_cat);
+        console::register_command("xxd",     cmd_xxd);
         console::register_command("write",   cmd_write);
         console::register_command("mkdir",   cmd_mkdir);
         console::register_command("rm",      cmd_rm);
@@ -697,7 +740,7 @@ namespace commands
         console::register_command("uptime",  cmd_uptime);
         console::register_command("settime", cmd_settime);
         console::register_command("cd",      cmd_cd);
-        console::register_command("copy",   cmd_copy);
-        console::register_command("rename", cmd_rename);
+        console::register_command("copy",    cmd_copy);
+        console::register_command("rename",  cmd_rename);
     }
 }
