@@ -62,6 +62,7 @@ namespace irq {
     void init(void);
     void install_handler(int irq, irq_handler_t handler);
     void uninstall_handler(int irq);
+    void pic_send_eoi(uint8_t irq);
 }
 
 // Assembly interrupt stubs (defined in interrupts.asm)

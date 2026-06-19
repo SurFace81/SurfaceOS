@@ -49,7 +49,7 @@ namespace irq {
     }
 
     // Send End-Of-Interrupt signal
-    static void pic_send_eoi(uint8_t irq) {
+    void pic_send_eoi(uint8_t irq) {
         if (irq >= 8) {
             port::byte_out(PIC2_COMMAND, PIC_EOI);
         }
@@ -90,7 +90,7 @@ namespace irq {
         idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
 
         // Syscall interrupt
-        idt::set_entry(0x80, (uint64_t)syscall_entry, IDT_FLAG_INTERRUPT_GATE);
+        idt::set_entry(0x80, (uint64_t)syscall_entry, 0xEF);
         
         mask_all();
 

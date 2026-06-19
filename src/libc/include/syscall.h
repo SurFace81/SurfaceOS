@@ -5,6 +5,7 @@
 
 #define SYS_EXIT  0
 #define SYS_WRITE 1
+#define SYS_READ_KEY  2
 
 uint64_t syscall(uint64_t num, uint64_t arg0 = 0, uint64_t arg1 = 0, uint64_t arg2 = 0);
 

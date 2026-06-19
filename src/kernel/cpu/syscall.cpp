@@ -1,5 +1,6 @@
 #include "../../include/cpu/syscall.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/cpu/program.h"
 
 extern "C" void return_to_kernel();
 
@@ -22,6 +23,21 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
             screen::printf("%s", (const char*)regs->rdi);
             regs->rax = 0;
             break;
+
+        case SYS_READ_KEY:
+        {
+            // Block until a key event arrives
+            while (!program::has_key())
+                asm volatile("sti; hlt");
+
+            keyboard_event_t e = program::pop_key();
+
+            // Return event via pointer passed in rdi
+            keyboard_event_t* out = (keyboard_event_t*)regs->rdi;
+            *out = e;
+            regs->rax = 0;
+            break;
+        }
 
         default:
             regs->rax = (uint64_t)-1;
