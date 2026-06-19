@@ -50,6 +50,16 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/commands.o \
 				bin/kernel/drivers/pit.o \
 				bin/kernel/drivers/rtc.o \
+				bin/kernel/cpu/syscall.o \
+				bin/kernel/cpu/program.o \
+
+# Libc
+LIBC_FLAGS	= -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/libc/include
+LIBC_OBJ	= bin/libc/entry.o bin/libc/syscall.o bin/libc/stdio.o bin/libc/heap.o bin/libc/string.o
+
+# Apps: every .cpp in src/apps/ becomes a .bin
+APP_SRC		= $(wildcard src/apps/*.cpp)
+APP_BINS	= $(patsubst src/apps/%.cpp, bin/apps/%.bin, $(APP_SRC))
 
 .PHONY: run clean create_disk version
 
@@ -72,7 +82,7 @@ bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
 	$(NASM) $(NFLAGS) -o $@ $<
 
 
-# Other files
+# Kernel object files
 bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
@@ -102,6 +112,21 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	$(NASM) -f elf64 -o $@ $<
 
 
+# Libc
+bin/libc/%.o: src/libc/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(LIBC_FLAGS) -o $@ $<
+
+
+# Apps: compile app source + link with libc into flat binary
+bin/apps/%.bin: src/apps/%.cpp $(LIBC_OBJ)
+	mkdir -p $(dir $@)
+	$(GPP) $(LIBC_FLAGS) -c -o bin/apps/$*.o $<
+	$(LD) -m elf_x86_64 -T src/libc/linker.ld -nostdlib -o $@ \
+		bin/libc/entry.o bin/libc/syscall.o bin/libc/stdio.o \
+		bin/libc/heap.o bin/libc/string.o bin/apps/$*.o
+
+
 # Generating version
 version:
 	@bash ./version.sh
@@ -122,7 +147,7 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 
 
 # Disk and test
-$(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt
+$(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
 	mkfs.fat -F32 $(DISK_IMG)
 
 	mkdir -p ./disk/EFI/Boot
@@ -137,6 +162,8 @@ $(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/ker
 	sudo cp ./bin/kernel/kernel.bin ./tmp/KERNEL.BIN
 	sudo cp ./bin/kernel/data/stdfont.fnt ./tmp/FONT.FNT
 	sudo sh -c 'echo "Hello from file!" > ./tmp/FILE.TXT'
+	sudo mkdir -p ./tmp/APPS
+	@for f in $(APP_BINS); do sudo cp $$f ./tmp/APPS/$$(basename $$f | tr 'a-z' 'A-Z'); done
 	sleep 0.6
 	sudo umount ./tmp
 
@@ -158,4 +185,6 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
+	@rm -rf bin/libc/*.o
+	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h

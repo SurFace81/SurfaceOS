@@ -99,6 +99,10 @@ namespace keyboard {
         set_leds();
     }
 
+    keyboard_callback_t get_callback() {
+        return user_callback;
+    }
+
     void handler(void) {
         uint8_t scancode = port::byte_in(KEYBOARD_DATA_PORT);
         

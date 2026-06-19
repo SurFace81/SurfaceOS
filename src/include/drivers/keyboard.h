@@ -71,6 +71,7 @@ namespace keyboard {
     void  handler(void);
     void set_keyboard_callback(keyboard_callback_t callback);
     void del_keyboard_callback(void);
+    keyboard_callback_t get_callback();
 }
 
 #endif

@@ -7,6 +7,7 @@
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
+#include "../../include/cpu/program.h"
 
 // Built-in commands
 
@@ -716,6 +717,19 @@ static void cmd_cd(int argc, const char** argv)
         screen::printf("\n\rDirectory not found: %s", argv[1]);
 }
 
+static void cmd_exec(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: exec <filename>");
+        return;
+    }
+
+    screen::printf("\n\r");
+    if (!program::exec(argv[1]))
+        screen::printf("Failed to load: %s", argv[1]);
+}
+
 namespace commands
 {
     void init()
@@ -742,5 +756,6 @@ namespace commands
         console::register_command("cd",      cmd_cd);
         console::register_command("copy",    cmd_copy);
         console::register_command("rename",  cmd_rename);
+        console::register_command("exec",    cmd_exec);
     }
 }
