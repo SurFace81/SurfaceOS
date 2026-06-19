@@ -1,4 +1,5 @@
 #include "../../include/cpu/irq.h"
+#include "../../include/cpu/syscall.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
 
@@ -87,6 +88,9 @@ namespace irq {
         idt::set_entry(45, (uint64_t)irq13, IDT_FLAG_INTERRUPT_GATE);
         idt::set_entry(46, (uint64_t)irq14, IDT_FLAG_INTERRUPT_GATE);
         idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
+
+        // Syscall interrupt
+        idt::set_entry(0x80, (uint64_t)syscall_entry, IDT_FLAG_INTERRUPT_GATE);
         
         mask_all();
 

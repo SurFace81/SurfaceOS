@@ -158,3 +158,48 @@ IRQ 12, 44   ; PS/2 Mouse
 IRQ 13, 45   ; FPU
 IRQ 14, 46   ; Primary ATA
 IRQ 15, 47   ; Secondary ATA
+
+; Syscall handler (int 0x80)
+global syscall_entry
+syscall_entry:
+    SAVE_REGS
+
+    mov rdi, rsp
+    extern syscall_dispatch
+    call syscall_dispatch
+
+    RESTORE_REGS
+    iretq
+
+global jump_to_program
+jump_to_program:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [saved_kernel_rsp], rsp
+
+    mov rax, rdi        ; entry point
+    mov rsp, rsi        ; program stack
+    mov rdi, rdx        ; arg = program_info*
+
+    call rax
+
+    ; Program returned via ret
+    jmp return_to_kernel
+
+global return_to_kernel
+return_to_kernel:
+    mov rsp, [saved_kernel_rsp]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+section .bss
+saved_kernel_rsp: resq 1
