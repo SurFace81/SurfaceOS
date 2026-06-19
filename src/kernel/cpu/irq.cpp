@@ -90,7 +90,7 @@ namespace irq {
         idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
 
         // Syscall interrupt
-        idt::set_entry(0x80, (uint64_t)syscall_entry, 0xEF);
+        idt::set_entry(0x80, (uint64_t)syscall_entry, 0xEF);    // Trap gate
         
         mask_all();
 
