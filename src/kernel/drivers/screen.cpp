@@ -131,6 +131,7 @@ static void emit_char(char c)
     switch (c)
     {
         case '\n':
+            scr.cursor_x = 0;
             if (scr.cursor_y + 1 >= max_rows())
                 screen::scroll_up();
             else

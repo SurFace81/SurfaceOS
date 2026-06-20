@@ -803,6 +803,12 @@ namespace fat32
         return true;
     }
 
+    bool resolve_path_pub(const char* path, fat32_dir_entry* out_entry)
+    {
+        if (!mounted) return false;
+        return resolve_path(path, out_entry);
+    }
+
     uint32_t ls(const char* path, fat32_dir_entry* entries, uint32_t max_entries)
     {
         if (!mounted) return 0;

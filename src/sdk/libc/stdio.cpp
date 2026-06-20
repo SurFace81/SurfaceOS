@@ -48,3 +48,25 @@ uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size)
 {
     return (uint32_t)syscall(SYS_READ_FILE, (uint64_t)path, (uint64_t)buffer, (uint64_t)max_size);
 }
+
+uint32_t stat_file(const char* path, file_stat_t* out)
+{
+    return (uint32_t)syscall(SYS_STAT_FILE, (uint64_t)path, (uint64_t)out, 0);
+}
+
+uint32_t read_dir(const char* path, dir_entry_t* entries, uint32_t max_entries)
+{
+    return (uint32_t)syscall(SYS_READ_DIR, (uint64_t)path, (uint64_t)entries, (uint64_t)max_entries);
+}
+
+// Time
+
+void get_uptime(uptime_t* out)
+{
+    syscall(SYS_UPTIME, (uint64_t)out, 0, 0);
+}
+
+void get_time(datetime_t* out)
+{
+    syscall(SYS_TIME, (uint64_t)out, 0, 0);
+}

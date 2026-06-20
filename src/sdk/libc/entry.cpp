@@ -12,6 +12,7 @@ extern int main();
 extern "C" void _start(program_info* info)
 {
     heap_init((void*)info->heap_start, info->heap_size);
+    clear();
     main();
     exit(0);
 }

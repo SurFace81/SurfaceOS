@@ -77,6 +77,7 @@ namespace fat32 {
     bool     mount(uint8_t usb_dev_index);
     void     umount();
     bool     is_mounted();
+    bool     resolve_path_pub(const char* path, fat32_dir_entry* out_entry);
     uint32_t ls(const char* path, fat32_dir_entry* entries, uint32_t max_entries);
     uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size);
     uint32_t write_file(const char* path, const uint8_t* data, uint32_t size);
