@@ -1,5 +1,8 @@
-#include "./include/stdio.h"
-#include "./include/syscall.h"
+#include "../include/stdio.h"
+#include "../include/abi/syscall.h"
+
+// raw syscall
+extern uint64_t syscall(uint64_t num, uint64_t arg0 = 0, uint64_t arg1 = 0, uint64_t arg2 = 0);
 
 void print(const char* str)
 {

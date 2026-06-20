@@ -1,5 +1,6 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/rtc.h"
 
 static volatile uint64_t tick_count = 0;
 static uint32_t pit_freq = PIT_DEFAULT_HZ;
@@ -10,6 +11,20 @@ static volatile uint64_t uptime = 0;  // accumulated milliseconds
 
 namespace pit
 {
+    static uint32_t real_freq = PIT_DEFAULT_HZ;
+
+    void calibrate()
+    {
+        uint8_t start_sec = rtc::seconds();
+        while (rtc::seconds() == start_sec) {}
+
+        uint64_t start_tick = tick_count;
+        start_sec = rtc::seconds();
+        while (rtc::seconds() == start_sec) {}
+
+        real_freq = (uint32_t)(tick_count - start_tick);
+    }
+
     static void set_frequency(uint32_t hz)
     {
         if (hz == 0)
@@ -73,7 +88,7 @@ namespace pit
 
     uint64_t uptime_ms()
     {
-        return uptime;
+        return (tick_count * 1000) / real_freq;
     }
 
     uint64_t ticks()
@@ -83,13 +98,18 @@ namespace pit
 
     void sleep_ms(uint32_t ms)
     {
-        uint64_t target = uptime + ms;
-        while (uptime < target)
+        uint64_t target_ticks = tick_count + ((uint64_t)ms * real_freq) / 1000;
+        while (tick_count < target_ticks)
             asm volatile("hlt");
     }
 
     uint32_t frequency()
     {
         return pit_freq;
+    }
+
+    uint32_t real_frequency()
+    {
+        return real_freq;
     }
 }

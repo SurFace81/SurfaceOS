@@ -1,4 +1,5 @@
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/pit.h"
 
 static struct
 {
@@ -31,6 +32,7 @@ static struct
 } scr;
 
 static const uint32_t BBP = 4;
+static bool out_in_progress = false;
 
 static inline uint32_t max_cols()
 {
@@ -243,22 +245,16 @@ namespace screen
 
     void update_cursor()
     {
-        if (!scr.cursor_visible)
+        if (!scr.cursor_visible || out_in_progress)
             return;
 
-        scr.cursor_tick++;
+        uint32_t now = (uint32_t)(pit::uptime_ms());
+        bool should_be_drawn = ((now / 500) % 2) == 0;
 
-        // Toggle every N ticks. Caller controls blink speed
-        // by how often it calls update_cursor().
-        const uint32_t BLINK_HALF_PERIOD = 500;
-        if (scr.cursor_tick >= BLINK_HALF_PERIOD)
-        {
-            scr.cursor_tick = 0;
-            if (scr.cursor_drawn)
-                cursor_undraw();
-            else
-                cursor_draw();
-        }
+        if (should_be_drawn && !scr.cursor_drawn)
+            cursor_draw();
+        else if (!should_be_drawn && scr.cursor_drawn)
+            cursor_undraw();
     }
 
     void flush()
@@ -342,24 +338,29 @@ namespace screen
 
     void putc(char c)
     {
+        out_in_progress = true;
         cursor_undraw();
         emit_char(c);
         scr.cursor_tick = 0;
         if (scr.cursor_visible)
             cursor_draw();
+        out_in_progress = false;
     }
 
     void write(const char* s)
     {
+        out_in_progress = true;
         cursor_undraw();
         emit_str(s);
         scr.cursor_tick = 0;
         if (scr.cursor_visible)
             cursor_draw();
+        out_in_progress = false;
     }
 
     void printf(const char* fmt, ...)
     {
+        out_in_progress = true;
         cursor_undraw();
 
         __builtin_va_list a;
@@ -441,6 +442,8 @@ namespace screen
         scr.cursor_tick = 0;
         if (scr.cursor_visible)
             cursor_draw();
+
+        out_in_progress = false;
     }
 
 } // namespace screen

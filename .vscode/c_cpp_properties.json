@@ -1,0 +1,41 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc",
+            "cStandard": "c17",
+            "cppStandard": "gnu++17",
+            "intelliSenseMode": "linux-gcc-x64",
+            "configurationProvider": "ms-vscode.makefile-tools"
+        },
+        {
+            "name": "OSDev",
+            "compilerPath": "/home/surface/opt/cross/bin/x86_64-elf-g++",
+            "intelliSenseMode": "gcc-x64",
+            "includePath": [
+                "${workspaceFolder}/src/include",
+                "${workspaceFolder}/src/kernel",
+                "${workspaceFolder}/src/sdk/include"
+            ],
+            "defines": [
+                "__SURFACE_OS__",
+                "__x86_64__"
+            ],
+            "cStandard": "c17",
+            "cppStandard": "c++20",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/src/include",
+                    "${workspaceFolder}/src/kernel",
+                    "${workspaceFolder}/src/sdk/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4    
+}

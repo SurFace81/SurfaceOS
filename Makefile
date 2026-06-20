@@ -15,7 +15,7 @@ LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 # -d int,cpu_reset
 QEMU_UEFI	= 	qemu-system-x86_64 \
 				-monitor stdio \
-				-chardev file,id=uart0,path=uart1.log \
+				-chardev file,id=uart0,path=uart.log \
 				-trace usb_xhci* -D xhci.log \
 				-m 128M \
 				-bios uefi64.bin \
@@ -53,9 +53,9 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/syscall.o \
 				bin/kernel/cpu/program.o \
 
-# Libc
-LIBC_FLAGS	= -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/libc/include
-LIBC_OBJ	= bin/libc/entry.o bin/libc/syscall.o bin/libc/stdio.o bin/libc/heap.o bin/libc/string.o
+# SDK
+SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/sdk/include
+SDK_OBJ     = bin/sdk/entry.o bin/sdk/syscall.o bin/sdk/stdio.o bin/sdk/stdlib.o bin/sdk/string.o
 
 # Apps: every .cpp in src/apps/ becomes a .bin
 APP_SRC		= $(wildcard src/apps/*.cpp)
@@ -112,19 +112,19 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	$(NASM) -f elf64 -o $@ $<
 
 
-# Libc
-bin/libc/%.o: src/libc/%.cpp
+# SDK (libc)
+bin/sdk/%.o: src/sdk/libc/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(LIBC_FLAGS) -o $@ $<
+	$(GPP) $(SDK_FLAGS) -o $@ $<
 
 
 # Apps: compile app source + link with libc into flat binary
-bin/apps/%.bin: src/apps/%.cpp $(LIBC_OBJ)
+bin/apps/%.bin: src/apps/%.cpp $(SDK_OBJ)
 	mkdir -p $(dir $@)
-	$(GPP) $(LIBC_FLAGS) -c -o bin/apps/$*.o $<
-	$(LD) -m elf_x86_64 -T src/libc/linker.ld -nostdlib -o $@ \
-		bin/libc/entry.o bin/libc/syscall.o bin/libc/stdio.o \
-		bin/libc/heap.o bin/libc/string.o bin/apps/$*.o
+	$(GPP) $(SDK_FLAGS) -c -o bin/apps/$*.o $<
+	$(LD) -m elf_x86_64 -T src/sdk/linker.ld -nostdlib -o $@ \
+		bin/sdk/entry.o bin/sdk/syscall.o bin/sdk/stdio.o \
+		bin/sdk/stdlib.o bin/sdk/string.o bin/apps/$*.o
 
 
 # Generating version
@@ -185,6 +185,6 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
-	@rm -rf bin/libc/*.o
+	@rm -rf bin/sdk/*.o
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h

@@ -37,9 +37,10 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     rtc::init();
     irq::install_handler(IRQ0_TIMER, pit::handler);
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
+
+    pit::calibrate();
     
     console::init();
-    irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
     
     while (1)
         asm volatile("hlt");

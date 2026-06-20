@@ -1,5 +1,5 @@
-#include "../libc/include/stdio.h"
-#include "../libc/include/heap.h"
+#include <stdio.h>
+#include <stdlib.h>
 
 int main()
 {

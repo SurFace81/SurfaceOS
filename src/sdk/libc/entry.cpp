@@ -1,5 +1,5 @@
-#include "./include/heap.h"
-#include "./include/stdio.h"
+#include "../include/stdlib.h"
+#include "../include/stdio.h"
 
 struct program_info
 {

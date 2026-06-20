@@ -34,6 +34,8 @@ namespace pit
 
     // Current configured frequency
     uint32_t frequency();
+    void calibrate();
+    uint32_t real_frequency();
 }
 
 #endif
