@@ -16,13 +16,17 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
     switch (regs->rax)
     {
         case SYS_EXIT:
+        {
             return_to_kernel();
             break;
+        }
 
         case SYS_WRITE:
+        {
             screen::printf("%s", (const char*)regs->rdi);
             regs->rax = 0;
             break;
+        }
 
         case SYS_READ_KEY:
         {
@@ -36,6 +40,12 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
             keyboard_event_t* out = (keyboard_event_t*)regs->rdi;
             *out = e;
             regs->rax = 0;
+            break;
+        }
+
+        case SYS_CLEAR:
+        {
+            screen::clear();
             break;
         }
 
