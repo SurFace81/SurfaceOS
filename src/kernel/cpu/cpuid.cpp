@@ -65,11 +65,8 @@ namespace cpuid {
         if (eax < 0x16) return;        
         cpuid(0x16, &eax, &ebx, &ecx, &edx);
         
-        // EAX = base freq in MHz
-        *base_freq_mhz = eax;        
-        // EBX = max freq in MHz
-        *max_freq_mhz = ebx;        
-        // ECX = bus freq
+        *base_freq_mhz = eax;
+        *max_freq_mhz = ebx;
         *bus_freq_mhz = ecx;
     }
 

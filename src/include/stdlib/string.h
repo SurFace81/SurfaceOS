@@ -5,6 +5,7 @@
 
 void int_to_str(int num, char str[]);
 void hex_to_str(uint64_t num, char str[], uint64_t size);
+uint32_t parse_uint(const char* s);
 
 int  strlen(const char* s);
 int  strcmp(const char* s1, const char* s2);

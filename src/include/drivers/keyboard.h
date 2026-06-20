@@ -42,6 +42,8 @@ enum Keys {
     ARROW_DOWN      = 208,
     ARROW_RIGHT     = 205,
     DELETE          = 211,
+    HOME            = 199,
+    END             = 207,
 };
 
 typedef void (*keyboard_callback_t)(keyboard_event_t e);
