@@ -1,6 +1,5 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/cpu/paging.h"
-#include "../../include/drivers/screen.h"
 
 namespace uart
 {
@@ -114,24 +113,24 @@ namespace uart
             send_char(*str++);
     }
 
-    void listen_loop()
-    {
-        if (!initialized)
-            return;
-        printf("UART listening...\n");
-        screen::printf("UART listening...\n\r");
+    // void listen_loop()
+    // {
+    //     if (!initialized)
+    //         return;
+    //     printf("UART listening...\n");
+    //     screen::printf("UART listening...\n\r");
 
-        while (1)
-        {
-            if (reg_read(LSR) & 0x01)
-            {
-                char c = reg_read(THR);
-                char buf[2] = {c, '\0'};
-                screen::write(buf);
-                printf("%c", c);
-            }
-        }
-    }
+    //     while (1)
+    //     {
+    //         if (reg_read(LSR) & 0x01)
+    //         {
+    //             char c = reg_read(THR);
+    //             char buf[2] = {c, '\0'};
+    //             screen::write(buf);
+    //             printf("%c", c);
+    //         }
+    //     }
+    // }
 
     static void log_uint64_hex(uint64_t n)
     {

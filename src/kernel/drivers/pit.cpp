@@ -4,10 +4,6 @@
 
 static volatile uint64_t tick_count = 0;
 static uint32_t pit_freq = PIT_DEFAULT_HZ;
-static uint32_t ms_per_tick = 1;      // milliseconds per tick (integer part)
-static uint32_t tick_remainder = 0;   // accumulator for sub-ms precision
-static uint32_t remainder_step = 0;   // fractional part per tick (* 1000)
-static volatile uint64_t uptime = 0;  // accumulated milliseconds
 
 namespace pit
 {
@@ -41,11 +37,6 @@ namespace pit
         // Recalculate actual frequency after clamping
         pit_freq = PIT_BASE_FREQ / divisor;
 
-        ms_per_tick = 1000 / pit_freq;
-        // Fractional part: (1000 % pit_freq) gives remainder per tick,
-        // accumulate until >= pit_freq then add 1 ms
-        remainder_step = 1000 % pit_freq;
-
         // Channel 0, lobyte/hibyte, rate generator (mode 2)
         port::byte_out(PIT_COMMAND, 0x34);
         port::byte_out(PIT_CHANNEL0, (uint8_t)(divisor & 0xFF));
@@ -55,15 +46,6 @@ namespace pit
     void handler()
     {
         tick_count++;
-
-        // Accumulate milliseconds with fractional correction
-        uptime += ms_per_tick;
-        tick_remainder += remainder_step;
-        if (tick_remainder >= pit_freq)
-        {
-            uptime++;
-            tick_remainder -= pit_freq;
-        }
 
         // Cursor blinking - call every tick, screen controls the rate
         screen::update_cursor();
@@ -81,8 +63,6 @@ namespace pit
     void init(uint32_t frequency_hz)
     {
         tick_count = 0;
-        uptime = 0;
-        tick_remainder = 0;
         set_frequency(frequency_hz);
     }
 

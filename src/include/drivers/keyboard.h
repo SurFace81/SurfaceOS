@@ -2,9 +2,6 @@
 #define KEYBOARD_H
 
 #include "../cpu/ports.h"
-#include "screen.h"
-#include "../stdlib/stdio.h"
-
 #include "../../sdk/include/abi/keyboard.h"
 
 #define KEYBOARD_DATA_PORT      0x60

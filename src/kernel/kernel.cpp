@@ -10,7 +10,6 @@
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
-#include "../include/stdlib/stdio.h"
 #include "../include/drivers/usb/xhci.h"
 
 

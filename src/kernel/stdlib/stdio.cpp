@@ -46,18 +46,3 @@ void print(uint64_t hex, uint64_t size)
     print("0x");
     print(temp_str);
 }
-
-void clearScreen()
-{
-    screen::clear();
-}
-
-void setTextColor(Colors color)
-{
-    screen::set_color(color);
-}
-
-void setCursorPosition(uint32_t x, uint32_t y)
-{
-    screen::set_cursor(x, y);
-}
