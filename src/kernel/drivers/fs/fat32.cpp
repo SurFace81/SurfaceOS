@@ -892,7 +892,7 @@ namespace fat32
             if (bytes_read + to_copy > file_size)
                 to_copy = file_size - bytes_read;
 
-            memory::memcpy(cluster_buf, buffer + bytes_read, to_copy);
+            memory::memcpy(buffer + bytes_read, cluster_buf, to_copy);
             bytes_read += to_copy;
 
             cluster = fat_read_entry(cluster);
@@ -983,7 +983,7 @@ namespace fat32
                 to_write = size - bytes_written;
 
             memory::memset(cluster_buf, 0, csize);
-            memory::memcpy((uint8_t*)data + bytes_written, cluster_buf, to_write);
+            memory::memcpy(cluster_buf, (uint8_t*)data + bytes_written, to_write);
 
             if (!write_cluster_data(cluster, cluster_buf))
                 break;
@@ -998,7 +998,7 @@ namespace fat32
         // Create or update directory entry
         fat32_dir_entry new_entry;
         memory::memset((uint8_t*)&new_entry, 0, sizeof(fat32_dir_entry));
-        memory::memcpy(name83, new_entry.name, 11);
+        memory::memcpy(new_entry.name, name83, 11);
         new_entry.attr = FAT32_ATTR_ARCHIVE;
         set_entry_cluster(&new_entry, first_cluster);
         new_entry.file_size = size;
@@ -1073,7 +1073,7 @@ namespace fat32
         // Add entry to parent
         fat32_dir_entry new_entry;
         memory::memset((uint8_t*)&new_entry, 0, sizeof(fat32_dir_entry));
-        memory::memcpy(name83, new_entry.name, 11);
+        memory::memcpy(new_entry.name, name83, 11);
         new_entry.attr = FAT32_ATTR_DIRECTORY;
         set_entry_cluster(&new_entry, new_cluster);
         new_entry.file_size = 0;
@@ -1102,7 +1102,7 @@ namespace fat32
             fat_free_chain(entry_cluster);
 
         uint8_t name83[11];
-        memory::memcpy(entry.name, name83, 11);
+        memory::memcpy(name83, entry.name, 11);
 
         return delete_dir_entry(parent_cluster, name83);
     }
@@ -1134,10 +1134,10 @@ namespace fat32
 
         // Build the updated entry with the new name
         uint8_t old83[11];
-        memory::memcpy(entry.name, old83, 11);
+        memory::memcpy(old83, entry.name, 11);
 
         fat32_dir_entry updated = entry;
-        memory::memcpy(new83, updated.name, 11);
+        memory::memcpy(updated.name, new83, 11);
 
         return update_dir_entry(parent_cluster, old83, &updated);
     }

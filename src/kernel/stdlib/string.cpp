@@ -60,6 +60,17 @@ void hex_to_str(uint64_t num, char str[], uint64_t size)
     }
 }
 
+uint32_t parse_uint(const char* s)
+{
+    uint32_t val = 0;
+    while (*s >= '0' && *s <= '9')
+    {
+        val = val * 10 + (*s - '0');
+        s++;
+    }
+    return val;
+}
+
 int strlen(const char* s)
 {
     int i = 0;

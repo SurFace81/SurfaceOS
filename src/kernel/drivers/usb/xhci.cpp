@@ -783,7 +783,7 @@ static sint32_t bot_scsi_command(usb_mass_storage_dev* msd, uint8_t* scsi_cmd, u
     shared_cbw->bmCBWFlags = direction;
     shared_cbw->bCBWLUN = 0;
     shared_cbw->bCBWCBLength = scsi_cmd_len;
-    memory::memcpy(scsi_cmd, shared_cbw->CBWCB, scsi_cmd_len);
+    memory::memcpy(shared_cbw->CBWCB, scsi_cmd, scsi_cmd_len);
 
     // Command phase
     if (!bulk_transfer_out(msd, shared_cbw, shared_cbw_phys, 31))
@@ -1801,7 +1801,7 @@ namespace usb
 
         bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys);
         if (ok)
-            memory::memcpy(dma_buf, (uint8_t*)buffer, total);
+            memory::memcpy((uint8_t*)buffer, dma_buf, total);
 
         free_xhci_memory(dma_buf);
         return ok ? USB_OK : USB_ERR_IO;
@@ -1830,7 +1830,7 @@ namespace usb
             return USB_ERR_IO;
         uintptr_t dma_phys = xhci_virt_to_phys(dma_buf);
 
-        memory::memcpy((uint8_t*)buffer, dma_buf, total);
+        memory::memcpy(dma_buf, (uint8_t*)buffer, total);
         bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys);
 
         free_xhci_memory(dma_buf);

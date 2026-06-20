@@ -38,7 +38,7 @@ static void cmd_help(int argc, const char** argv)
     }
 }
 
-static void cmd_clear(int argc, const char** argv)
+static void cmd_cls(int argc, const char** argv)
 {
     screen::clear();
     screen::show_cursor();
@@ -581,18 +581,7 @@ static void cmd_uptime(int argc, const char** argv)
     screen::printf("\n\r");
     screen::printf("\n\r Uptime: %u:%02u:%02u.%03u", hours, minutes, seconds, millis);
     screen::printf("\n\r Ticks:  %u", (uint32_t)pit::ticks());
-    screen::printf("\n\r Freq:   %u Hz", pit::frequency());
-}
-
-static uint32_t parse_uint(const char* s)
-{
-    uint32_t val = 0;
-    while (*s >= '0' && *s <= '9')
-    {
-        val = val * 10 + (*s - '0');
-        s++;
-    }
-    return val;
+    screen::printf("\n\r Freq:   %u Hz (real: %u Hz)", pit::frequency(), pit::real_frequency());
 }
 
 static void cmd_settime(int argc, const char** argv)
@@ -735,7 +724,7 @@ namespace commands
     void init()
     {
         console::register_command("help",    cmd_help);
-        console::register_command("clear",   cmd_clear);
+        console::register_command("cls",     cmd_cls);
         console::register_command("cpuid",   cmd_cpuid);
         console::register_command("lspci",   cmd_lspci);
         console::register_command("mount",   cmd_mount);

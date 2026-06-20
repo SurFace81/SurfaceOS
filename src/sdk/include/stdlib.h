@@ -1,7 +1,7 @@
-#ifndef LIB_HEAP_H
-#define LIB_HEAP_H
+#ifndef SFOS_STDLIB_H
+#define SFOS_STDLIB_H
 
-#include "types.h"
+#include "abi/types.h"
 
 void  heap_init(void* start, size_t size);
 void* malloc(size_t size);

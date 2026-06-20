@@ -1,4 +1,4 @@
-#include "./include/heap.h"
+#include "../include/stdlib.h"
 
 struct BlockHeader
 {
@@ -63,7 +63,6 @@ void free(void* ptr)
     BlockHeader* block = (BlockHeader*)ptr - 1;
     block->free = true;
 
-    // Coalesce adjacent free blocks
     BlockHeader* current = heap_start;
     while (current)
     {

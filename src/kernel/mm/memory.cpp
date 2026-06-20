@@ -27,7 +27,7 @@ namespace memory
         }
     }
 
-    void memcpy(uint8_t* src, uint8_t* dst, uint64_t size)
+    void memcpy(uint8_t* dst, uint8_t* src, uint64_t size)
     {
         for (uint64_t i = 0; i < size; i++)
         {

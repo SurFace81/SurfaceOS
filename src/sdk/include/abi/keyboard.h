@@ -1,14 +1,16 @@
-#ifndef LIB_KEYBOARD_H
-#define LIB_KEYBOARD_H
+#ifndef ABI_KEYBOARD_H
+#define ABI_KEYBOARD_H
 
 #include "types.h"
 
-enum key_event_type {
+enum key_event_type
+{
     KEY_PRESS   = 0,
     KEY_RELEASE = 1,
 };
 
-enum key_code {
+enum key_code
+{
     KEY_SPACE       = 57,
     KEY_ESCAPE      = 1,
     KEY_BACKSPACE   = 14,
@@ -20,7 +22,8 @@ enum key_code {
     KEY_DELETE      = 211,
 };
 
-typedef struct {
+struct keyboard_event_t
+{
     uint8_t KeyCode;
     char    KeyChar;
     uint8_t type;
@@ -29,6 +32,6 @@ typedef struct {
     bool    Alt;
     bool    NumLck;
     bool    ScrLck;
-} keyboard_event_t;
+};
 
 #endif

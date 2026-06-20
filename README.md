@@ -1,18 +1,45 @@
+# SurfaceOS
+ 
+A hobby x86_64 operating system written in C++ (freestanding, no OOP).
+ 
 # Features
-
-- UEFI bootloader (custom EFI loader)
+ 
+- UEFI bootloader (custom EFI loader via MinGW)
 - x86_64 kernel
 - GDT and IDT setup
 - CPU exception handling
-- Hardware interrupts (using PIC 8259)
+- Hardware interrupts (PIC 8259)
 - PS/2 keyboard driver
 - Framebuffer text console (UEFI GOP)
-- Serial output (using UART 16550, PCIe)
+- Serial output (UART 16550 over PCIe)
 - Paging with 2 MiB pages
-- Memory allocator
-- Basic shell with built-in commands
+- Physical memory manager
+- Heap allocator
 - PCI bus enumeration
-- xHCI USB read/write
+- xHCI USB host controller driver
+- USB mass storage (read/write)
+- FAT32 filesystem (read/write, directories, mount/umount)
+- RTC clock (read/write)
+- PIT timer and uptime tracking
+- CPUID (CPU name, topology, cache info, frequencies)
+- Userspace libc (syscall interface, stdio, heap, string)
+- Userspace app loader (flat binary via `exec`)
+- Built-in shell with commands
+ 
+# Project Structure
+ 
+```
+src/
+  boot/       — UEFI bootloader (C, MinGW) and BIOS stub (NASM)
+  kernel/     — kernel source (C++, freestanding)
+    cpu/      — GDT, IDT, IRQ, paging, PCI, syscall, program loader
+    drivers/  — screen, keyboard, console, UART, USB/xHCI, FAT32, PIT, RTC
+    mm/       — physical memory, heap
+    stdlib/   — stdio, string
+  include/    — kernel-side headers
+  sdk/        — userspace C library (syscall wrapper, stdio, heap, string)
+  apps/       — userspace applications
+```
 
 # Build & Run
 

@@ -1,10 +1,8 @@
 #ifndef KEYBOARD_H
 #define KEYBOARD_H
 
-#include "../cpu/types.h"
 #include "../cpu/ports.h"
-#include "screen.h"
-#include "../stdlib/stdio.h"
+#include "../../sdk/include/abi/keyboard.h"
 
 #define KEYBOARD_DATA_PORT      0x60
 #define KEYBOARD_STATUS_PORT    0x64
@@ -34,14 +32,7 @@ typedef struct {
     uint8_t extended_code;
 } keyboard_state_t;
 
-enum keyboard_event_type {
-    KEY_PRESS   = 0,
-    KEY_RELEASE = 1,
-    KEY_REPEAT  = 2,
-};
-
 enum Keys {
-    /// Virtual key codes enum
     SPACE           = 57,
     ESCAPE          = 1,
     BACKSPACE       = 14,
@@ -51,18 +42,9 @@ enum Keys {
     ARROW_DOWN      = 208,
     ARROW_RIGHT     = 205,
     DELETE          = 211,
+    HOME            = 199,
+    END             = 207,
 };
-
-typedef struct {
-    uint8_t KeyCode;
-    char  KeyChar;
-    uint8_t type;
-    bool  Control;
-    bool  Shift;
-    bool  Alt;
-    bool  NumLck;
-    bool  ScrLck;
-} keyboard_event_t;
 
 typedef void (*keyboard_callback_t)(keyboard_event_t e);
 

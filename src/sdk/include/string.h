@@ -1,7 +1,7 @@
-#ifndef LIB_STRING_H
-#define LIB_STRING_H
+#ifndef SFOS_STRING_H
+#define SFOS_STRING_H
 
-#include "types.h"
+#include "abi/types.h"
 
 int   strlen(const char* s);
 int   strcmp(const char* s1, const char* s2);

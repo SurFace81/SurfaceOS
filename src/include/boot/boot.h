@@ -1,7 +1,7 @@
-#ifndef KERNEL_H
-#define KERNEL_H
+#ifndef BOOT_H
+#define BOOT_H
 
-#include "../include/cpu/types.h"
+#include "../cpu/types.h"
 
 typedef struct {
     // Framebuffer

@@ -12,10 +12,10 @@ namespace cpuid {
     void get_cpu_name(char* cpu_name) {
         uint32_t eax, ebx, ecx, edx;
     
-        // Проверяем, поддерживаются ли расширенные функции CPUID
+        // Checks whether extended CPUID functions are supported
         cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
         if (eax < 0x80000004) {
-            // Если не поддерживается
+            // If not supported
             const char* unknown = "Unknown CPU";
             int i = 0;
             while (unknown[i] != '\0') {
@@ -26,12 +26,12 @@ namespace cpuid {
             return;
         }
         
-        // Получаем название процессора из трёх частей
-        // 0x80000002, 0x80000003, 0x80000004 — каждая даёт 16 символов
+        // Get CPU name
+        // 0x80000002, 0x80000003, 0x80000004 — each returns 16 chars
         for (int part = 0; part < 3; part++) {
             cpuid(0x80000002 + part, &eax, &ebx, &ecx, &edx);
             
-            // Записываем 16 байт из четырёх регистров
+            // Write 16 bytes from 4 regs
             *((uint32_t*)&cpu_name[part * 16 + 0]) = eax;
             *((uint32_t*)&cpu_name[part * 16 + 4]) = ebx;
             *((uint32_t*)&cpu_name[part * 16 + 8]) = ecx;
@@ -39,7 +39,6 @@ namespace cpuid {
         }
         cpu_name[48] = '\0';
         
-        // Убираем ведущие пробелы
         char* start = cpu_name;
         while (*start == ' ') {
             start++;
@@ -66,11 +65,8 @@ namespace cpuid {
         if (eax < 0x16) return;        
         cpuid(0x16, &eax, &ebx, &ecx, &edx);
         
-        // EAX = базовая частота в МГц
-        *base_freq_mhz = eax;        
-        // EBX = максимальная частота в МГц
-        *max_freq_mhz = ebx;        
-        // ECX = частота шины
+        *base_freq_mhz = eax;
+        *max_freq_mhz = ebx;
         *bus_freq_mhz = ecx;
     }
 

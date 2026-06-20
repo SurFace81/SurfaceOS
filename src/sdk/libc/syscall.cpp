@@ -1,4 +1,5 @@
-#include "./include/syscall.h"
+#include "../include/abi/syscall.h"
+#include "../include/abi/types.h"
 
 uint64_t syscall(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2)
 {

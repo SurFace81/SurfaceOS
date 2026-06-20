@@ -1,4 +1,4 @@
-#include "kernel.h"
+#include "../include/boot/boot.h"
 #include "../include/cpu/gdt.h"
 #include "../include/cpu/idt.h"
 #include "../include/cpu/irq.h"
@@ -10,7 +10,6 @@
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
-#include "../include/stdlib/stdio.h"
 #include "../include/drivers/usb/xhci.h"
 
 
@@ -37,9 +36,10 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     rtc::init();
     irq::install_handler(IRQ0_TIMER, pit::handler);
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
+
+    pit::calibrate();
     
     console::init();
-    irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
     
     while (1)
         asm volatile("hlt");

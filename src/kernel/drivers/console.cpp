@@ -316,6 +316,48 @@ static void on_key(keyboard_event_t e)
         return;
     }
 
+    if (e.KeyCode == Keys::HOME)
+    {
+        uint32_t cx = screen::cursor_x();
+        uint32_t cy = screen::cursor_y();
+
+        for (uint32_t i = 0; i < input_pos; i++)
+        {
+            if (cx > 0)
+                cx--;
+            else if (cy > 0)
+            {
+                cy--;
+                cx = screen::cols() - 1;
+            }
+        }
+
+        input_pos = 0;
+        screen::set_cursor(cx, cy);
+        return;
+    }
+
+    if (e.KeyCode == Keys::END)
+    {
+        uint32_t remaining = list::size(input_buf) - input_pos;
+        uint32_t cx = screen::cursor_x();
+        uint32_t cy = screen::cursor_y();
+
+        for (uint32_t i = 0; i < remaining; i++)
+        {
+            cx++;
+            if (cx >= screen::cols())
+            {
+                cx = 0;
+                cy++;
+            }
+        }
+
+        input_pos = list::size(input_buf);
+        screen::set_cursor(cx, cy);
+        return;
+    }
+
     // Ignore non-printable characters
     if (e.KeyChar < 0x20 || e.KeyChar == 0x7F)
         return;
@@ -336,17 +378,7 @@ static void on_key(keyboard_event_t e)
     }
     else
     {
-        // Shift everything right by inserting: add dummy at end, then shift
-        char last;
-        list::get(input_buf, list::size(input_buf) - 1, last);
-        list::add(input_buf, last);
-        for (uint32_t i = list::size(input_buf) - 2; i > input_pos; i--)
-        {
-            char c;
-            list::get(input_buf, i - 1, c);
-            list::set(input_buf, i, c);
-        }
-        list::set(input_buf, input_pos, e.KeyChar);
+        list::insert_at(input_buf, input_pos, e.KeyChar);
     }
 
     input_pos++;
@@ -380,8 +412,6 @@ static void on_key(keyboard_event_t e)
         }
         screen::set_cursor(save_cx, save_cy);
     }
-
-    uart::printf("%c", e.KeyChar);
 }
 
 // API

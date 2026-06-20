@@ -125,6 +125,29 @@ namespace list {
     }
 
     template<typename T>
+    bool insert_at(List<T>* list, size_t index, T value) {
+        if (!list || index > list->size) return false;
+
+        if (index == list->size)
+            return add(list, value);
+
+        // Make room by adding a dummy at the end
+        T last;
+        get(list, list->size - 1, last);
+        add(list, last);
+
+        // Shift elements right from end down to index
+        for (size_t i = list->size - 2; i > index; i--)
+        {
+            T tmp;
+            get(list, i - 1, tmp);
+            set(list, i, tmp);
+        }
+        set(list, index, value);
+        return true;
+    }
+
+    template<typename T>
     void remove_at(List<T>* list, size_t index) {
         if (!list || index >= list->size) return;
 
@@ -152,8 +175,7 @@ namespace list {
             }
             kfree(pos.block);
         }
-
-        // Перебалансировка: подтягиваем элементы из следующих блоков
+        
         Block<T>* current = pos.block->next;
         Block<T>* prev_block = pos.block;
 
