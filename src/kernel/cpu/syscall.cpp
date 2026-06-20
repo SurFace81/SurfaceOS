@@ -46,6 +46,14 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
         case SYS_CLEAR:
         {
             screen::clear();
+            regs->rax = 0;
+            break;
+        }
+
+        case SYS_SET_CURSOR:
+        {
+            screen::set_cursor((uint32_t)regs->rdi, (uint32_t)regs->rsi);
+            regs->rax = 0;
             break;
         }
 

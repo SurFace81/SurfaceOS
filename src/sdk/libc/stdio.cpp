@@ -14,6 +14,11 @@ void clear()
     syscall(SYS_CLEAR, 0, 0, 0);
 }
 
+void set_cursor(uint32_t x, uint32_t y)
+{
+    syscall(SYS_SET_CURSOR, (uint64_t)x, (uint64_t)y, 0);
+}
+
 void exit(int code)
 {
     syscall(SYS_EXIT, (uint64_t)code, 0, 0);
