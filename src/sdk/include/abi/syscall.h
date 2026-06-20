@@ -8,13 +8,14 @@
 #define SYS_CLEAR           3
 
 #define SYS_READ_KEY        4
+#define SYS_READ_LINE       5
 
-#define SYS_WRITE_FILE      5
-#define SYS_READ_FILE       6
-#define SYS_STAT_FILE       7
-#define SYS_READ_DIR        8
+#define SYS_WRITE_FILE      6
+#define SYS_READ_FILE       7
+#define SYS_STAT_FILE       8
+#define SYS_READ_DIR        9
 
-#define SYS_UPTIME          9
-#define SYS_TIME            10
+#define SYS_UPTIME          10
+#define SYS_TIME            11
 
 #endif
