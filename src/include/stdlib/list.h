@@ -152,8 +152,7 @@ namespace list {
             }
             kfree(pos.block);
         }
-
-        // Перебалансировка: подтягиваем элементы из следующих блоков
+        
         Block<T>* current = pos.block->next;
         Block<T>* prev_block = pos.block;
 

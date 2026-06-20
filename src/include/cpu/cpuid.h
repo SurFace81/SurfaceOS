@@ -4,10 +4,10 @@
 #include "types.h"
 
 struct CacheInfo {
-    uint32_t l1d_size;      // L1 data cache в KB
-    uint32_t l1i_size;      // L1 instruction cache в KB
-    uint32_t l2_size;       // L2 cache в KB
-    uint32_t l3_size;       // L3 cache в KB
+    uint32_t l1d_size;      // L1 data cache in Kb
+    uint32_t l1i_size;      // L1 instruction cache in Kb
+    uint32_t l2_size;       // L2 cache in Kb
+    uint32_t l3_size;       // L3 cache in Kb
     
     uint32_t l1d_ways;      // L1 data associativity
     uint32_t l1i_ways;      // L1 instruction associativity
@@ -22,7 +22,7 @@ struct CacheInfo {
 struct CPUTopology {
     uint32_t logical_cores;
     uint32_t physical_cores;
-    uint32_t packages;         // Количество сокетов/процессоров
+    uint32_t packages;         // num of sockets/cpus
     bool hyperthreading;
 };
 

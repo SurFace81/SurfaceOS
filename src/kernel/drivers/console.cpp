@@ -380,8 +380,6 @@ static void on_key(keyboard_event_t e)
         }
         screen::set_cursor(save_cx, save_cy);
     }
-
-    uart::printf("%c", e.KeyChar);
 }
 
 // API

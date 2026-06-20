@@ -1,4 +1,5 @@
 #include "../../include/mm/heap.h"
+#include "../../include/drivers/uart.h"
 
 struct BlockHeader
 {
@@ -94,6 +95,7 @@ void* kmalloc(size_t size)
         current = current->next;
     }
 
+    uart::printf("kmalloc: out of memory, requested %u\n", size);
     return nullptr;
 }
 

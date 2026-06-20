@@ -1,4 +1,4 @@
-#include "kernel.h"
+#include "../include/boot/boot.h"
 #include "../include/cpu/gdt.h"
 #include "../include/cpu/idt.h"
 #include "../include/cpu/irq.h"

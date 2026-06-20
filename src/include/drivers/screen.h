@@ -1,8 +1,8 @@
 #ifndef SCREEN_H
 #define SCREEN_H
 
-#include "../../kernel/kernel.h"
 #include "../cpu/types.h"
+#include "../boot/boot.h"
 
 enum Colors
 {
