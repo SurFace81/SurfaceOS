@@ -7,6 +7,7 @@ LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e ef
 
 GCC			= x86_64-elf-gcc
 GPP			= x86_64-elf-g++
+AR			= x86_64-elf-ar
 CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
@@ -53,9 +54,14 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/syscall.o \
 				bin/kernel/cpu/program.o \
 
-# SDK
+# SDK: entry.o is always linked first (contains _start, must be at PROGRAM_BASE)
+# everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/sdk/include
-SDK_OBJ     = bin/sdk/entry.o bin/sdk/syscall.o bin/sdk/stdio.o bin/sdk/stdlib.o bin/sdk/string.o
+SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
+SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
+SDK_ENTRY   = bin/sdk/entry.o
+SDK_LIB_OBJ = $(filter-out $(SDK_ENTRY), $(SDK_ALL_OBJ))
+SDK_LIB     = bin/sdk/libsfos.a
 
 # Apps: every .cpp in src/apps/ becomes a .bin
 APP_SRC		= $(wildcard src/apps/*.cpp)
@@ -112,19 +118,22 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	$(NASM) -f elf64 -o $@ $<
 
 
-# SDK (libc)
+# SDK objects
 bin/sdk/%.o: src/sdk/libc/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) -o $@ $<
 
+# SDK static library (everything except entry.o)
+$(SDK_LIB): $(SDK_LIB_OBJ)
+	$(AR) rcs $@ $^
 
-# Apps: compile app source + link with libc into flat binary
-bin/apps/%.bin: src/apps/%.cpp $(SDK_OBJ)
+
+# Apps: compile + link entry.o first, then app object, then pull the rest from libsfos.a
+bin/apps/%.bin: src/apps/%.cpp $(SDK_ENTRY) $(SDK_LIB)
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) -c -o bin/apps/$*.o $<
 	$(LD) -m elf_x86_64 -T src/sdk/linker.ld -nostdlib -o $@ \
-		bin/sdk/entry.o bin/sdk/syscall.o bin/sdk/stdio.o \
-		bin/sdk/stdlib.o bin/sdk/string.o bin/apps/$*.o
+		$(SDK_ENTRY) bin/apps/$*.o -Lbin/sdk -lsfos
 
 
 # Generating version
@@ -185,6 +194,6 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
-	@rm -rf bin/sdk/*.o
+	@rm -rf bin/sdk/*.o bin/sdk/*.a
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h

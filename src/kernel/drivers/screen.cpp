@@ -184,6 +184,11 @@ static void emit_str(const char* s)
         emit_char(*s++);
 }
 
+static struct
+{
+    uint32_t x, y, w, h;
+} saved_vp;
+
 // API
 namespace screen
 {
@@ -230,6 +235,77 @@ namespace screen
         if (scr.cursor_visible)
             cursor_draw();
     }
+
+    void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+    {
+        saved_vp.x = scr.vp_x;
+        saved_vp.y = scr.vp_y;
+        saved_vp.w = scr.vp_width;
+        saved_vp.h = scr.vp_height;
+
+        scr.vp_x = x;
+        scr.vp_y = y;
+        scr.vp_width = w;
+        scr.vp_height = h;
+        scr.cursor_x = 0;
+        scr.cursor_y = 0;
+    }
+
+    void pop_viewport()
+    {
+        scr.vp_x = saved_vp.x;
+        scr.vp_y = saved_vp.y;
+        scr.vp_width = saved_vp.w;
+        scr.vp_height = saved_vp.h;
+        scr.cursor_x = 0;
+        scr.cursor_y = 0;
+    }
+
+    void draw_title_bar(const char* title)
+    {
+        uint32_t bar_height = scr.sym_h + 4; // font height + small padding
+
+        // Fill bar with gray
+        for (uint32_t y = scr.vp_y; y < scr.vp_y + bar_height; y++)
+            for (uint32_t x = scr.vp_x; x < scr.vp_x + scr.vp_width; x++)
+            {
+                uint32_t* px = (uint32_t*)(scr.buffer +
+                    (x + y * scr.pixels_per_scanline) * BBP);
+                *px = Colors::GRAY;
+            }
+
+        // Measure title length
+        uint32_t len = 0;
+        while (title[len])
+            len++;
+
+        // Center text horizontally
+        uint32_t text_px_w = len * scr.sym_w;
+        uint32_t text_x = scr.vp_x + (scr.vp_width - text_px_w) / 2;
+        uint32_t text_y = scr.vp_y + 2; // 2px top padding
+
+        // Draw each character in black on white background
+        char* glyph;
+        for (uint32_t i = 0; i < len; i++)
+        {
+            glyph = scr.font + title[i] * scr.sym_h;
+            for (uint32_t gy = 0; gy < scr.sym_h; gy++)
+                for (uint32_t gx = 0; gx < scr.sym_w; gx++)
+                {
+                    uint32_t* px = (uint32_t*)(scr.buffer +
+                        (text_x + i * scr.sym_w + gx +
+                        (text_y + gy) * scr.pixels_per_scanline) * BBP);
+                    if (glyph[gy] & (0x80 >> gx))
+                        *px = 0x00000000; // black text
+                    // else leave white
+                }
+        }
+    }
+
+    uint32_t vp_x() { return scr.vp_x; }
+    uint32_t vp_y() { return scr.vp_y; }
+    uint32_t vp_w() { return scr.vp_width; }
+    uint32_t vp_h() { return scr.vp_height; }
 
     void show_cursor()
     {

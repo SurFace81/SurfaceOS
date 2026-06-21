@@ -56,6 +56,15 @@ namespace screen
     
     void flush();
 
+    void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void pop_viewport();
+    void draw_title_bar(const char* title);
+
+    uint32_t vp_x();
+    uint32_t vp_y();
+    uint32_t vp_w();
+    uint32_t vp_h();
+
 } // namespace screen
 
 #endif // SCREEN_H

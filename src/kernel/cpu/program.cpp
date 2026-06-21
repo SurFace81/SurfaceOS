@@ -58,17 +58,43 @@ namespace program
         info.heap_start = code_end;
         info.heap_size  = stack_bottom - code_end;
 
-        // Switch keyboard input to program buffer
         key_head = 0;
         key_tail = 0;
         keyboard_callback_t prev_callback = keyboard::get_callback();
         keyboard::set_keyboard_callback(program_key_handler);
 
+        // Draw title bar and shrink app viewport
+        screen::hide_cursor();
+        screen::clear();
+
+        // Extract filename from path for display
+        const char* name = path;
+        for (const char* p = path; *p; p++)
+        {
+            if (*p == '\\' || *p == '/')
+                name = p + 1;
+        }
+
+        screen::draw_title_bar(name);
+
+        // Shrink viewport: move top down by title bar height
+        uint32_t bar_h = 20; // sym_h(16) + 4px padding
+        uint32_t old_vp_x = screen::vp_x();
+        uint32_t old_vp_y = screen::vp_y();
+        uint32_t old_vp_w = screen::vp_w();
+        uint32_t old_vp_h = screen::vp_h();
+
+        screen::push_viewport(old_vp_x, old_vp_y + bar_h,
+                            old_vp_w, old_vp_h - bar_h);
+
         irq::pic_send_eoi(1);
         jump_to_program(PROGRAM_BASE, stack_top, (uint64_t)&info);
 
-        // Program finished, restore console keyboard handler
+        // Restore viewport and console
+        screen::pop_viewport();
         keyboard::set_keyboard_callback(prev_callback);
+        screen::clear();
+        screen::show_cursor();
 
         return true;
     }
