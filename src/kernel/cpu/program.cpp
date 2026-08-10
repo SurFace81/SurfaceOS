@@ -5,6 +5,7 @@
 #include "../../include/drivers/keyboard.h"
 #include "../../include/cpu/irq.h"
 #include "../../include/mm/memory.h"
+#include "../../include/stdlib/string.h"
 
 extern "C" void jump_to_program(uint64_t entry, uint64_t stack, uint64_t arg);
 
@@ -40,7 +41,7 @@ namespace program
         return e;
     }
 
-    bool exec(const char* path)
+    bool exec(const char* path, int argc, const char** argv)
     {
         uint8_t* base = (uint8_t*)PROGRAM_BASE;
         uint32_t max_code = PROGRAM_SIZE / 2;
@@ -57,6 +58,17 @@ namespace program
 
         info.heap_start = code_end;
         info.heap_size  = stack_bottom - code_end;
+
+        info.argc = argc;
+        for (int i = 0; i < argc && i < PROGRAM_MAX_ARGS; i++)
+        {
+            uint32_t len = strlen(argv[i]);
+            if (len >= PROGRAM_ARG_MAX)
+                len = PROGRAM_ARG_MAX - 1;
+
+            memcpy(info.argv[i], argv[i], len);
+            info.argv[i][len] = '\0';
+        }
 
         key_head = 0;
         key_tail = 0;
@@ -75,17 +87,15 @@ namespace program
                 name = p + 1;
         }
 
-        screen::draw_title_bar(name);
+        // TODO: title bar disabled until TUI is implemented
+        // screen::draw_title_bar(name);
 
-        // Shrink viewport: move top down by title bar height
-        uint32_t bar_h = 20; // sym_h(16) + 4px padding
         uint32_t old_vp_x = screen::vp_x();
         uint32_t old_vp_y = screen::vp_y();
         uint32_t old_vp_w = screen::vp_w();
         uint32_t old_vp_h = screen::vp_h();
 
-        screen::push_viewport(old_vp_x, old_vp_y + bar_h,
-                            old_vp_w, old_vp_h - bar_h);
+        screen::push_viewport(old_vp_x, old_vp_y, old_vp_w, old_vp_h);
 
         irq::pic_send_eoi(1);
         jump_to_program(PROGRAM_BASE, stack_top, (uint64_t)&info);

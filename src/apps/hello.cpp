@@ -47,8 +47,19 @@ static const char* weekday_name(uint8_t wd)
     }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc > 1)
+    {
+        print("Args: ");
+        for (int i = 1; i < argc; i++)
+        {
+            print(argv[i]);
+            print(" ");
+        }
+        print("\n\n");
+    }
+
     // Test SYS_UPTIME
     print("=== UPTIME ===\n");
     uptime_t up;

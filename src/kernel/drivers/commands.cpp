@@ -715,7 +715,7 @@ static void cmd_exec(int argc, const char** argv)
     }
 
     screen::printf("\n\r");
-    if (!program::exec(argv[1]))
+    if (!program::exec(argv[1], argc - 1, argv + 1))
         screen::printf("Failed to load: %s", argv[1]);
 }
 
