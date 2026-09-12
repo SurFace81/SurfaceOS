@@ -52,12 +52,12 @@ src/
 
 3. Install dependencies:
 
-    `sudo apt install qemu-system-x86 nasm gparted okteta make git libc6:i386 libncurses6:i386 libstdc++6:i386`
+    `sudo apt install qemu-system-x86 nasm gparted okteta make git libc6:i386 libncurses6:i386 libstdc++6:i386 gcc-mingw-w64-x86-64`
 
 4. Install Cross Compiler (https://wiki.osdev.org/GCC_Cross-Compiler)
     - Extract opt.tar.xz in $HOME
-    - Add to PATH: `export PATH="$HOME/opt/cross/bin:$PATH`
-    - Reload bashrc: `source ~/.bashrc`
+    - Add to PATH permanently: `echo 'export PATH="$HOME/opt/cross/bin:$PATH"' >> ~/.bashrc`
+    - Reload: `source ~/.bashrc`
 
 5. Open SurfaceOS folder: 
     - Create folder `./tmp`
