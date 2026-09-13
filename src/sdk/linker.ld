@@ -2,7 +2,9 @@ OUTPUT_FORMAT("binary")
 ENTRY(_start)
 
 SECTIONS {
-    .text 0x3000000 : {
+    /* USER_IMAGE_VADDR: USER_BASE + 1 MB (see kernel process.h) */
+    . = 0x40000100000;
+    .text : {
         *(.text._start)
         *(.text)
         *(.rodata*)

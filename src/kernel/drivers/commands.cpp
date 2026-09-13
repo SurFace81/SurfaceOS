@@ -8,7 +8,7 @@
 #include "../../include/mm/pmm.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
-#include "../../include/cpu/program.h"
+#include "../../include/cpu/process.h"
 
 // Built-in commands
 
@@ -723,7 +723,7 @@ static void cmd_exec(int argc, const char** argv)
     }
 
     screen::printf("\n\r");
-    if (!program::exec(argv[1]))
+    if (!process::run(argv[1]))
         screen::printf("Failed to load: %s", argv[1]);
 }
 

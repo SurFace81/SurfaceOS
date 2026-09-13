@@ -105,7 +105,7 @@ namespace keyboard {
 
     void handler(void) {
         uint8_t scancode = port::byte_in(KEYBOARD_DATA_PORT);
-        
+
         if (scancode == EXTENDED_SCANCODE) {
             kb_state.extended_code = 1;
             return;

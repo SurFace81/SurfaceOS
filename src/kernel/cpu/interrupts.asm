@@ -68,14 +68,14 @@ global exception_handler_%1
 exception_handler_%1:
     ; Error code is already on stack, we need to remove it later
     SAVE_REGS
-    
+
     ; Pass exception number and stack frame pointer to C handler
     mov rdi, %1                ; Exception number
     mov rsi, rsp
     add rsi, 15*8 + 8          ; Pointer to exception stack frame (skip error code)
     extern handle_exception
     call handle_exception
-    
+
     RESTORE_REGS
     add rsp, 8                 ; Remove error code from stack
     iretq

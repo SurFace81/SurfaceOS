@@ -6,7 +6,6 @@
 #include "../../include/mm/pmm.h"
 #include "../../include/boot/boot.h"
 #include "../../include/mm/memory.h"
-#include "../../include/cpu/program.h"
 #include "../../include/drivers/uart.h"
 
 // Static kernel-owned regions not covered by the memory map
@@ -106,7 +105,6 @@ namespace pmm
         reserve(0, PMM_LOW_RESERVE_END);                                  // boot data, kernel, old page tables
         reserve(PMM_BITMAP_ADDR, PMM_BITMAP_ADDR + PMM_BITMAP_SIZE);      // this bitmap
         reserve(PMM_HEAP_START, PMM_HEAP_START + PMM_HEAP_SIZE);          // kernel heap
-        reserve(PROGRAM_BASE, PROGRAM_BASE + PROGRAM_SIZE);               // legacy program area
         reserve(boot_header->StartDataAddress,
                 boot_header->StartDataAddress + boot_header->StartDataSize);
         reserve((uint64_t)boot_header->FrameBufferAddress,

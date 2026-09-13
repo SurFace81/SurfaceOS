@@ -53,11 +53,13 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/pit.o \
 				bin/kernel/drivers/rtc.o \
 				bin/kernel/cpu/syscall.o \
-				bin/kernel/cpu/program.o \
+				bin/kernel/cpu/tss.o \
+				bin/kernel/cpu/process.o \
+				bin/kernel/cpu/process.asm.o \
 
 # SDK: entry.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
-SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/sdk/include
+SDK_FLAGS   = -c -m64 -mcmodel=large -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/sdk/include
 SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
 SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
 SDK_ENTRY   = bin/sdk/entry.o

@@ -1,13 +1,11 @@
 #include "../../include/cpu/syscall.h"
 #include "../../include/drivers/screen.h"
-#include "../../include/cpu/program.h"
+#include "../../include/cpu/process.h"
 #include "../../include/drivers/fs/fat32.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../sdk/include/abi/fs.h"
 #include "../../sdk/include/abi/time.h"
-
-extern "C" void return_to_kernel();
 
 struct syscall_regs
 {
@@ -22,7 +20,7 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
     {
         case SYS_EXIT:
         {
-            return_to_kernel();
+            process::exit_current();    // never returns
             break;
         }
 
@@ -36,10 +34,10 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
         case SYS_READ_KEY:
         {
             // Block until a key event arrives
-            while (!program::has_key())
+            while (!process::has_key())
                 asm volatile("sti; hlt");
 
-            keyboard_event_t e = program::pop_key();
+            keyboard_event_t e = process::pop_key();
 
             // Return event via pointer passed in rdi
             keyboard_event_t* out = (keyboard_event_t*)regs->rdi;
@@ -64,10 +62,10 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
 
             while (pos < limit)
             {
-                while (!program::has_key())
+                while (!process::has_key())
                     asm volatile("sti; hlt");
 
-                keyboard_event_t e = program::pop_key();
+                keyboard_event_t e = process::pop_key();
 
                 if (e.type != KEY_PRESS)
                     continue;

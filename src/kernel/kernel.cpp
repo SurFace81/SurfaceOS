@@ -1,5 +1,6 @@
 #include "../include/boot/boot.h"
 #include "../include/cpu/gdt.h"
+#include "../include/cpu/tss.h"
 #include "../include/cpu/idt.h"
 #include "../include/cpu/irq.h"
 #include "../include/cpu/paging.h"
@@ -20,6 +21,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     asm volatile("movq $0x200000, %rsp"); // move stack
 
     gdt::init();
+    tss::init();
     paging::init((uint64_t*)0x300000);
     memory::init(BootHeader->TotalMemorySize);
     idt::init();

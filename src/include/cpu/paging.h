@@ -22,7 +22,8 @@
 // User spaces live in PML4 entry USER_PML4_INDEX, far away from any
 // kernel virtual address, so kernel mappings can be shared between
 // all address spaces by copying a single PML4 entry.
-#define USER_PML4_INDEX 128
+// USER_BASE must equal the SDK app link address (see src/sdk/linker.ld).
+#define USER_PML4_INDEX 8
 #define USER_BASE       ((uint64_t)USER_PML4_INDEX << 39)  // 0x40000000000
 
 namespace paging

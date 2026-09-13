@@ -1,4 +1,5 @@
 #include "../../include/cpu/idt.h"
+#include "../../include/cpu/process.h"
 
 // External function to load IDT
 extern "C" void load_idt(struct idtr* idtr_addr);
@@ -61,6 +62,13 @@ namespace idt {
     }
 } // namespace
 
+static inline uint64_t read_cr2()
+{
+    uint64_t cr2;
+    asm volatile("mov %%cr2, %0" : "=r"(cr2));
+    return cr2;
+}
+
 extern "C" void handle_exception(int exception_number, uint64_t* stack_frame) {
     const char* exception_names[] = {
         "Divide Error (#DE)",                   // 0  - Test: int a = 10/0;
@@ -96,6 +104,21 @@ extern "C" void handle_exception(int exception_number, uint64_t* stack_frame) {
         "Security Exception (#SX)",             // 30 - Security-related
         "Reserved"                              // 31 - Intel reserved
     };
+
+    // Exception frame: [0]=RIP [1]=CS [2]=RFLAGS [3]=RSP [4]=SS
+    // For exceptions with an error code, the code sits at stack_frame[-1]
+    bool from_user = (stack_frame[1] & 3) == 3;
+
+    if (from_user && exception_number != 0)
+    {
+        // Fault in an app: report and terminate it, kernel keeps running
+        uart::printf("app crashed: %s at RIP=0x%llx CR2=0x%llx\n",
+            exception_names[exception_number], stack_frame[0], read_cr2());
+        print("\n\rApp crashed: ");
+        print(exception_names[exception_number]);
+        print("\n\r");
+        process::exit_current();    // never returns
+    }
 
     switch (exception_number) {
         case 0:
