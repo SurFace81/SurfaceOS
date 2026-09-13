@@ -10,6 +10,7 @@
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
+#include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
 
 
@@ -24,6 +25,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     irq::init();
     pci::init();
     uart::init();
+    pmm::init(BootHeader);
     usb::init();
 
     paging::allocate_pages(0x8000000, (uint64_t)BootHeader->FrameBufferAddress, 

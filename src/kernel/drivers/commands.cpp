@@ -5,6 +5,7 @@
 #include "../../include/drivers/usb/xhci.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
+#include "../../include/mm/pmm.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/cpu/program.h"
@@ -538,6 +539,13 @@ static void cmd_meminfo(int argc, const char** argv)
     uint64_t total_ram = memory::total();
     uint64_t total_ram_mb = total_ram / (1024 * 1024);
     screen::printf("\n\r Physical RAM:      %u MB", (uint32_t)total_ram_mb);
+
+    pmm::Stats pstats;
+    pmm::get_stats(&pstats);
+    screen::printf("\n\r");
+    screen::printf("\n\r PMM frames (4 KB): %u total, %u free, %u used",
+        (uint32_t)pstats.total_frames, (uint32_t)pstats.free_frames, (uint32_t)pstats.used_frames);
+    screen::printf("\n\r PMM managed:       %u MB", (uint32_t)(pstats.max_phys / (1024 * 1024)));
 
     HeapStats stats;
     heap::get_stats(&stats);

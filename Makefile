@@ -33,6 +33,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/gdt.asm.o \
 				bin/kernel/mm/memory.o \
 				bin/kernel/mm/heap.o \
+				bin/kernel/mm/pmm.o \
 				bin/kernel/cpu/paging.o \
 				bin/kernel/cpu/ports.o \
 				bin/kernel/drivers/uart.o \
