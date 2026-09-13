@@ -18,4 +18,6 @@
 #define SYS_UPTIME          10
 #define SYS_TIME            11
 
+#define SYS_BRK             12
+
 #endif

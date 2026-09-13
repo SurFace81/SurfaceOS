@@ -12,3 +12,9 @@ uint64_t syscall(uint64_t num, uint64_t arg0, uint64_t arg1, uint64_t arg2)
     );
     return ret;
 }
+
+// Program break. new_brk == 0 queries the current break.
+uint64_t brk(uint64_t new_brk)
+{
+    return syscall(SYS_BRK, new_brk, 0, 0);
+}

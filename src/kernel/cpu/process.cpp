@@ -23,6 +23,12 @@ namespace process
     // via TSS RSP0)
     static uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
 
+    // Program break state (brk). Only one process runs at a time, so
+    // static state is sufficient.
+    static uint64_t heap_start = 0;   // set at load time (image_end)
+    static uint64_t heap_brk   = 0;   // current program break
+    static uint64_t heap_max   = 0;   // upper bound (USER_INFO_VADDR)
+
     // Ring buffer for keyboard events while the app is running
     static const uint32_t KEY_BUF_SIZE = 64;
     static keyboard_event_t key_buf[KEY_BUF_SIZE];
@@ -146,23 +152,18 @@ namespace process
             image_end = USER_IMAGE_VADDR + image_size;
         }
 
-        // Map the heap region between the end of the image and the info page.
-        if (image_end < USER_INFO_VADDR)
-        {
-            uint64_t heap_size = USER_INFO_VADDR - image_end;
-            if (!map_user_region(image_end, heap_size))
-            {
-                paging::switch_address_space(paging::kernel_pml4());
-                paging::destroy_address_space(as);
-                kfree(image);
-                return false;
-            }
-        }
+        // The heap (image_end .. USER_INFO_VADDR) is NOT pre-mapped; the
+        // app grows it on demand via the SYS_BRK syscall.
 
         // Program info visible to the app at USER_INFO_VADDR
         program_info* info = (program_info*)paging::virtual_to_phys(USER_INFO_VADDR);
         info->heap_start = image_end;
         info->heap_size  = USER_INFO_VADDR - image_end;
+
+        // Initialize brk state for this process
+        heap_start = image_end;
+        heap_brk   = image_end;
+        heap_max   = USER_INFO_VADDR;
 
         // Kernel stack for interrupts and syscalls from this app
         uint64_t kstack_top = (uint64_t)kernel_stack + KERNEL_STACK_SIZE;
@@ -209,6 +210,53 @@ namespace process
         kfree(image);
 
         return true;
+    }
+
+    uint64_t brk(uint64_t new_brk)
+    {
+        // Query
+        if (new_brk == 0)
+            return heap_brk;
+
+        // Reject out-of-range requests
+        if (new_brk < heap_start || new_brk > heap_max)
+            return heap_brk;
+
+        // Page-align the new break upward
+        uint64_t new_brk_page = (new_brk + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
+        uint64_t old_brk_page = (heap_brk + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
+
+        // Grow: map new pages
+        if (new_brk_page > old_brk_page)
+        {
+            for (uint64_t page = old_brk_page; page < new_brk_page; page += PAGE_SIZE_4K)
+            {
+                uint64_t frame = pmm::alloc_frame();
+                if (!frame)
+                    return heap_brk;   // partial growth: return old break
+
+                memory::memset((uint8_t*)frame, 0x00, PAGE_SIZE_4K);
+                if (!paging::map_page(page, frame, PAGE_WRITE | PAGE_USER))
+                {
+                    pmm::free_frame(frame);
+                    return heap_brk;
+                }
+            }
+        }
+        // Shrink: unmap pages beyond the new break
+        else if (new_brk_page < old_brk_page)
+        {
+            for (uint64_t page = new_brk_page; page < old_brk_page; page += PAGE_SIZE_4K)
+            {
+                uint64_t phys = paging::virtual_to_phys(page);
+                paging::unmap_page(page);
+                if (phys)
+                    pmm::free_frame(phys);
+            }
+        }
+
+        heap_brk = new_brk;
+        return heap_brk;
     }
 
     void exit_current()

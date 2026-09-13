@@ -39,6 +39,10 @@ namespace process
     // control goes back to run()).
     void exit_current() __attribute__((noreturn));
 
+    // Program break (brk). new_brk == 0 queries the current break.
+    // Returns the (possibly updated) program break, or 0 on failure.
+    uint64_t brk(uint64_t new_brk);
+
     // Keyboard event queue for the running app (filled by the keyboard
     // IRQ while the app is active).
     bool has_key();

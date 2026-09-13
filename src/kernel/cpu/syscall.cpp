@@ -209,6 +209,12 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
             break;
         }
 
+        case SYS_BRK:
+        {
+            regs->rax = process::brk(regs->rdi);
+            break;
+        }
+
         case SYS_TIME:
         {
             datetime_t* out = (datetime_t*)regs->rdi;
