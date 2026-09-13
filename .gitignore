@@ -10,4 +10,7 @@ disk
 *.o
 *.bin
 *.EFI
-.clang-format
+.clang-formattest_disk.img
+uart*.log
+/tmp/
+bin/
