@@ -1,4 +1,5 @@
 #include "../../include/mm/heap.h"
+#include "../../include/mm/pmm.h"
 #include "../../include/drivers/uart.h"
 
 struct BlockHeader
@@ -13,9 +14,36 @@ static BlockHeader* heap_start = nullptr;
 static const size_t HEADER_SIZE = sizeof(BlockHeader);
 static const size_t MIN_BLOCK_DATA = 16;
 
+// Heap growth: how many PMM frames each new chunk takes (1 MiB)
+static const uint64_t GROW_FRAMES = 256;
+
 static size_t align8(size_t size)
 {
     return (size + 7) & ~(size_t)7;
+}
+
+// Append a new free chunk to the block list. If it is physically adjacent
+// to the last block, merge into it instead.
+static void heap_append_chunk(uint8_t* chunk, size_t size)
+{
+    BlockHeader* last = heap_start;
+    while (last->next)
+        last = last->next;
+
+    // Physically adjacent to a free last block? Merge into it.
+    uint8_t* last_end = (uint8_t*)(last + 1) + last->size;
+    if (last->free && last_end == chunk)
+    {
+        last->size += size;
+        return;
+    }
+
+    // Not adjacent: insert a separate block after the last one
+    BlockHeader* block = (BlockHeader*)chunk;
+    block->size = size - HEADER_SIZE;
+    block->free = true;
+    block->next = nullptr;
+    last->next = block;
 }
 
 namespace heap
@@ -26,6 +54,19 @@ namespace heap
         heap_start->size = size - HEADER_SIZE;
         heap_start->free = true;
         heap_start->next = nullptr;
+    }
+
+    // Request a new chunk of physical memory from the PMM and add it
+    // to the heap. Returns true on success.
+    bool grow()
+    {
+        uint64_t phys = pmm::alloc_frames(GROW_FRAMES);
+        if (!phys)
+            return false;
+
+        // Kernel runs identity-mapped: physical address is usable directly.
+        heap_append_chunk((uint8_t*)phys, GROW_FRAMES * FRAME_SIZE);
+        return true;
     }
 
     void get_stats(HeapStats* out)
@@ -65,11 +106,9 @@ namespace heap
 
 // Search for a free block of sufficient size, split it if it's too large,
 // and return a pointer to the data area.
-void* kmalloc(size_t size)
+// Find a free block of sufficient size in the existing list and carve it out.
+static void* heap_find_fit(size_t size)
 {
-    if (size == 0) return nullptr;
-    size = align8(size);
-
     BlockHeader* current = heap_start;
 
     while (current)
@@ -93,6 +132,28 @@ void* kmalloc(size_t size)
         }
 
         current = current->next;
+    }
+
+    return nullptr;
+}
+
+void* kmalloc(size_t size)
+{
+    if (size == 0) return nullptr;
+    size = align8(size);
+
+    void* ptr = heap_find_fit(size);
+    if (ptr)
+        return ptr;
+
+    // Out of room: grow the heap from the PMM and retry.
+    // A single allocation can exceed one chunk, so grow until it fits
+    // or the PMM is exhausted.
+    while (heap::grow())
+    {
+        ptr = heap_find_fit(size);
+        if (ptr)
+            return ptr;
     }
 
     uart::printf("kmalloc: out of memory, requested %u\n", size);
