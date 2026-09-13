@@ -4,6 +4,7 @@
 
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/tss.h"
+#include "../../include/cpu/elf.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
@@ -89,8 +90,10 @@ namespace process
         }
         paging::switch_address_space(as);
 
-        // Map the whole user window: info page, image, heap, stack
-        if (!map_user_region(USER_INFO_VADDR, USER_REGION_END - USER_INFO_VADDR))
+        // Map the info page and the stack region (always present).
+        // Code/data/heap come from the ELF loader or the flat-binary path.
+        if (!map_user_region(USER_INFO_VADDR, PAGE_SIZE_4K) ||
+            !map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE))
         {
             paging::switch_address_space(paging::kernel_pml4());
             paging::destroy_address_space(as);
@@ -98,25 +101,68 @@ namespace process
             return false;
         }
 
-        // Copy the image into user pages (kernel is identity-mapped, so
-        // write via physical addresses of the freshly mapped frames)
-        uint64_t image_pages = (bytes_read + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
-        for (uint64_t p = 0; p < image_pages; p++)
+        uint64_t entry;
+        uint64_t image_end;
+
+        if (elf::is_elf(image, bytes_read))
         {
-            uint64_t vaddr = USER_IMAGE_VADDR + p * PAGE_SIZE_4K;
-            uint64_t phys = paging::virtual_to_phys(vaddr);
-            uint64_t chunk = PAGE_SIZE_4K;
-            uint64_t left = bytes_read - p * PAGE_SIZE_4K;
-            if (left < chunk)
-                chunk = left;
-            memory::memcpy((uint8_t*)phys, image + p * PAGE_SIZE_4K, chunk);
+            // ELF64 executable: load PT_LOAD segments with real permissions
+            elf::LoadResult lr = elf::load(image, bytes_read);
+            if (!lr.valid)
+            {
+                paging::switch_address_space(paging::kernel_pml4());
+                paging::destroy_address_space(as);
+                kfree(image);
+                return false;
+            }
+            entry = lr.entry;
+            image_end = lr.image_end;
+        }
+        else
+        {
+            // Legacy flat binary: map a RWX window and copy it in
+            uint64_t image_size = (bytes_read + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
+            if (!map_user_region(USER_IMAGE_VADDR, image_size))
+            {
+                paging::switch_address_space(paging::kernel_pml4());
+                paging::destroy_address_space(as);
+                kfree(image);
+                return false;
+            }
+
+            uint64_t image_pages = (bytes_read + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
+            for (uint64_t p = 0; p < image_pages; p++)
+            {
+                uint64_t vaddr = USER_IMAGE_VADDR + p * PAGE_SIZE_4K;
+                uint64_t phys = paging::virtual_to_phys(vaddr);
+                uint64_t chunk = PAGE_SIZE_4K;
+                uint64_t left = bytes_read - p * PAGE_SIZE_4K;
+                if (left < chunk)
+                    chunk = left;
+                memory::memcpy((uint8_t*)phys, image + p * PAGE_SIZE_4K, chunk);
+            }
+
+            entry = USER_IMAGE_VADDR;
+            image_end = USER_IMAGE_VADDR + image_size;
+        }
+
+        // Map the heap region between the end of the image and the info page.
+        if (image_end < USER_INFO_VADDR)
+        {
+            uint64_t heap_size = USER_INFO_VADDR - image_end;
+            if (!map_user_region(image_end, heap_size))
+            {
+                paging::switch_address_space(paging::kernel_pml4());
+                paging::destroy_address_space(as);
+                kfree(image);
+                return false;
+            }
         }
 
         // Program info visible to the app at USER_INFO_VADDR
         program_info* info = (program_info*)paging::virtual_to_phys(USER_INFO_VADDR);
-        uint64_t image_end = USER_IMAGE_VADDR + ((bytes_read + 0xFFFFFULL) & ~0xFFFFFULL);
         info->heap_start = image_end;
-        info->heap_size  = (USER_STACK_TOP - USER_STACK_SIZE) - image_end;
+        info->heap_size  = USER_INFO_VADDR - image_end;
 
         // Kernel stack for interrupts and syscalls from this app
         uint64_t kstack_top = (uint64_t)kernel_stack + KERNEL_STACK_SIZE;
@@ -151,7 +197,7 @@ namespace process
         irq::pic_send_eoi(IRQ1_KEYBOARD);
 
         // Enter ring 3; returns here when the app exits or faults
-        process_enter_user(USER_IMAGE_VADDR, USER_STACK_TOP, USER_INFO_VADDR);
+        process_enter_user(entry, USER_STACK_TOP, USER_INFO_VADDR);
 
         screen::pop_viewport();
         screen::clear();

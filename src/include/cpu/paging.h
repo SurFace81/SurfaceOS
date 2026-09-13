@@ -42,6 +42,9 @@ namespace paging
     bool        map_page(uint64_t virt, uint64_t phys, uint64_t flags);
     void        unmap_page(uint64_t virt);
 
+    // OR additional permission bits into an already-mapped 4 KiB page.
+    void        upgrade_page_flags(uint64_t virt, uint64_t flags);
+
     // Full page-table walk (handles 2 MiB huge pages and 4 KiB pages).
     // Returns physical address or 0 if not mapped.
     uint64_t    virtual_to_phys(uint64_t virt);

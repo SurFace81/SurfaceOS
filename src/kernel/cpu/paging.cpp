@@ -138,6 +138,26 @@ namespace paging {
         return true;
     }
 
+    void upgrade_page_flags(uint64_t virt, uint64_t flags)
+    {
+        uint64_t *pml4 = (uint64_t*)read_cr3();
+        uint64_t entry = pml4[pml4_index(virt)];
+        if (!(entry & PAGE_PRESENT)) return;
+        uint64_t *pdpt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+
+        entry = pdpt[pdpt_index(virt)];
+        if (!(entry & PAGE_PRESENT) || (entry & PAGE_SIZE)) return;
+        uint64_t *pd = (uint64_t*)(entry & PAGE_ADDR_MASK);
+
+        entry = pd[pd_index(virt)];
+        if (!(entry & PAGE_PRESENT) || (entry & PAGE_SIZE)) return;
+        uint64_t *pt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+
+        uint64_t idx = pt_index(virt);
+        pt[idx] |= flags;
+        invalidate_page(virt);
+    }
+
     void unmap_page(uint64_t virt)
     {
         uint64_t *pml4 = (uint64_t*)read_cr3();

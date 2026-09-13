@@ -56,6 +56,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/tss.o \
 				bin/kernel/cpu/process.o \
 				bin/kernel/cpu/process.asm.o \
+				bin/kernel/cpu/elf.o \
 
 # SDK: entry.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter

@@ -41,7 +41,7 @@ def main():
 
     for ch in text:
         s.sendall(('sendkey %s\n' % key_for(ch)).encode())
-        time.sleep(0.05)
+        time.sleep(0.2)
         s.recv(65536)
     s.close()
     return 0
