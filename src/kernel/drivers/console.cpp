@@ -24,6 +24,14 @@ static uint32_t input_pos = 0;
 static char line_buf[CONSOLE_INPUT_MAX];
 static char* argv_buf[CONSOLE_MAX_ARGS];
 
+// Deferred command queue. The keyboard handler only enqueues a command;
+// console::poll() executes it later from the main kernel loop (process
+// context). This keeps heavy synchronous work (USB I/O, page mapping for
+// `exec`) out of the keyboard IRQ, where it would block all interrupts
+// and could lose the PIC EOI.
+static char pending_line[CONSOLE_INPUT_MAX];
+static volatile bool pending_valid = false;
+
 // Command history
 static char history[HISTORY_SIZE][CONSOLE_INPUT_MAX];
 static uint32_t history_count = 0;
@@ -211,10 +219,21 @@ static void on_key(keyboard_event_t e)
         history_push(cmd_line);
         history_browse = -1;
 
-        exec(cmd_line);
+        // Defer execution to the main loop. Running `exec` (and other
+        // heavy commands) here would execute inside the keyboard IRQ.
+        // The prompt is printed by poll() after the command finishes.
+        if (!pending_valid)
+        {
+            uint32_t len = strlen(cmd_line);
+            if (len >= CONSOLE_INPUT_MAX)
+                len = CONSOLE_INPUT_MAX - 1;
+            memcpy(pending_line, cmd_line, len);
+            pending_line[len] = '\0';
+            pending_valid = true;
+        }
+
         list::clear(input_buf);
         input_pos = 0;
-        screen::printf("\n\r%s> ", fat32::cwd_path());
         return;
     }
 
@@ -437,6 +456,35 @@ namespace console
         cmd_table[cmd_count].name = name;
         cmd_table[cmd_count].handler = handler;
         cmd_count++;
+    }
+
+    void poll()
+    {
+        if (!pending_valid)
+            return;
+
+        pending_valid = false;
+
+        // Copy the line so exec() can parse it (parse_line mutates the buffer)
+        char local_line[CONSOLE_INPUT_MAX];
+        uint32_t len = strlen(pending_line);
+        if (len >= CONSOLE_INPUT_MAX)
+            len = CONSOLE_INPUT_MAX - 1;
+        memcpy(local_line, pending_line, len);
+        local_line[len] = '\0';
+
+        // Commands like `exec` and `mount` do heavy synchronous work (USB
+        // polling, page mapping). The USB driver busy-waits and assumes it
+        // won't be preempted by expensive IRQ work (e.g. screen::flush in
+        // the PIT handler). Disable interrupts for the duration so the
+        // polling completes promptly. We are in the main loop (process
+        // context), not an IRQ, so this is safe and brief.
+        asm volatile("cli");
+        exec(local_line);
+        asm volatile("sti");
+
+        // Print the prompt now that the command has finished
+        screen::printf("\n\r%s> ", fat32::cwd_path());
     }
 
     void init()

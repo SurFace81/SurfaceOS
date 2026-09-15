@@ -21,6 +21,12 @@ namespace console
 
     uint32_t command_count();
     const char* command_name(uint32_t index);
+
+    // Run any command queued by the keyboard handler. Must be called from
+    // the main kernel loop (process context), never from an interrupt.
+    // Commands like `exec` do heavy synchronous work (USB I/O, page
+    // mapping) and must not run inside the keyboard IRQ.
+    void poll();
 } // namespace console
 
 #endif

@@ -47,5 +47,10 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     console::init();
     
     while (1)
+    {
+        // Execute any command queued by the keyboard handler (e.g. `exec`).
+        // Runs in process context, not in the keyboard IRQ.
+        console::poll();
         asm volatile("hlt");
+    }
 }

@@ -12,7 +12,6 @@
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/uart.h"
-#include "../../include/cpu/irq.h"
 
 extern "C" void process_enter_user(uint64_t entry, uint64_t user_stack, uint64_t arg);
 extern "C" void process_return_to_kernel(void);
@@ -191,13 +190,9 @@ namespace process
         screen::push_viewport(screen::vp_x(), screen::vp_y() + bar_h,
                               screen::vp_w(), screen::vp_h() - bar_h);
 
-        // We are typically invoked from inside the keyboard IRQ handler
-        // (shell on_key -> exec). The PIC EOI for that key is normally sent
-        // only after the IRQ handler returns, which won't happen until the
-        // app exits. Acknowledge IRQ1 now so the PIC keeps delivering keys.
-        irq::pic_send_eoi(IRQ1_KEYBOARD);
-
-        // Enter ring 3; returns here when the app exits or faults
+        // Enter ring 3; returns here when the app exits or faults.
+        // run() is invoked from the main kernel loop (process context),
+        // so interrupts and the PIC EOI work normally.
         process_enter_user(entry, USER_STACK_TOP, USER_INFO_VADDR);
 
         screen::pop_viewport();
