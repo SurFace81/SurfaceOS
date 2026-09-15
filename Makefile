@@ -133,10 +133,13 @@ $(SDK_LIB): $(SDK_LIB_OBJ)
 
 
 # Apps: compile + link entry.o first, then app object, then pull the rest from libsfos.a
+# -z max-page-size=0x1000: keep the ELF compact. The x86_64-elf default is a
+# 2 MB segment alignment, which pads a 10 KB app to ~1 MB of zeros on disk.
+# That made read_file pull hundreds of clusters over USB and froze the shell.
 bin/apps/%.bin: src/apps/%.cpp $(SDK_ENTRY) $(SDK_LIB)
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) -c -o bin/apps/$*.o $<
-	$(LD) -m elf_x86_64 -T src/sdk/linker.ld -nostdlib -o $@ \
+	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/linker.ld -nostdlib -o $@ \
 		$(SDK_ENTRY) bin/apps/$*.o -Lbin/sdk -lsfos
 
 

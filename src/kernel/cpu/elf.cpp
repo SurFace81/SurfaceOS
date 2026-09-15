@@ -5,7 +5,6 @@
 #include "../../include/cpu/paging.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/memory.h"
-#include "../../include/drivers/uart.h"
 
 namespace elf
 {
@@ -80,7 +79,10 @@ namespace elf
             if (phdr->p_type != PT_LOAD)
                 continue;
 
-            if (phdr->p_offset + phdr->p_filesz > image_size)
+            // Bounds check only the file-backed part. A pure-BSS segment
+            // (filesz == 0) may have p_offset beyond the end of the file;
+            // that is valid and must not be rejected.
+            if (phdr->p_filesz > 0 && phdr->p_offset + phdr->p_filesz > image_size)
                 return result;
 
             // Build page flags from segment permissions
