@@ -20,6 +20,7 @@ static struct
     uint32_t sym_count;
 
     uint32_t text_color;
+    uint32_t pixel_format;  // 0 = RGBX, 1 = BGRX (assumed for BitMask/BltOnly)
 
     bool cursor_visible;
     bool cursor_drawn;
@@ -47,6 +48,28 @@ static inline uint32_t max_rows()
 static inline uint32_t* pixel_at(uint32_t x, uint32_t y)
 {
     return (uint32_t*)(scr.buffer + (scr.vp_x + x + (scr.vp_y + y) * scr.pixels_per_scanline) * BBP);
+}
+
+// Convert an internal 0x00RRGGBB color to the native framebuffer format.
+//
+// Two things matter on real hardware (QEMU is forgiving, a Surface panel
+// is not):
+//  1. The high byte is the reserved/X channel. Some GOP implementations
+//     blend it as alpha, so pixels written with X=0x00 (black bg, GRAY
+//     text 0x9E...) become (semi)transparent: white title bar without
+//     text, invisible console characters, only the cursor visible
+//     (invert_cell already forced X=0xFF). Always force X=0xFF.
+//  2. Internal colors are BGRX byte order. On an RGBX panel, swap R and B.
+static inline uint32_t native_color(uint32_t c)
+{
+    if (scr.pixel_format == 0) // RGBX
+        c = (c & 0x0000FF00) | ((c & 0x000000FF) << 16) | ((c & 0x00FF0000) >> 16);
+    return c | 0xFF000000;
+}
+
+static inline void put_px(uint32_t* px, uint32_t c)
+{
+    *px = native_color(c);
 }
 
 static void invert_cell(uint32_t col, uint32_t row)
@@ -94,7 +117,7 @@ static void draw_char(char chr, uint32_t col, uint32_t row)
         for (uint32_t x = 0; x < scr.sym_w; x++)
         {
             uint32_t color = (glyph[y] & (0x80 >> x)) ? scr.text_color : 0x00000000;
-            *pixel_at(ox + x, oy + y) = color;
+            put_px(pixel_at(ox + x, oy + y), color);
         }
 }
 
@@ -102,7 +125,7 @@ static void erase_rect(uint32_t px, uint32_t py, uint32_t w, uint32_t h)
 {
     for (uint32_t y = py; y < py + h && y < scr.vp_height; y++)
         for (uint32_t x = px; x < px + w && x < scr.vp_width; x++)
-            *pixel_at(x, y) = 0x00000000;
+            put_px(pixel_at(x, y), 0x00000000);
 }
 
 static void utoa(uint64_t v, char* b, uint32_t base)
@@ -194,7 +217,7 @@ namespace screen
 {
     void init(BOOT_HEADER* header)
     {
-        scr.buffer = (uint8_t*)0x600000;
+        scr.buffer = (uint8_t*)SCREEN_BACKBUFFER_ADDR;
         scr.vram   = (uint8_t*)0x8000000; 
         scr.buffer_size = header->FrameBufferSize;
         scr.pixels_per_scanline = header->ScreenPixelsPerScanLine;
@@ -205,6 +228,7 @@ namespace screen
         scr.sym_h = header->FontSymbolSizeY;
         scr.sym_count = header->FontNumberOfSymbols;
         scr.text_color = Colors::GRAY;
+        scr.pixel_format = header->ScreenPixelFormat;
         scr.cursor_x = 0;
         scr.cursor_y = 0;
         scr.cursor_visible = false;
@@ -261,9 +285,19 @@ namespace screen
         scr.cursor_y = 0;
     }
 
+    uint32_t title_bar_height()
+    {
+        // ~2.5% of the screen height, but never smaller than the glyph
+        // height + 4px padding. On a 2K panel this gives a bar that is
+        // actually visible instead of a thin 20px strip.
+        uint32_t min_h = scr.sym_h + 4;
+        uint32_t pct_h = scr.height * 25 / 1000;   // 2.5%
+        return pct_h > min_h ? pct_h : min_h;
+    }
+
     void draw_title_bar(const char* title)
     {
-        uint32_t bar_height = scr.sym_h + 4; // font height + small padding
+        uint32_t bar_height = title_bar_height();
 
         // Fill bar with gray
         for (uint32_t y = scr.vp_y; y < scr.vp_y + bar_height; y++)
@@ -271,7 +305,7 @@ namespace screen
             {
                 uint32_t* px = (uint32_t*)(scr.buffer +
                     (x + y * scr.pixels_per_scanline) * BBP);
-                *px = Colors::GRAY;
+                put_px(px, Colors::GRAY);
             }
 
         // Measure title length
@@ -279,12 +313,12 @@ namespace screen
         while (title[len])
             len++;
 
-        // Center text horizontally
+        // Center text horizontally and vertically inside the bar
         uint32_t text_px_w = len * scr.sym_w;
         uint32_t text_x = scr.vp_x + (scr.vp_width - text_px_w) / 2;
-        uint32_t text_y = scr.vp_y + 2; // 2px top padding
+        uint32_t text_y = scr.vp_y + (bar_height - scr.sym_h) / 2;
 
-        // Draw each character in black on white background
+        // Draw each character in black on the gray background
         char* glyph;
         for (uint32_t i = 0; i < len; i++)
         {
@@ -296,8 +330,8 @@ namespace screen
                         (text_x + i * scr.sym_w + gx +
                         (text_y + gy) * scr.pixels_per_scanline) * BBP);
                     if (glyph[gy] & (0x80 >> gx))
-                        *px = 0x00000000; // black text
-                    // else leave white
+                        put_px(px, 0x00000000); // black text
+                    // else leave gray
                 }
         }
     }
@@ -336,13 +370,19 @@ namespace screen
 
     void flush()
     {
-        uint64_t* dst = (uint64_t*)scr.vram;
-        uint64_t* src = (uint64_t*)scr.buffer;
+        // rep movsq: ~15 MB per flush at 2K resolution, a naive 64-bit
+        // loop is far too slow (this runs from the PIT IRQ ~45 times a
+        // second and starved everything else on real hardware).
+        // NOTE: use local pointers - rep movsq advances RSI/RDI and the
+        // "+S"/"+D" constraints would write the shifted values back into
+        // scr.buffer/scr.vram.
+        uint8_t* src = scr.buffer;
+        uint8_t* dst = scr.vram;
         uint64_t count = scr.buffer_size / 8;
-        for (uint64_t i = 0; i < count; i++) 
-        {
-            dst[i] = src[i];
-        }            
+        asm volatile("rep movsq"
+                     : "+S"(src), "+D"(dst), "+c"(count)
+                     :
+                     : "memory");
     }
 
     void clear()
@@ -351,7 +391,7 @@ namespace screen
 
         for (uint32_t y = 0; y < scr.vp_height; y++)
             for (uint32_t x = 0; x < scr.vp_width; x++)
-                *pixel_at(x, y) = 0x00000000;
+                put_px(pixel_at(x, y), 0x00000000);
 
         scr.cursor_x = 0;
         scr.cursor_y = 0;
@@ -381,7 +421,7 @@ namespace screen
         // Clear last row
         for (uint32_t y = 0; y < line_h; y++)
             for (uint32_t x = 0; x < scr.vp_width; x++)
-                *pixel_at(x, (row_count - 1) * line_h + y) = 0;
+                put_px(pixel_at(x, (row_count - 1) * line_h + y), 0);
 
         scr.cursor_x = 0;
         scr.cursor_y = row_count - 1;
@@ -400,12 +440,12 @@ namespace screen
     {
         cursor_undraw();
 
-        for (uint32_t y = 0; y < scr.height; y++)
-            for (uint32_t x = 0; x < scr.width; x++)
+        for (uint32_t y = 0; y < scr.vp_height; y++)
+            for (uint32_t x = 0; x < scr.vp_width; x++)
             {
                 uint32_t* px = pixel_at(x, y);
-                if (*px != 0x00000000)
-                    *px = (uint32_t)color;
+                if (*px != native_color(0x00000000))
+                    put_px(px, (uint32_t)color);
             }
         scr.text_color = color;
 

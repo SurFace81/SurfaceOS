@@ -31,6 +31,9 @@ typedef struct {
     uint64_t KernelSize;
     uint64_t StartDataAddress;
     uint64_t StartDataSize;
+    // GOP pixel format (EFI_GRAPHICS_PIXEL_FORMAT):
+    // 0 = RGBX, 1 = BGRX, 2 = BitMask, 3 = BltOnly
+    uint32_t ScreenPixelFormat;
 } BOOT_HEADER;
 
 typedef struct {

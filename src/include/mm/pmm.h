@@ -8,10 +8,13 @@
 // Note: independent of paging::PAGE_SIZE_BYTES (which may use huge pages).
 #define FRAME_SIZE          0x1000ULL
 
-// 1 MB bitmap at 8 MB physical: above the bootloader's 5 MB paging
-// reservation (0x300000..0x800000), below the kernel heap (0x2000000).
-// Covers up to 32 GB of RAM.
-#define PMM_BITMAP_ADDR     0x800000ULL
+// 1 MB bitmap at 48 MB physical. It MUST sit above every static kernel
+// region: boot data/kernel/paging (0..0x800000), kernel heap
+// (0x2000000..0x2900000) and any large contiguous PMM allocations the
+// heap growth makes. The old location (0x800000) was destroyed by the
+// screen back buffer on high-resolution displays, which made the frame
+// allocator hand out in-use memory. Covers up to 32 GB of RAM.
+#define PMM_BITMAP_ADDR     0x3000000ULL
 #define PMM_BITMAP_SIZE     0x100000ULL
 
 namespace pmm

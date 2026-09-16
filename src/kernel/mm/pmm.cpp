@@ -7,6 +7,7 @@
 #include "../../include/boot/boot.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/drivers/screen.h"   // SCREEN_BACKBUFFER_ADDR
 
 // Static kernel-owned regions not covered by the memory map
 #define PMM_LOW_RESERVE_END     0x800000ULL   // boot data + kernel + old page tables
@@ -109,6 +110,12 @@ namespace pmm
                 boot_header->StartDataAddress + boot_header->StartDataSize);
         reserve((uint64_t)boot_header->FrameBufferAddress,
                 (uint64_t)boot_header->FrameBufferAddress + boot_header->FrameBufferSize);
+
+        // The screen driver keeps a full-frame back buffer at SCREEN_BACKBUFFER_ADDR.
+        // On a 2K display it spans ~15 MB and would otherwise be handed out by
+        // the frame allocator (this corrupted page tables on real hardware).
+        reserve(SCREEN_BACKBUFFER_ADDR,
+                SCREEN_BACKBUFFER_ADDR + boot_header->FrameBufferSize);
 
         total_frames = max_phys / FRAME_SIZE;
 

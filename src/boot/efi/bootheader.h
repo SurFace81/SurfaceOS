@@ -31,6 +31,9 @@ typedef struct {
     UINT64 KernelSize;
     UINT64 StartDataAddress;
     UINT64 StartDataSize;
+    // GOP pixel format (EFI_GRAPHICS_PIXEL_FORMAT):
+    // 0 = RGBX, 1 = BGRX, 2 = BitMask, 3 = BltOnly
+    UINT32 ScreenPixelFormat;
 } SFOS_BOOT_HEADER;
 
 #pragma pack(push, 1)

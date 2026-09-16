@@ -186,7 +186,7 @@ namespace process
         }
         screen::draw_title_bar(name);
 
-        uint32_t bar_h = 20; // sym_h(16) + 4px padding
+        uint32_t bar_h = screen::title_bar_height();
         screen::push_viewport(screen::vp_x(), screen::vp_y() + bar_h,
                               screen::vp_w(), screen::vp_h() - bar_h);
 

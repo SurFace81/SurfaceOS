@@ -134,6 +134,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     BootHeader.ScreenWidth = newBuffer->Width;
     BootHeader.ScreenHeight = newBuffer->Height;
     BootHeader.ScreenPixelsPerScanLine = newBuffer->PixelsPerScanLine;
+    BootHeader.ScreenPixelFormat = newBuffer->PixelFormat;
 
     // Load STDFont and set STDFont entry in BootHeader
     UINT64 FontAddress = 0x4000;

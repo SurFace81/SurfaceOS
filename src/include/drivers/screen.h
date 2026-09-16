@@ -4,6 +4,11 @@
 #include "../cpu/types.h"
 #include "../boot/boot.h"
 
+// Physical address of the full-frame back buffer used by the screen driver.
+// Must be reserved in the PMM (see pmm::init) so the frame allocator never
+// hands this memory out.
+#define SCREEN_BACKBUFFER_ADDR  0x600000ULL
+
 enum Colors
 {
     BLUE = 0x000000FF,
@@ -13,7 +18,7 @@ enum Colors
     MAGENTA = 0x00FF00FF,
     YELLOW = 0x00FFFF00,
     WHITE = 0x00FFFFFF,
-    GRAY = 0x9E9E9EA8,
+    GRAY = 0x009E9E9E,
     LIGHT_BLUE = 0x0000AFFF,
     LIGHT_GREEN = 0x0000FFAA,
     LIGHT_AQUA = 0x00FFAAAA,
@@ -59,6 +64,7 @@ namespace screen
     void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void pop_viewport();
     void draw_title_bar(const char* title);
+    uint32_t title_bar_height();  // px, ~2.5% of screen height
 
     uint32_t vp_x();
     uint32_t vp_y();
