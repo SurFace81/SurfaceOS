@@ -149,16 +149,21 @@ void free(void* ptr)
     BlockHeader* block = (BlockHeader*)ptr - 1;
     block->free = true;
 
-    // Coalesce adjacent free blocks
+    // Coalesce neighbours - but only ones that are really adjacent in memory.
+    // brk() usually extends the heap contiguously, yet nothing guarantees it
+    // (a failed grow leaves a gap), and merging across a gap would hand out
+    // memory that is not part of either block.
     BlockHeader* current = heap_start;
     while (current)
     {
-        if (current->free && current->next && current->next->free)
+        BlockHeader* next = current->next;
+        if (current->free && next && next->free &&
+            (uint8_t*)(current + 1) + current->size == (uint8_t*)next)
         {
-            current->size += HEADER_SIZE + current->next->size;
-            current->next = current->next->next;
+            current->size += HEADER_SIZE + next->size;
+            current->next = next->next;
             continue;
         }
-        current = current->next;
+        current = next;
     }
 }

@@ -64,9 +64,15 @@ namespace uart
         }
         else
         {
-            uint64_t page_base = bar.base & ~(0x200000ULL - 1);
-            paging::allocate_pages(page_base, page_base, 1);
-            mmio_base = (volatile uint8_t*)bar.base;
+            // Mapped uncacheable in the kernel window. The identity map is
+            // write-back, and a write-back mapping of device registers only
+            // works by accident, when the firmware MTRRs happen to mark the
+            // range UC and win the combining rule.
+            uint64_t virt = paging::map_mmio_region(bar.base, 0x1000);
+            if (!virt)
+                return false;
+
+            mmio_base = (volatile uint8_t*)virt;
             reg_stride = 4;
             backend = PCI_MMIO;
         }

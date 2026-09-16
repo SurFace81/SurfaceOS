@@ -13,7 +13,11 @@ typedef uint64_t            size_t;
 typedef uint64_t            uintptr_t;
 
 #ifndef NULL
+#ifdef __cplusplus
+#define NULL nullptr        // ((void*)0) does not convert to other pointers in C++
+#else
 #define NULL ((void*)0)
+#endif
 #endif
 
 #endif

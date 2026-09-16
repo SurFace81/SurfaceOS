@@ -153,8 +153,18 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     //SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, 4, &BootHeaderAddress);
     SystemTable->BootServices->CopyMem((void*)BootHeaderAddress, (void*)&BootHeader, sizeof(BootHeader));
 
-    // Load a kernel
+    // Load a kernel. The pages are claimed from the firmware first: loading
+    // into an address the firmware still considers free means anything it
+    // decides to allocate afterwards can land on top of the kernel image.
+    // 1 MB covers the image plus its .bss, and linker.ld asserts the kernel
+    // stops before the page tables at 0x300000.
     BootHeader.KernelAddress = 0x200000;  // <---Bug! this is not copied! Must be before `Copy Bootloader`.
+    EFI_PHYSICAL_ADDRESS KernelSpace = (EFI_PHYSICAL_ADDRESS)BootHeader.KernelAddress;
+    if (SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData,
+                                                 0x100000 / 0x1000, &KernelSpace) != EFI_SUCCESS) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"Kernel memory allocate error!\n\rFatal error...");
+        while(1){}
+    }
     LoadFile(u"kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize);
 
     // Reset screen and disbale cursor again

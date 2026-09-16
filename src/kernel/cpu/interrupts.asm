@@ -45,40 +45,45 @@ load_idt:
     pop rax
 %endmacro
 
-; Macro to create exception handler without error code
-%macro EXCEPTION_HANDLER_NO_ERROR 1
-global exception_handler_%1
-exception_handler_%1:
+; Exception stubs.
+;
+; Only some vectors push an error code, so the no-error variant pushes a zero
+; in its place. From SAVE_REGS onwards both macros see the identical layout:
+;
+;   rsp + 0        saved GPRs (15 qwords)
+;   rsp + 15*8     error code
+;   rsp + 16*8     RIP, CS, RFLAGS, RSP, SS
+;
+; handle_exception(vector, frame, error_code)
+
+%macro EXCEPTION_BODY 1
     SAVE_REGS
-    
-    ; Pass exception number and stack frame pointer to C handler
-    mov rdi, %1                ; Exception number
+
+    mov rdi, %1                ; vector
     mov rsi, rsp
-    add rsi, 15*8              ; Pointer to exception stack frame (RIP, CS, RFLAGS, etc.)
+    add rsi, 16*8              ; -> RIP
+    mov rdx, [rsp + 15*8]      ; error code
     extern handle_exception
     call handle_exception
-    
+
     RESTORE_REGS
+    add rsp, 8                 ; drop the error code
     iretq
 %endmacro
 
-; Macro to create exception handler with error code
+; Vector without a CPU-pushed error code
+%macro EXCEPTION_HANDLER_NO_ERROR 1
+global exception_handler_%1
+exception_handler_%1:
+    push qword 0               ; placeholder error code
+    EXCEPTION_BODY %1
+%endmacro
+
+; Vector with a CPU-pushed error code
 %macro EXCEPTION_HANDLER_WITH_ERROR 1
 global exception_handler_%1
 exception_handler_%1:
-    ; Error code is already on stack, we need to remove it later
-    SAVE_REGS
-
-    ; Pass exception number and stack frame pointer to C handler
-    mov rdi, %1                ; Exception number
-    mov rsi, rsp
-    add rsi, 15*8 + 8          ; Pointer to exception stack frame (skip error code)
-    extern handle_exception
-    call handle_exception
-
-    RESTORE_REGS
-    add rsp, 8                 ; Remove error code from stack
-    iretq
+    EXCEPTION_BODY %1
 %endmacro
 
 ; IRQ handler macro
@@ -170,36 +175,3 @@ syscall_entry:
 
     RESTORE_REGS
     iretq
-
-global jump_to_program
-jump_to_program:
-    push rbp
-    push rbx
-    push r12
-    push r13
-    push r14
-    push r15
-    mov [saved_kernel_rsp], rsp
-
-    mov rax, rdi        ; entry point
-    mov rsp, rsi        ; program stack
-    mov rdi, rdx        ; arg = program_info*
-
-    call rax
-
-    ; Program returned via ret
-    jmp return_to_kernel
-
-global return_to_kernel
-return_to_kernel:
-    mov rsp, [saved_kernel_rsp]
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rbx
-    pop rbp
-    ret
-
-section .bss
-saved_kernel_rsp: resq 1

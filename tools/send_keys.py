@@ -3,7 +3,7 @@
 
 Usage: send_keys.py <monitor_socket> "<text>"
 
-Text: printable ASCII; \\n = Enter, \\t = Tab, \\b = Backspace, \\e = Esc.
+Text: printable ASCII; \\n = Enter, \\t = Tab, \\b = Backspace, \\x1b = Esc.
 """
 import socket
 import sys
@@ -14,7 +14,7 @@ CHAR_TO_KEY = {
     '[': 'bracket_left', ']': 'bracket_right',
     '\\': 'backslash', ';': 'semicolon', "'": 'apostrophe',
     ',': 'comma', '.': 'dot', '/': 'slash',
-    '\n': 'ret', '\t': 'tab', '\b': 'backspace', '\e': 'esc',
+    '\n': 'ret', '\t': 'tab', '\b': 'backspace', '\x1b': 'esc',
 }
 
 

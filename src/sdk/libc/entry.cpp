@@ -1,17 +1,14 @@
 #include "../include/stdlib.h"
 #include "../include/stdio.h"
+#include "../include/abi/process.h"
 
-struct program_info
-{
-    uint64_t heap_start;
-    uint64_t heap_size;
-};
-
-extern int main();
+// Apps may define `int main()` or `int main(int argc, char** argv)`: main is
+// never name-mangled, and passing arguments a function ignores is harmless in
+// the SysV calling convention.
+extern int main(int argc, char** argv);
 
 extern "C" void _start(program_info* info)
 {
     heap_init((void*)info->heap_start, info->heap_size);
-    main();
-    exit(0);
+    exit(main((int)info->argc, info->argv));
 }

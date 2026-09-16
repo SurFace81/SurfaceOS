@@ -9,6 +9,48 @@ void print(const char* str)
     syscall(SYS_WRITE, (uint64_t)str, 0, 0);
 }
 
+void print_u64(uint64_t value)
+{
+    char buf[21];
+    int pos = 20;
+    buf[pos] = '\0';
+    do
+    {
+        buf[--pos] = (char)('0' + value % 10);
+        value /= 10;
+    } while (value);
+    print(buf + pos);
+}
+
+void print_i64(sint64_t value)
+{
+    if (value < 0)
+    {
+        print("-");
+        print_u64((uint64_t)0 - (uint64_t)value);
+        return;
+    }
+    print_u64((uint64_t)value);
+}
+
+void print_hex64(uint64_t value)
+{
+    char buf[19];
+    buf[0] = '0';
+    buf[1] = 'x';
+    int pos = 18;
+    buf[pos] = '\0';
+    do
+    {
+        uint8_t d = value & 0xF;
+        buf[--pos] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+        value >>= 4;
+    } while (value);
+    while (pos > 2)
+        buf[--pos] = '0';
+    print(buf);
+}
+
 void clear() 
 {
     syscall(SYS_CLEAR, 0, 0, 0);

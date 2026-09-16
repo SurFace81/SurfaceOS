@@ -1,16 +1,26 @@
 // Physical Memory Manager: bitmap-based 4 KiB frame allocator.
-// Builds the free/used picture from the bootloader memory map and
-// reserves regions that the bootloader/kernel use but that the map
-// reports as free.
+//
+// Builds the free/used picture from the bootloader memory map and reserves
+// the regions the boot chain uses but that the map reports as free.
+//
+// Two invariants matter:
+//   * A frame is only ever handed out if it is below paging::identity_limit().
+//     The kernel reaches every frame it allocates (page tables, heap, DMA
+//     buffers, the screen back buffer) through the identity map, so an
+//     allocation the identity map does not cover is unusable memory.
+//   * Allocation starts from a rolling cursor, not from frame 0. The linear
+//     rescan cost nothing at 128 MB in QEMU and turned into millions of
+//     wasted iterations per call on a machine with real RAM.
 
 #include "../../include/mm/pmm.h"
 #include "../../include/boot/boot.h"
 #include "../../include/mm/memory.h"
+#include "../../include/cpu/paging.h"
 #include "../../include/drivers/uart.h"
-#include "../../include/drivers/screen.h"   // SCREEN_BACKBUFFER_ADDR
 
-// Static kernel-owned regions not covered by the memory map
-#define PMM_LOW_RESERVE_END     0x800000ULL   // boot data + kernel + old page tables
+// Provided by linker.ld; end of the kernel image + .bss.
+extern "C" uint8_t __kernel_end[];
+
 #define PMM_HEAP_START          0x2000000ULL
 #define PMM_HEAP_SIZE           (9 * 1024 * 1024)
 
@@ -22,6 +32,7 @@ namespace pmm
     static uint64_t total_frames = 0;
     static uint64_t used_frames  = 0;
     static uint64_t max_phys     = 0;
+    static uint64_t cursor       = 0;   // next frame index to try
     static bool     initialized  = false;
 
     static inline bool bit_get(uint64_t idx)
@@ -98,24 +109,31 @@ namespace pmm
                 mark_free(f);
         }
 
-        // Clamp to bitmap capacity (32 GB)
+        // Never manage memory the kernel cannot address through the identity
+        // map, and never more than the bitmap can describe.
+        uint64_t id_limit = paging::identity_limit();
+        if (max_phys > id_limit)
+            max_phys = id_limit;
         if (max_phys > bitmap_frames * FRAME_SIZE)
             max_phys = bitmap_frames * FRAME_SIZE;
 
         // Regions used by the boot chain that the map reports as free:
-        reserve(0, PMM_LOW_RESERVE_END);                                  // boot data, kernel, old page tables
+        reserve(0, PMM_LOW_RESERVE_END);                                  // boot data, kernel, page tables
         reserve(PMM_BITMAP_ADDR, PMM_BITMAP_ADDR + PMM_BITMAP_SIZE);      // this bitmap
-        reserve(PMM_HEAP_START, PMM_HEAP_START + PMM_HEAP_SIZE);          // kernel heap
+        reserve(PMM_HEAP_START, PMM_HEAP_START + PMM_HEAP_SIZE);          // initial kernel heap
         reserve(boot_header->StartDataAddress,
                 boot_header->StartDataAddress + boot_header->StartDataSize);
         reserve((uint64_t)boot_header->FrameBufferAddress,
                 (uint64_t)boot_header->FrameBufferAddress + boot_header->FrameBufferSize);
 
-        // The screen driver keeps a full-frame back buffer at SCREEN_BACKBUFFER_ADDR.
-        // On a 2K display it spans ~15 MB and would otherwise be handed out by
-        // the frame allocator (this corrupted page tables on real hardware).
-        reserve(SCREEN_BACKBUFFER_ADDR,
-                SCREEN_BACKBUFFER_ADDR + boot_header->FrameBufferSize);
+        // The blanket 0..PMM_LOW_RESERVE_END reserve is supposed to cover the
+        // kernel image, but say so explicitly so a kernel that outgrows it
+        // fails loudly rather than getting its own .bss handed out as a frame.
+        uint64_t kernel_end = (uint64_t)__kernel_end;
+        reserve(0x200000, kernel_end);
+        if (kernel_end > PMM_LOW_RESERVE_END)
+            uart::printf("pmm: WARNING kernel image ends at %llx, past the low reserve\n",
+                         kernel_end);
 
         total_frames = max_phys / FRAME_SIZE;
 
@@ -128,6 +146,7 @@ namespace pmm
                 used_frames++;
         }
 
+        cursor = 0;
         initialized = true;
 
         uart::printf("pmm: %llu MB managed, %llu frames free / %llu total\n",
@@ -140,11 +159,20 @@ namespace pmm
             return 0;
 
         uint64_t limit = max_phys / FRAME_SIZE;
-        for (uint64_t i = 0; i < limit; i++)
+
+        // Two passes: from the cursor to the end, then from 0 to the cursor.
+        for (uint64_t pass = 0; pass < 2; pass++)
         {
-            if (!bit_get(i))
+            uint64_t start = (pass == 0) ? cursor : 0;
+            uint64_t stop  = (pass == 0) ? limit  : cursor;
+
+            for (uint64_t i = start; i < stop; i++)
             {
+                if (bit_get(i))
+                    continue;
+
                 mark_used(i);
+                cursor = i + 1;
                 return i * FRAME_SIZE;
             }
         }
@@ -158,28 +186,38 @@ namespace pmm
         if (!initialized || n == 0)
             return 0;
 
+        if (n == 1)
+            return alloc_frame();
+
         uint64_t limit = max_phys / FRAME_SIZE;
-        uint64_t run = 0;
 
-        for (uint64_t i = 0; i < limit; i++)
+        for (uint64_t pass = 0; pass < 2; pass++)
         {
-            if (bit_get(i))
-            {
-                run = 0;
-                continue;
-            }
+            uint64_t start = (pass == 0) ? cursor : 0;
+            uint64_t stop  = (pass == 0) ? limit  : cursor;
+            uint64_t run   = 0;
 
-            run++;
-            if (run == n)
+            for (uint64_t i = start; i < stop; i++)
             {
-                uint64_t base = (i - n + 1) * FRAME_SIZE;
-                for (uint64_t j = i - n + 1; j <= i; j++)
-                    mark_used(j);
-                return base;
+                if (bit_get(i))
+                {
+                    run = 0;
+                    continue;
+                }
+
+                run++;
+                if (run == n)
+                {
+                    uint64_t first = i - n + 1;
+                    for (uint64_t j = first; j <= i; j++)
+                        mark_used(j);
+                    cursor = i + 1;
+                    return first * FRAME_SIZE;
+                }
             }
         }
 
-        uart::printf("pmm: cannot allocate %u contiguous frames\n", (uint32_t)n);
+        uart::printf("pmm: cannot allocate %llu contiguous frames\n", n);
         return 0;
     }
 
@@ -188,20 +226,22 @@ namespace pmm
         if (!initialized || phys >= max_phys)
             return;
 
-        mark_free(phys / FRAME_SIZE);
+        uint64_t idx = phys / FRAME_SIZE;
+        mark_free(idx);
+
+        // Reuse freed memory promptly instead of walking to the end first.
+        if (idx < cursor)
+            cursor = idx;
     }
 
     void free_frames(uint64_t phys, uint64_t n)
     {
-        if (!initialized)
-            return;
-
         for (uint64_t i = 0; i < n; i++)
         {
             uint64_t addr = phys + i * FRAME_SIZE;
             if (addr >= max_phys)
                 break;
-            mark_free(addr / FRAME_SIZE);
+            free_frame(addr);
         }
     }
 

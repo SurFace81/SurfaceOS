@@ -8,7 +8,10 @@ LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e ef
 GCC			= x86_64-elf-gcc
 GPP			= x86_64-elf-g++
 AR			= x86_64-elf-ar
-CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib -I./src/kernel
+CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
+			  -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
+			  -mgeneral-regs-only \
+			  -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
@@ -57,10 +60,13 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/process.o \
 				bin/kernel/cpu/process.asm.o \
 				bin/kernel/cpu/elf.o \
+				bin/kernel/cpu/features.o \
+				bin/kernel/cpu/uaccess.o \
 
 # SDK: entry.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
-SDK_FLAGS   = -c -m64 -mcmodel=large -ffreestanding -fno-exceptions -fno-rtti -nostdlib -Isrc/sdk/include
+SDK_FLAGS   = -c -m64 -mcmodel=large -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
 SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
 SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
 SDK_ENTRY   = bin/sdk/entry.o
@@ -201,6 +207,7 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
+	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o
 	@rm -rf bin/sdk/*.o bin/sdk/*.a
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h

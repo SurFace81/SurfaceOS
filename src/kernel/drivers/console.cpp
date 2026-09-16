@@ -473,15 +473,13 @@ namespace console
         memcpy(local_line, pending_line, len);
         local_line[len] = '\0';
 
-        // Commands like `exec` and `mount` do heavy synchronous work (USB
-        // polling, page mapping). The USB driver busy-waits and assumes it
-        // won't be preempted by expensive IRQ work (e.g. screen::flush in
-        // the PIT handler). Disable interrupts for the duration so the
-        // polling completes promptly. We are in the main loop (process
-        // context), not an IRQ, so this is safe and brief.
-        asm volatile("cli");
+        // Runs with interrupts enabled. This used to be wrapped in cli/sti
+        // because the xHCI driver measured its timeouts in `pause`
+        // instructions and any preemption blew through them. Those timeouts
+        // are wall-clock now (see delay_ms in xhci.cpp), which both fixes
+        // the real problem and is a hard requirement for `exec`: an app in
+        // ring 3 needs the timer and keyboard IRQs to keep arriving.
         exec(local_line);
-        asm volatile("sti");
 
         // Print the prompt now that the command has finished
         screen::printf("\n\r%s> ", fat32::cwd_path());

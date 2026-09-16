@@ -4,10 +4,11 @@
 #include "../cpu/types.h"
 #include "../boot/boot.h"
 
-// Physical address of the full-frame back buffer used by the screen driver.
-// Must be reserved in the PMM (see pmm::init) so the frame allocator never
-// hands this memory out.
-#define SCREEN_BACKBUFFER_ADDR  0x600000ULL
+// The back buffer used to live at a fixed 0x600000. That is one full frame
+// of pixels: ~15 MB on a 2K panel and ~33 MB at 4K, where it ran straight
+// into the kernel heap at 0x2000000. It is now allocated from the PMM in
+// screen::init(), so its size follows the panel instead of the other way
+// round.
 
 enum Colors
 {
@@ -60,6 +61,9 @@ namespace screen
     void set_color(Colors color);
     
     void flush();
+
+    // Virtual address the framebuffer is mapped at (kernel device window).
+    uint64_t vram_base();
 
     void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void pop_viewport();

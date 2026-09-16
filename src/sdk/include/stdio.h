@@ -7,6 +7,9 @@
 #include "abi/time.h"
 
 void print(const char* str);
+void print_u64(uint64_t value);
+void print_i64(sint64_t value);
+void print_hex64(uint64_t value);   // 0x-prefixed
 void clear();
 void set_cursor(uint32_t col, uint32_t row);
 void exit(int code);

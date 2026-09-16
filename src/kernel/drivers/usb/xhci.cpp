@@ -1,9 +1,34 @@
 #include "../../../include/drivers/usb/xhci.h"
+#include "../../../include/drivers/pit.h"
 
 // Utility functions
 
+// Every timeout in this driver is expressed in milliseconds and ends up
+// here. It used to be a fixed count of `pause` instructions, which is not a
+// unit of time: the same "500 ms" timeout was a fraction of a second on a
+// 3 GHz laptop and many seconds under QEMU's interpreter. Enumeration that
+// worked in one place would time out in the other.
+//
+// Now it waits on the PIT. That needs interrupts enabled, which is why
+// console::poll() no longer runs commands under cli.
 static void delay_ms(uint32_t ms)
 {
+    if (ms == 0)
+        return;
+
+    uint32_t hz = pit::real_frequency();
+    if (hz)
+    {
+        uint64_t target = pit::ticks() + ((uint64_t)ms * hz + 999) / 1000;
+
+        // Bounded so a stopped timer degrades into a spin rather than a hang.
+        uint64_t guard = (uint64_t)ms * 20000000ULL + 1000000ULL;
+        while (pit::ticks() < target && guard--)
+            asm volatile("pause");
+        return;
+    }
+
+    // Timer not up yet (very early init): fall back to a crude spin.
     for (uint32_t i = 0; i < ms; i++)
         for (volatile uint32_t j = 0; j < 100000; j++)
             asm volatile("pause");
@@ -66,7 +91,11 @@ static void free_xhci_memory(void* ptr)
 
 static uintptr_t xhci_virt_to_phys(void* vaddr)
 {
-    return paging::get_phys_addr((uint64_t)vaddr);
+    // DMA buffers come from kmalloc, i.e. the identity-mapped kernel heap,
+    // so this is really just an identity translation - but walk the tables
+    // rather than assume it, so a future non-identity heap cannot hand the
+    // controller a bogus bus address silently.
+    return paging::virtual_to_phys((uint64_t)vaddr);
 }
 
 static uintptr_t xhci_map_mmio(uint64_t bar_addr, uint64_t bar_size)

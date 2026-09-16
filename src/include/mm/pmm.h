@@ -5,17 +5,22 @@
 #include "../boot/boot.h"
 
 // Physical frame size managed by PMM.
-// Note: independent of paging::PAGE_SIZE_BYTES (which may use huge pages).
 #define FRAME_SIZE          0x1000ULL
 
-// 1 MB bitmap at 48 MB physical. It MUST sit above every static kernel
-// region: boot data/kernel/paging (0..0x800000), kernel heap
-// (0x2000000..0x2900000) and any large contiguous PMM allocations the
-// heap growth makes. The old location (0x800000) was destroyed by the
-// screen back buffer on high-resolution displays, which made the frame
-// allocator hand out in-use memory. Covers up to 32 GB of RAM.
+// Fixed low-memory regions the PMM must never hand out. They mirror the
+// layout documented in src/kernel/linker.ld:
+//
+//   0x000000..0x800000   boot data, font, kernel image + .bss, static page
+//                        tables. Covered wholesale by PMM_LOW_RESERVE_END.
+//   0x2000000..0x2900000 initial kernel heap (see mm/memory.cpp)
+//   0x3000000..0x3100000 this bitmap
+//
+// The screen back buffer used to be a fixed region here too. It is now
+// allocated through the PMM (screen::init), because at 4K its 33 MB ran
+// straight into the kernel heap.
+#define PMM_LOW_RESERVE_END 0x800000ULL
 #define PMM_BITMAP_ADDR     0x3000000ULL
-#define PMM_BITMAP_SIZE     0x100000ULL
+#define PMM_BITMAP_SIZE     0x100000ULL     // 1 MB -> covers 32 GB of RAM
 
 namespace pmm
 {

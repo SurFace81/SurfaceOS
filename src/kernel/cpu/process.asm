@@ -1,17 +1,21 @@
-; Ring3 entry/exit for process execution.
+; Entry into and exit from a process session.
 ;
-; process_enter_user(entry, user_stack, arg):
-;   saves kernel context, builds an iretq frame for ring 3 and jumps
-;   to the app. Returns here only after process_return_to_kernel().
+; process_enter_user(cpu_context* ctx):
+;   Saves the console's callee-saved registers and stack, then loads a full
+;   user CPU state (struct cpu_context, see process.h) and iretq's into it.
+;   Returns only through process_return_to_kernel().
+;
+;   `ctx` must lie on a stack that stays valid while it is popped; the caller
+;   places it at the top of the process kernel stack.
 ;
 ; process_return_to_kernel():
-;   restores kernel data segments and the saved kernel stack, then
-;   returns into run() (used by SYS_EXIT and user-mode fault handling).
+;   Abandons whatever trap frame is on the process kernel stack, restores the
+;   console stack saved above and returns from process_enter_user. Used when
+;   the last process of a session is gone or the session is killed.
 
 section .text
 bits 64
 
-%define USER_CS 0x23        ; GDT UserData... user code selector (0x20 | RPL 3)
 %define USER_DS 0x2B        ; user data selector (0x28 | RPL 3)
 %define KERN_DS 0x10
 
@@ -25,51 +29,37 @@ process_enter_user:
     push r15
     mov [proc_saved_rsp], rsp
 
-    mov r12, rdi            ; entry point
-    mov r13, rsi            ; user stack top
-    mov r14, rdx            ; arg (program_info*)
-
-    ; iretq frame: SS, RSP, RFLAGS, CS, RIP
-    push qword USER_DS      ; SS
-    push r13                ; RSP
-    pushfq                  ; RFLAGS
-    or qword [rsp], 0x200   ; make sure IF is set in user mode
-    push qword USER_CS      ; CS
-    push r12                ; RIP
-
-    ; Switch data segments to user mode
+    ; Data segments first: the pops below overwrite rax.
     mov ax, USER_DS
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
 
-    ; App ABI: rdi = arg, everything else zeroed
-    mov rdi, r14
-    xor rax, rax
-    xor rbx, rbx
-    xor rcx, rcx
-    xor rdx, rdx
-    xor rsi, rsi
-    xor rbp, rbp
-    xor r8, r8
-    xor r9, r9
-    xor r10, r10
-    xor r11, r11
-    xor r12, r12
-    xor r13, r13
-    xor r14, r14
-    xor r15, r15
-
+    ; cpu_context = user_regs (15 qwords, r15 first) + iret frame
+    mov rsp, rdi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
     iretq
 
 global process_return_to_kernel
 process_return_to_kernel:
-    ; Exceptions clear IF: make sure interrupts are on when control
-    ; returns to the kernel side of run()
+    ; Traps through interrupt gates clear IF; the console runs with it set.
     sti
 
-    ; Restore kernel data segments
     mov ax, KERN_DS
     mov ds, ax
     mov es, ax

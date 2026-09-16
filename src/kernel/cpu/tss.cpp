@@ -4,6 +4,14 @@
 
 static tss_t current_tss;
 
+// Dedicated stacks for the faults that cannot trust the interrupted stack.
+// 16 KiB each is plenty: nothing on these paths recurses, it only has to be
+// enough to print a diagnostic.
+#define IST_STACK_SIZE (16 * 1024)
+static uint8_t df_stack[IST_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t nmi_stack[IST_STACK_SIZE] __attribute__((aligned(16)));
+static uint8_t mc_stack[IST_STACK_SIZE] __attribute__((aligned(16)));
+
 // Fill the 16-byte GDT system descriptor for a 64-bit TSS
 static void install_gdt_entry(tss_t* tss)
 {
@@ -31,6 +39,13 @@ namespace tss
     void init()
     {
         memory::memset((uint8_t*)&current_tss, 0x00, sizeof(current_tss));
+
+        current_tss.ist1 = (uint64_t)df_stack  + IST_STACK_SIZE;
+        current_tss.ist2 = (uint64_t)nmi_stack + IST_STACK_SIZE;
+        current_tss.ist3 = (uint64_t)mc_stack  + IST_STACK_SIZE;
+
+        // iomap_base past the segment limit means "no I/O permission bitmap",
+        // so every I/O port access from ring 3 raises #GP.
         current_tss.iomap_base = sizeof(tss_t);
 
         install_gdt_entry(&current_tss);

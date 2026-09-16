@@ -718,13 +718,25 @@ static void cmd_exec(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\rUsage: exec <filename>");
+        screen::printf("\n\rUsage: exec <filename> [args...]   (Esc terminates the app)");
         return;
     }
 
+    // argv[1..] becomes the program's argv, so argv[0] is its own name.
+    int status = 0;
     screen::printf("\n\r");
-    if (!process::run(argv[1]))
+    if (!process::run(argv[1], argc - 1, argv + 1, &status))
+    {
         screen::printf("Failed to load: %s", argv[1]);
+        return;
+    }
+
+    if (status == EXIT_ESCAPE)
+        screen::printf("%s: terminated with Esc", argv[1]);
+    else if (status >= EXIT_FAULT_BASE)
+        screen::printf("%s: crashed (CPU exception %u)", argv[1], (uint32_t)(status - EXIT_FAULT_BASE));
+    else if (status != 0)
+        screen::printf("%s: exited with status %u", argv[1], (uint32_t)status);
 }
 
 namespace commands

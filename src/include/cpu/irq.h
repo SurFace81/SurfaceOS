@@ -49,12 +49,14 @@
 // IRQ handler function type
 typedef void (*irq_handler_t)(void);
 
-// Structure to hold CPU state during interrupt (x86_64)
+// Stack layout built by irq_common_stub (interrupts.asm). The GPR order must
+// match SAVE_REGS exactly - and struct user_regs in process.h, which the
+// scheduler overlays on the first 15 fields.
 struct interrupt_frame {
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;  // Additional x86_64 registers
-    uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;     // General purpose registers
-    uint64_t int_no, err_code;                      // Interrupt number and error code
-    uint64_t rip, cs, rflags, rsp, ss;              // Automatically pushed by processor
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t rbp, rdi, rsi, rdx, rcx, rbx, rax;
+    uint64_t int_no, err_code;                      // pushed by the stub
+    uint64_t rip, cs, rflags, rsp, ss;              // pushed by the CPU
 };
 
 // Functions

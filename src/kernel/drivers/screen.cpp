@@ -1,5 +1,8 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/pit.h"
+#include "../../include/drivers/uart.h"
+#include "../../include/cpu/paging.h"
+#include "../../include/mm/pmm.h"
 
 static struct
 {
@@ -217,9 +220,28 @@ namespace screen
 {
     void init(BOOT_HEADER* header)
     {
-        scr.buffer = (uint8_t*)SCREEN_BACKBUFFER_ADDR;
-        scr.vram   = (uint8_t*)0x8000000; 
-        scr.buffer_size = header->FrameBufferSize;
+        // Back buffer: normal RAM from the PMM, reachable through the
+        // identity map. Sized to the panel, so a 4K display no longer
+        // overruns whatever happened to follow a hardcoded address.
+        uint64_t fb_size = header->FrameBufferSize;
+        uint64_t frames  = (fb_size + FRAME_SIZE - 1) / FRAME_SIZE;
+        uint64_t back    = pmm::alloc_frames(frames);
+
+        if (!back)
+        {
+            uart::printf("screen: cannot allocate a %llu KB back buffer\n",
+                         fb_size / 1024);
+            while (1) asm volatile("cli; hlt");
+        }
+
+        // VRAM: mapped write-combining in the kernel device window. It used
+        // to be mapped by overwriting the identity map at virt 0x8000000,
+        // which silently aliased the RAM at physical 0x8000000 - invisible
+        // under `qemu -m 128M`, memory corruption on anything bigger.
+        scr.buffer = (uint8_t*)back;
+        scr.vram   = (uint8_t*)paging::map_framebuffer(
+                         (uint64_t)header->FrameBufferAddress, fb_size);
+        scr.buffer_size = fb_size;
         scr.pixels_per_scanline = header->ScreenPixelsPerScanLine;
         scr.width = header->ScreenWidth;
         scr.height = header->ScreenHeight;
@@ -241,6 +263,8 @@ namespace screen
 
         clear();
     }
+
+    uint64_t vram_base() { return (uint64_t)scr.vram; }
 
     uint32_t cols()  { return max_cols(); }
     uint32_t rows()  { return max_rows(); }
