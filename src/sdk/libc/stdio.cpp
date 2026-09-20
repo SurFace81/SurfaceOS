@@ -1,6 +1,7 @@
 #include "../include/stdio.h"
 #include "../include/syscall.h"
 #include "../include/abi/syscall.h"
+#include "../include/abi/time.h"
 
 static uint32_t str_len(const char* s)
 {
@@ -10,9 +11,12 @@ static uint32_t str_len(const char* s)
     return n;
 }
 
+// stdout: byte-exact write(1, ...). Not a C-string call: NULs pass through
+// and the length comes from strlen(), so print never stops early inside a
+// buffer that happens to contain zeros.
 void print(const char* str)
 {
-    syscall(SYS_WRITE, (uint64_t)str);
+    syscall(SYS_WRITE, 1, (uint64_t)str, str_len(str));
 }
 
 void print_u64(uint64_t value)
@@ -59,30 +63,30 @@ void print_hex64(uint64_t value)
 
 void clear() 
 {
-    syscall(SYS_CLEAR);
+    syscall(SYSX_CLEAR);
 }
 
 void set_cursor(uint32_t x, uint32_t y)
 {
-    syscall(SYS_SET_CURSOR, (uint64_t)x, (uint64_t)y);
+    syscall(SYSX_SET_CURSOR, (uint64_t)x, (uint64_t)y);
 }
 
 keyboard_event_t read_key()
 {
     keyboard_event_t e;
-    syscall(SYS_READ_KEY, (uint64_t)&e);
+    syscall(SYSX_READ_KEY, (uint64_t)&e);
     return e;
 }
 
 uint32_t read_line(char* buffer, uint32_t max_len)
 {
-    sint64_t r = __syscall_ret(syscall(SYS_READ_LINE, (uint64_t)buffer, (uint64_t)max_len));
+    sint64_t r = __syscall_ret(syscall(SYSX_READ_LINE, (uint64_t)buffer, (uint64_t)max_len));
     return r < 0 ? 0 : (uint32_t)r;
 }
 
 void exit(int code)
 {
-    syscall(SYS_EXIT, (uint64_t)code);
+    syscall(SYS_EXIT_GROUP, (uint64_t)code);
     while (1) {}
 }
 
@@ -90,25 +94,25 @@ void exit(int code)
 
 uint32_t write_file(const char* path, const uint8_t* data, uint32_t size)
 {
-    sint64_t r = __syscall_ret(syscall(SYS_WRITE_FILE, (uint64_t)path, (uint64_t)data, (uint64_t)size));
+    sint64_t r = __syscall_ret(syscall(SYSX_WRITE_FILE, (uint64_t)path, (uint64_t)data, (uint64_t)size));
     return r < 0 ? (uint32_t)-1 : (uint32_t)r;
 }
 
 uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size)
 {
-    sint64_t r = __syscall_ret(syscall(SYS_READ_FILE, (uint64_t)path, (uint64_t)buffer, (uint64_t)max_size));
+    sint64_t r = __syscall_ret(syscall(SYSX_READ_FILE, (uint64_t)path, (uint64_t)buffer, (uint64_t)max_size));
     return r < 0 ? (uint32_t)-1 : (uint32_t)r;
 }
 
 uint32_t stat_file(const char* path, file_stat_t* out)
 {
-    sint64_t r = __syscall_ret(syscall(SYS_STAT_FILE, (uint64_t)path, (uint64_t)out));
+    sint64_t r = __syscall_ret(syscall(SYSX_STAT_FILE, (uint64_t)path, (uint64_t)out));
     return r < 0 ? (uint32_t)-1 : (uint32_t)r;
 }
 
 uint32_t read_dir(const char* path, dir_entry_t* entries, uint32_t max_entries)
 {
-    sint64_t r = __syscall_ret(syscall(SYS_READ_DIR, (uint64_t)path, (uint64_t)entries, (uint64_t)max_entries));
+    sint64_t r = __syscall_ret(syscall(SYSX_READ_DIR, (uint64_t)path, (uint64_t)entries, (uint64_t)max_entries));
     return r < 0 ? (uint32_t)-1 : (uint32_t)r;
 }
 
@@ -116,10 +120,10 @@ uint32_t read_dir(const char* path, dir_entry_t* entries, uint32_t max_entries)
 
 void get_uptime(uptime_t* out)
 {
-    syscall(SYS_UPTIME, (uint64_t)out);
+    syscall(SYSX_UPTIME, (uint64_t)out);
 }
 
 void get_time(datetime_t* out)
 {
-    syscall(SYS_TIME, (uint64_t)out);
+    syscall(SYSX_TIME, (uint64_t)out);
 }

@@ -9,6 +9,7 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/cpu/process.h"
+#include "../../sdk/include/abi/process.h"
 
 // Built-in commands
 
@@ -731,12 +732,10 @@ static void cmd_exec(int argc, const char** argv)
         return;
     }
 
-    if (status == EXIT_ESCAPE)
-        screen::printf("%s: terminated with Esc", argv[1]);
-    else if (status >= EXIT_FAULT_BASE)
-        screen::printf("%s: crashed (CPU exception %u)", argv[1], (uint32_t)(status - EXIT_FAULT_BASE));
-    else if (status != 0)
-        screen::printf("%s: exited with status %u", argv[1], (uint32_t)status);
+    if (WIFSIGNALED(status))
+        screen::printf("%s: terminated by signal %u", argv[1], (uint32_t)WTERMSIG(status));
+    else if (WEXITSTATUS(status) != 0)
+        screen::printf("%s: exited with status %u", argv[1], (uint32_t)WEXITSTATUS(status));
 }
 
 namespace commands

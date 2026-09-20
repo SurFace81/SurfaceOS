@@ -52,6 +52,7 @@ namespace screen
     // Output
     void putc(char c);
     void write(const char* s);
+    void write(const char* s, uint64_t len);   // raw bytes, NUL included
     void printf(const char* fmt, ...);
 
     // Screen operations

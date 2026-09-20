@@ -64,36 +64,69 @@ namespace
     }
 
     // -----------------------------------------------------------------------
-    // Console output / input helpers (transitional: replaced by tty+fds)
+    // Console output / input
     // -----------------------------------------------------------------------
 
+    // write(fd, buf, count) - Linux number 1.
+    // Until the tty/fd layer lands (stage 3.5/3.6), fds 1 and 2 go straight
+    // to the console (screen + serial), byte-exact: length-driven, NULs
+    // included, no C-string interpretation.
     void sys_write(syscall_regs* regs, iret_frame*)
     {
-        // Pull the string across in page-sized bites so a long line still
-        // prints, while a string with no terminator stops at the cap.
-        char buf[257];
-        uint64_t ptr = regs->rdi;
-        uint64_t written = 0;
-        regs->rax = 0;
+        sint32_t fd = (sint32_t)regs->rdi;
+        uint64_t user_buf = regs->rsi;
+        uint64_t count = regs->rdx;
 
-        while (written < MAX_WRITE_BYTES)
+        if (fd != 1 && fd != 2)
         {
-            sint64_t r = uaccess::strncpy_from_user(buf, ptr, sizeof(buf));
-            if (r == -1)
+            set_errno(regs, EBADF);
+            return;
+        }
+        if (count == 0)
+        {
+            regs->rax = 0;
+            return;
+        }
+        if (count > MAX_WRITE_BYTES)
+        {
+            set_errno(regs, EINVAL);
+            return;
+        }
+        if (!uaccess::readable(user_buf, count))
+        {
+            set_errno(regs, EFAULT);
+            return;
+        }
+
+        // Bounce through kernel memory in page-sized bites: screen/uart must
+        // never see a user pointer (SMAP), and one 64 KiB stack buffer is
+        // not an option.
+        char buf[512];
+        uint64_t done = 0;
+        while (done < count)
+        {
+            uint64_t chunk = count - done;
+            if (chunk > sizeof(buf))
+                chunk = sizeof(buf);
+
+            if (!uaccess::copy_from_user(buf, user_buf + done, chunk))
             {
-                set_errno(regs, EFAULT);
-                return;
+                // Short write is legal; a mid-copy fault still reports what
+                // made it out. uaccess validates up-front, so this is rare.
+                break;
             }
 
-            screen::printf("%s", buf);
-            uart::printf("%s", buf);   // app output on the serial line too
-
-            if (r >= 0)             // reached the terminator
-                return;
-
-            ptr     += sizeof(buf) - 1;
-            written += sizeof(buf) - 1;
+            screen::write(buf, chunk);
+            uart::write(buf, chunk);     // app output on the serial line too
+            done += chunk;
         }
+
+        if (done == 0)
+        {
+            set_errno(regs, EFAULT);
+            return;
+        }
+        regs->rax = (sint64_t)done;
     }
 
     void sys_clear(syscall_regs* regs, iret_frame*)
@@ -372,31 +405,34 @@ namespace syscall
         for (uint32_t i = 0; i < SYSCALLX_NR_MAX; i++)
             xhandlers[i] = nullptr;
 
-        // Transitional numbering (renumbered to Linux values in step 3.0.2).
-        handlers[SYS_EXIT]       = process::sys_exit;
-        handlers[SYS_WRITE]      = sys_write;
-        handlers[SYS_SET_CURSOR] = sys_set_cursor;
-        handlers[SYS_CLEAR]      = sys_clear;
-        handlers[SYS_READ_KEY]   = process::sys_read_key;
-        handlers[SYS_READ_LINE]  = process::sys_read_line;
-        handlers[SYS_WRITE_FILE] = sys_write_file;
-        handlers[SYS_READ_FILE]  = sys_read_file;
-        handlers[SYS_STAT_FILE]  = sys_stat_file;
-        handlers[SYS_READ_DIR]   = sys_read_dir;
-        handlers[SYS_UPTIME]     = sys_uptime;
-        handlers[SYS_TIME]       = sys_time;
-        handlers[SYS_BRK]        = process::sys_brk;
-        handlers[SYS_GETPID]     = process::sys_getpid;
-        handlers[SYS_GETPPID]    = process::sys_getppid;
-        handlers[SYS_FORK]       = process::sys_fork;
-        handlers[SYS_EXEC]       = process::sys_exec;
-        handlers[SYS_WAITPID]    = process::sys_waitpid;
-        handlers[SYS_YIELD]      = process::sys_yield;
-        handlers[SYS_SLEEP]      = process::sys_sleep;
-        handlers[SYS_KILL]       = process::sys_kill;
-        handlers[SYS_MMAP]       = process::sys_mmap;
-        handlers[SYS_MUNMAP]     = process::sys_munmap;
-        handlers[SYS_MPROTECT]   = process::sys_mprotect;
+        // Linux x86_64 numbers.
+        handlers[SYS_EXIT]         = process::sys_exit;
+        handlers[SYS_EXIT_GROUP]   = process::sys_exit_group;
+        handlers[SYS_WRITE]        = sys_write;
+        handlers[SYS_BRK]          = process::sys_brk;
+        handlers[SYS_MMAP]         = process::sys_mmap;
+        handlers[SYS_MPROTECT]     = process::sys_mprotect;
+        handlers[SYS_MUNMAP]       = process::sys_munmap;
+        handlers[SYS_SCHED_YIELD]  = process::sys_yield;
+        handlers[SYS_NANOSLEEP]    = process::sys_nanosleep;
+        handlers[SYS_GETPID]       = process::sys_getpid;
+        handlers[SYS_GETPPID]      = process::sys_getppid;
+        handlers[SYS_FORK]         = process::sys_fork;
+        handlers[SYS_EXECVE]       = process::sys_execve;
+        handlers[SYS_WAIT4]        = process::sys_wait4;
+        handlers[SYS_KILL]         = process::sys_kill;
+
+        // SurfaceOS extensions (legacy; replaced by POSIX interfaces later).
+        xhandlers[SYSX_READ_KEY  - SYSCALLX_BASE] = process::sys_read_key;
+        xhandlers[SYSX_READ_LINE - SYSCALLX_BASE] = process::sys_read_line;
+        xhandlers[SYSX_SET_CURSOR - SYSCALLX_BASE] = sys_set_cursor;
+        xhandlers[SYSX_CLEAR     - SYSCALLX_BASE] = sys_clear;
+        xhandlers[SYSX_WRITE_FILE - SYSCALLX_BASE] = sys_write_file;
+        xhandlers[SYSX_READ_FILE  - SYSCALLX_BASE] = sys_read_file;
+        xhandlers[SYSX_STAT_FILE  - SYSCALLX_BASE] = sys_stat_file;
+        xhandlers[SYSX_READ_DIR   - SYSCALLX_BASE] = sys_read_dir;
+        xhandlers[SYSX_UPTIME    - SYSCALLX_BASE] = sys_uptime;
+        xhandlers[SYSX_TIME      - SYSCALLX_BASE] = sys_time;
     }
 }
 

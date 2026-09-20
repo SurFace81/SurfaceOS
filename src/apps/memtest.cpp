@@ -231,7 +231,7 @@ static void test_isolation()
     int status = -1;
     check("fork", child > 0);
     check("waitpid returns the child", waitpid(child, &status, 0) == child);
-    check("child saw its own writes", status == 22);
+    check("child saw its own writes", WIFEXITED(status) && WEXITSTATUS(status) == 22);
     check("parent memory untouched", shared_looking == 1 && heap[0] == 11);
     free(heap);
 }
@@ -247,26 +247,28 @@ static void test_uaccess()
     const uint64_t page_tables   = 0x300000;
 
     check("SYS_TIME into the PMM bitmap is refused",
-          syscall(SYS_TIME, pmm_bitmap) == -EFAULT);
+          syscall(SYSX_TIME, pmm_bitmap) == -EFAULT);
     check("SYS_UPTIME into the page tables is refused",
-          syscall(SYS_UPTIME, page_tables) == -EFAULT);
+          syscall(SYSX_UPTIME, page_tables) == -EFAULT);
     check("SYS_READ_KEY into the kernel image is refused",
-          syscall(SYS_READ_KEY, kernel_image) == -EFAULT);
-    check("SYS_WRITE of a kernel string is refused",
-          syscall(SYS_WRITE, kernel_image) == -EFAULT);
+          syscall(SYSX_READ_KEY, kernel_image) == -EFAULT);
+    check("write(1, kernel string) is refused",
+          syscall(SYS_WRITE, 1, kernel_image, 16) == -EFAULT);
     check("SYS_STAT_FILE with a kernel path is refused",
-          syscall(SYS_STAT_FILE, kernel_image, pmm_bitmap) == -EFAULT);
-    check("SYS_WAITPID status into the kernel is refused",
-          syscall(SYS_WAITPID, (uint64_t)-1, pmm_bitmap, WNOHANG) == -EFAULT);
+          syscall(SYSX_STAT_FILE, kernel_image, pmm_bitmap) == -EFAULT);
+    check("SYS_WAIT4 status into the kernel is refused",
+          syscall(SYS_WAIT4, (uint64_t)-1, pmm_bitmap, WNOHANG) == -EFAULT);
+    check("unknown syscall returns -ENOSYS",
+          syscall(9999) == -ENOSYS);
 
     static const char rodata[] = "read-only";
     datetime_t* ro = (datetime_t*)(uint64_t)rodata;
     check("SYS_TIME into our own .rodata is refused",
-          syscall(SYS_TIME, (uint64_t)ro) == -EFAULT);
+          syscall(SYSX_TIME, (uint64_t)ro) == -EFAULT);
 
     datetime_t ok;
     check("SYS_TIME into a valid buffer still works",
-          syscall(SYS_TIME, (uint64_t)&ok) == 0);
+          syscall(SYSX_TIME, (uint64_t)&ok) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -351,21 +353,22 @@ static int fault_privileged()
     return 0;
 }
 
-static void expect_fault(const char* name, int (*fn)(), int expected_status)
+static void expect_fault(const char* name, int (*fn)(), int expected_signal)
 {
     pid_t child = fork();
     if (child == 0)
         exit(fn() + 1);         // reaching this line means no fault
 
     int status = -1;
-    bool ok = child > 0 && waitpid(child, &status, 0) == child && status == expected_status;
+    bool ok = child > 0 && waitpid(child, &status, 0) == child &&
+              WIFSIGNALED(status) && WTERMSIG(status) == expected_signal;
     check(name, ok);
     if (!ok)
     {
-        print("         status ");
-        print_i64(status);
+        print("         signal ");
+        print_i64(WIFSIGNALED(status) ? WTERMSIG(status) : -1);
         print(", expected ");
-        print_i64(expected_status);
+        print_i64(expected_signal);
         print("\n");
     }
 }
@@ -374,17 +377,17 @@ static void test_faults()
 {
     section("protection faults (each in a child)");
 
-    expect_fault("write to .rodata",                fault_rodata,                EXIT_FAULT_PAGE);
-    expect_fault("write to .text",                  fault_text,                  EXIT_FAULT_PAGE);
-    expect_fault("execute on the stack (NX)",       fault_stack_exec,            EXIT_FAULT_PAGE);
-    expect_fault("execute on the heap (NX)",        fault_heap_exec,             EXIT_FAULT_PAGE);
-    expect_fault("write after mprotect(PROT_READ)", fault_readonly_after_mprotect, EXIT_FAULT_PAGE);
-    expect_fault("read PROT_NONE page",             fault_prot_none,             EXIT_FAULT_PAGE);
-    expect_fault("read kernel memory",              fault_kernel_read,           EXIT_FAULT_PAGE);
-    expect_fault("NULL dereference",                fault_null,                  EXIT_FAULT_PAGE);
-    expect_fault("use after munmap",                fault_unmapped_after_munmap, EXIT_FAULT_PAGE);
-    expect_fault("divide by zero",                  fault_divide,                EXIT_FAULT_DE);
-    expect_fault("privileged instruction (cli)",    fault_privileged,            EXIT_FAULT_GP);
+    expect_fault("write to .rodata",                fault_rodata,                SIGSEGV);
+    expect_fault("write to .text",                  fault_text,                  SIGSEGV);
+    expect_fault("execute on the stack (NX)",       fault_stack_exec,            SIGSEGV);
+    expect_fault("execute on the heap (NX)",        fault_heap_exec,             SIGSEGV);
+    expect_fault("write after mprotect(PROT_READ)", fault_readonly_after_mprotect, SIGSEGV);
+    expect_fault("read PROT_NONE page",             fault_prot_none,             SIGSEGV);
+    expect_fault("read kernel memory",              fault_kernel_read,           SIGSEGV);
+    expect_fault("NULL dereference",                fault_null,                  SIGSEGV);
+    expect_fault("use after munmap",                fault_unmapped_after_munmap, SIGSEGV);
+    expect_fault("divide by zero",                  fault_divide,                SIGFPE);
+    expect_fault("privileged instruction (cli)",    fault_privileged,            SIGSEGV);
 }
 
 // ---------------------------------------------------------------------------

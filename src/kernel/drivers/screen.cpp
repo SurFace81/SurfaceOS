@@ -499,6 +499,18 @@ namespace screen
         out_in_progress = false;
     }
 
+    void write(const char* s, uint64_t len)
+    {
+        out_in_progress = true;
+        cursor_undraw();
+        for (uint64_t i = 0; i < len; i++)
+            emit_char(s[i]);
+        scr.cursor_tick = 0;
+        if (scr.cursor_visible)
+            cursor_draw();
+        out_in_progress = false;
+    }
+
     void printf(const char* fmt, ...)
     {
         out_in_progress = true;

@@ -86,24 +86,30 @@ namespace process
 
     // --- Hooks from the trap entry points --------------------------------
 
-    // Process and memory syscalls. Arguments come from regs (rdi, rsi, rdx),
-    // the result goes into regs->rax. Each may switch to another process by
+    // Process and memory syscalls. Arguments come from regs (rdi, rsi, rdx,
+    // r10, r8, r9), the result goes into regs->rax as sint64_t: >= 0 on
+    // success, -errno on failure. Each may switch to another process by
     // rewriting regs/iret; they always return normally to the dispatcher.
-    void sys_exit     (user_regs* regs, iret_frame* iret);
-    void sys_read_key (user_regs* regs, iret_frame* iret);
-    void sys_read_line(user_regs* regs, iret_frame* iret);
-    void sys_brk      (user_regs* regs, iret_frame* iret);
-    void sys_getpid   (user_regs* regs, iret_frame* iret);
-    void sys_getppid  (user_regs* regs, iret_frame* iret);
-    void sys_fork     (user_regs* regs, iret_frame* iret);
-    void sys_exec     (user_regs* regs, iret_frame* iret);
-    void sys_waitpid  (user_regs* regs, iret_frame* iret);
-    void sys_yield    (user_regs* regs, iret_frame* iret);
-    void sys_sleep    (user_regs* regs, iret_frame* iret);
-    void sys_kill     (user_regs* regs, iret_frame* iret);
-    void sys_mmap     (user_regs* regs, iret_frame* iret);
-    void sys_munmap   (user_regs* regs, iret_frame* iret);
-    void sys_mprotect (user_regs* regs, iret_frame* iret);
+    void sys_exit      (user_regs* regs, iret_frame* iret);
+    void sys_exit_group(user_regs* regs, iret_frame* iret);
+    void sys_read_key  (user_regs* regs, iret_frame* iret);
+    void sys_read_line (user_regs* regs, iret_frame* iret);
+    void sys_brk       (user_regs* regs, iret_frame* iret);
+    void sys_getpid    (user_regs* regs, iret_frame* iret);
+    void sys_getppid   (user_regs* regs, iret_frame* iret);
+    void sys_fork      (user_regs* regs, iret_frame* iret);
+    void sys_execve    (user_regs* regs, iret_frame* iret);
+    void sys_wait4     (user_regs* regs, iret_frame* iret);
+    void sys_yield     (user_regs* regs, iret_frame* iret);
+    void sys_nanosleep (user_regs* regs, iret_frame* iret);
+    void sys_kill      (user_regs* regs, iret_frame* iret);
+    void sys_mmap      (user_regs* regs, iret_frame* iret);
+    void sys_munmap    (user_regs* regs, iret_frame* iret);
+    void sys_mprotect  (user_regs* regs, iret_frame* iret);
+
+    // Status encoding for terminate(): Linux wait(2) format.
+    inline int exit_code_status(int code) { return (code & 0xFF) << 8; }
+    inline int signal_status(int sig)     { return sig & 0x7F; }
 
     // Last step of every syscall: honours a pending Esc.
     void syscall_return(user_regs* regs, iret_frame* iret);

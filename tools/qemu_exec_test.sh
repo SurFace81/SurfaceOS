@@ -108,14 +108,14 @@ wait_session_end 1 15; result $? "hi.bin exits on Enter"
 type_cmd "exec hi.bin"
 sleep 4; key esc
 wait_session_end 2 15; result $? "Esc ends an app blocked in read_line"
-[ "$(last_status)" = "130" ]; result $? "blocked app reports status 130"
+[ "$(last_status)" = "2" ]; result $? "blocked app reports SIGINT (2)"
 
 # 3. Esc while spinning in user mode
 type_cmd "exec proctest.bin spin"
 wait_for "spinning without syscalls" 20; result $? "spinner started"
 sleep 2; key esc
 wait_session_end 3 15; result $? "Esc ends an app spinning in ring 3"
-[ "$(last_status)" = "130" ]; result $? "spinning app reports status 130"
+[ "$(last_status)" = "2" ]; result $? "spinning app reports SIGINT (2)"
 
 # 4. memtest
 type_cmd "exec memtest.bin"

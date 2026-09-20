@@ -72,7 +72,8 @@ static void test_fork_wait()
     int status = -1;
     check("fork returns the child's pid", child > 0 && child != parent);
     check("waitpid(child) returns it", waitpid(child, &status, 0) == child);
-    check("exit status 42 delivered (and child saw its parent)", status == 42);
+    check("exit status 42 delivered (and child saw its parent)",
+          WIFEXITED(status) && WEXITSTATUS(status) == 42);
     check("waiting again fails: already reaped", waitpid(child, &status, 0) == -1);
     check("waitpid with no children fails", waitpid(-1, &status, WNOHANG) == -1);
 
@@ -92,7 +93,7 @@ static void test_fork_wait()
         int s = 0;
         if (waitpid(-1, &s, 0) > 0)
         {
-            sum += s;
+            sum += WEXITSTATUS(s);
             reaped++;
         }
     }
@@ -119,7 +120,8 @@ static void test_nohang_sleep()
 
     int status = -1;
     check("WNOHANG on a running child returns 0", waitpid(child, &status, WNOHANG) == 0);
-    check("blocking waitpid then collects it", waitpid(child, &status, 0) == child && status == 3);
+    check("blocking waitpid then collects it",
+          waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 3);
 }
 
 static void test_preemption()
@@ -138,8 +140,9 @@ static void test_preemption()
 
     check("kill(spinner)", kill(spinner) == 0);
     int status = -1;
-    check("killed child reports EXIT_KILLED",
-          waitpid(spinner, &status, 0) == spinner && status == EXIT_KILLED);
+    check("killed child reports SIGKILL",
+          waitpid(spinner, &status, 0) == spinner &&
+          WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
     check("kill of a dead pid fails", kill(spinner) == -1);
 }
 
@@ -159,7 +162,7 @@ static void test_fpu()
     waitpid(child, &status, 0);
 
     check("parent result unaffected by the child", a == expect_a);
-    check("child result unaffected by the parent", status == 0);
+    check("child result unaffected by the parent", WEXITSTATUS(status) == 0);
 }
 
 static void test_exec(const char* self)
@@ -181,7 +184,7 @@ static void test_exec(const char* self)
 
     int status = -1;
     check("exec'd program ran with our argv (status 7)",
-          waitpid(child, &status, 0) == child && status == 7);
+          waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 7);
 
     char* argv[] = { NULL };
     check("exec of a missing file fails and returns", execv("NOSUCH.BIN", argv) == -1);

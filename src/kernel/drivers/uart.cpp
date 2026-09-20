@@ -251,4 +251,12 @@ namespace uart
         __builtin_va_end(args);
     }
 
+    void write(const char* s, uint64_t len)
+    {
+        if (!initialized)
+            return;
+        for (uint64_t i = 0; i < len; i++)
+            send_char(s[i]);
+    }
+
 } // namespace uart

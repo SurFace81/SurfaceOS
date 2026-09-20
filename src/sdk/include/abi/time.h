@@ -3,6 +3,13 @@
 
 #include "types.h"
 
+// Linux x86_64 (also what clock_gettime will use in stage 4).
+struct timespec
+{
+    sint64_t tv_sec;
+    sint64_t tv_nsec;
+};
+
 struct uptime_t
 {
     uint32_t hours;

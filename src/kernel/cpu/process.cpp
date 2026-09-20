@@ -20,6 +20,7 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
+#include "../../sdk/include/abi/time.h"
 
 extern "C" void process_enter_user(cpu_context* ctx);
 extern "C" void process_return_to_kernel(void);
@@ -570,11 +571,13 @@ namespace process
 
     static void kill_session()
     {
+        // Esc ends the session: every process dies as if by SIGINT, which is
+        // what a terminal interrupt would deliver in Linux.
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
             if (p->state == State::Runnable || p->state == State::Blocked)
-                terminate(p, EXIT_ESCAPE);
+                terminate(p, signal_status(SIGINT));
         }
     }
 
@@ -758,12 +761,25 @@ namespace process
         reschedule(regs, iret);
     }
 
+    // Map a CPU exception vector to the Linux signal a kernel would raise.
+    static int vector_to_signal(uint64_t vector)
+    {
+        switch (vector)
+        {
+            case 0:  return SIGFPE;    // #DE divide error
+            case 6:  return SIGILL;    // #UD invalid opcode
+            case 13: return SIGSEGV;   // #GP general protection
+            case 14: return SIGSEGV;   // #PF page fault
+            default: return SIGSEGV;
+        }
+    }
+
     void on_user_fault(uint64_t vector, user_regs* regs, iret_frame* iret)
     {
         screen::printf("\n[pid %u %s terminated: CPU exception %u]\n",
                        (uint32_t)current->pid, current->name, (uint32_t)vector);
 
-        terminate(current, EXIT_FAULT_BASE + (int)vector);
+        terminate(current, signal_status(vector_to_signal(vector)));
         reschedule(regs, iret);
     }
 
@@ -779,8 +795,15 @@ namespace process
 
     void sys_exit(user_regs* regs, iret_frame* iret)
     {
-        terminate(current, (int)(sint32_t)regs->rdi);
+        // exit(code): the wait status carries (code & 0xff) << 8.
+        terminate(current, exit_code_status((int)(sint32_t)regs->rdi));
         reschedule(regs, iret);
+    }
+
+    // No threads yet: exit_group terminates exactly the calling process.
+    void sys_exit_group(user_regs* regs, iret_frame* iret)
+    {
+        sys_exit(regs, iret);
     }
 
     void sys_getpid(user_regs* regs, iret_frame*)
@@ -800,16 +823,43 @@ namespace process
         reschedule(regs, iret);
     }
 
-    void sys_sleep(user_regs* regs, iret_frame* iret)
+    // nanosleep(req, rem): req/rem are user `struct timespec`. With no
+    // signals rem is always zero; it must be written before blocking - the
+    // wake path resumes the user process from the saved context, kernel C
+    // code after block() does not re-run on a normal wake.
+    void sys_nanosleep(user_regs* regs, iret_frame* iret)
     {
-        uint64_t ms = regs->rdi;
-        regs->rax = 0;
-
-        if (ms == 0)
+        timespec req;
+        if (!uaccess::copy_from_user(&req, regs->rdi, sizeof(req)))
         {
-            sys_yield(regs, iret);
+            regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
+        uint64_t rem_ptr = regs->rsi;
+        if (rem_ptr && !uaccess::writable(rem_ptr, sizeof(timespec)))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
+            return;
+        }
+        if (req.tv_sec < 0 || req.tv_nsec < 0 || req.tv_nsec >= 1000000000LL)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        if (rem_ptr)
+        {
+            timespec rem = { 0, 0 };
+            if (!uaccess::copy_to_user(rem_ptr, &rem, sizeof(rem)))
+            {
+                regs->rax = SYSCALL_ERR(EFAULT);
+                return;
+            }
+        }
+
+        uint64_t ms = (uint64_t)req.tv_sec * 1000ULL + (uint64_t)(req.tv_nsec / 1000000);
+        if (ms == 0)
+            ms = 1;             // never a busy spin
 
         uint32_t hz = pit::real_frequency();
         if (!hz)
@@ -817,6 +867,7 @@ namespace process
         uint64_t ticks = (ms * hz + 999) / 1000;
         current->wake_tick = pit::ticks() + (ticks ? ticks : 1);
 
+        regs->rax = 0;
         block(Wait::Sleep, false, regs, iret);
     }
 
@@ -855,7 +906,7 @@ namespace process
         regs->rax = (uint64_t)child->pid;
     }
 
-    void sys_exec(user_regs* regs, iret_frame* iret)
+    void sys_execve(user_regs* regs, iret_frame* iret)
     {
         char path[uaccess::MAX_PATH];
         if (uaccess::strncpy_from_user(path, regs->rdi, sizeof(path)) <= 0)
@@ -921,7 +972,7 @@ namespace process
         *iret = current->ctx.iret;
     }
 
-    void sys_waitpid(user_regs* regs, iret_frame* iret)
+    void sys_wait4(user_regs* regs, iret_frame* iret)
     {
         pid_t    pid        = (pid_t)(sint32_t)regs->rdi;
         uint64_t status_ptr = regs->rsi;
@@ -985,12 +1036,12 @@ namespace process
 
         if (target == current)
         {
-            terminate(current, EXIT_KILLED);
+            terminate(current, signal_status(SIGKILL));
             reschedule(regs, iret);
             return;
         }
 
-        terminate(target, EXIT_KILLED);
+        terminate(target, signal_status(SIGKILL));
         regs->rax = 0;
     }
 
