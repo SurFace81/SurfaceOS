@@ -10,6 +10,8 @@ namespace memory
     uint64_t    total(void);
     void        memset(uint8_t* addr, char value, uint64_t size);
     void        memcpy(uint8_t* dst, uint8_t* src, uint64_t size);
+    void        memcpy(uint8_t* dst, const uint8_t* src, uint64_t size);
+    int         memcmp(const uint8_t* a, const uint8_t* b, uint64_t size);
 } // namespace memory
 
 #endif // MEMORY_H

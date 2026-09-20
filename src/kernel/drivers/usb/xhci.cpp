@@ -323,6 +323,14 @@ static uint32_t msd_block_size[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_last_lba[MAX_MASS_STORAGE_DEVS];
 static bool msd_capacity_cached[MAX_MASS_STORAGE_DEVS];
 
+// One reusable DMA bounce buffer per device, sized
+// USB_MAX_XFER_SECTORS * sector_size. Allocating per request made every
+// FAT sector read a kmalloc + a DMA-capable carve-out; on real USB sticks
+// that dominated small-transfer latency.
+static uint8_t* msd_dma_buf[MAX_MASS_STORAGE_DEVS];
+static uintptr_t msd_dma_phys[MAX_MASS_STORAGE_DEVS];
+static uint32_t msd_dma_size[MAX_MASS_STORAGE_DEVS];
+
 // BOT shared buffers
 static usb_cbw* shared_cbw = nullptr;
 static usb_csw* shared_csw = nullptr;
@@ -901,25 +909,29 @@ static bool scsi_inquiry(usb_mass_storage_dev* msd)
     return true;
 }
 
+// Wait for the device to accept commands. Real sticks need noticeably longer
+// after reset than QEMU's emulated one, so the deadline is wall-clock (PIT),
+// not a fixed retry count: poll TEST UNIT READY for up to 5 s.
 static bool scsi_test_unit_ready(usb_mass_storage_dev* msd)
 {
     uint8_t cmd[6];
     memory::memset(cmd, 0, 6);
     cmd[0] = SCSI_TEST_UNIT_READY;
 
-    sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-    if (result != 0)
+    const uint32_t TIMEOUT_MS = 5000;
+    const uint32_t POLL_MS    = 100;
+
+    for (uint32_t waited = 0; waited <= TIMEOUT_MS; waited += POLL_MS)
     {
-        for (int i = 0; i < 5; i++)
-        {
-            delay_ms(500);
-            result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-            if (result == 0)
-                break;
-        }
-        if (result != 0) return false;
+        sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+        if (result == 0)
+            return true;
+        if (waited == TIMEOUT_MS)
+            break;
+        delay_ms(POLL_MS);
     }
-    return true;
+    uart::printf("scsi: TEST UNIT READY timed out\n");
+    return false;
 }
 
 static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba, uint32_t* out_block_size)
@@ -951,7 +963,7 @@ static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba
 }
 
 static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                         uintptr_t buffer_phys)
+                         uintptr_t buffer_phys, uint32_t block_size)
 {
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
@@ -963,13 +975,16 @@ static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t secto
     cmd[7] = (uint8_t)(sector_count >> 8);
     cmd[8] = (uint8_t)(sector_count);
 
-    uint32_t byte_count = (uint32_t)sector_count * 512;
+    // The transfer length the CDB/CBW advertise must match the real sector
+    // size: it used to be hardcoded *512, which silently transferred 1/8 of
+    // the data on a 4096-byte-sector device.
+    uint32_t byte_count = (uint32_t)sector_count * block_size;
     sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_IN);
     return result == 0;
 }
 
 static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                          uintptr_t buffer_phys)
+                          uintptr_t buffer_phys, uint32_t block_size)
 {
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
@@ -981,9 +996,36 @@ static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sect
     cmd[7] = (uint8_t)(sector_count >> 8);
     cmd[8] = (uint8_t)(sector_count);
 
-    uint32_t byte_count = (uint32_t)sector_count * 512;
+    uint32_t byte_count = (uint32_t)sector_count * block_size;
     sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_OUT);
     return result == 0;
+}
+
+static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
+{
+    uint8_t cmd[10];
+    memory::memset(cmd, 0, 10);
+    cmd[0] = SCSI_SYNCHRONIZE_CACHE;    // whole LBA range, no data phase
+    sint32_t result = bot_scsi_command(msd, cmd, 10, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+    return result == 0;
+}
+
+// Allocate (once) the reusable per-device DMA bounce buffer.
+static bool ensure_dma_buffer(uint8_t dev_index)
+{
+    if (msd_dma_buf[dev_index])
+        return true;
+
+    uint32_t bs = msd_block_size[dev_index];
+    uint32_t size = (uint32_t)USB_MAX_XFER_SECTORS * bs;
+    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 4096);
+    if (!buf)
+        return false;
+
+    msd_dma_buf[dev_index]  = buf;
+    msd_dma_phys[dev_index] = xhci_virt_to_phys(buf);
+    msd_dma_size[dev_index] = size;
+    return true;
 }
 
 // Controller initialization helpers
@@ -1687,6 +1729,12 @@ namespace usb
         mass_storage_count = 0;
         memory::memset((uint8_t*)mass_storage_devs, 0, sizeof(mass_storage_devs));
         memory::memset((uint8_t*)msd_capacity_cached, 0, sizeof(msd_capacity_cached));
+        // The reusable DMA buffers survive re-init (usb::init is only ever
+        // called once today; if it ever re-runs, old device state is gone but
+        // the buffers stay valid until the next ensure_dma_buffer).
+        memory::memset((uint8_t*)msd_dma_buf, 0, sizeof(msd_dma_buf));
+        memory::memset((uint8_t*)msd_dma_phys, 0, sizeof(msd_dma_phys));
+        memory::memset((uint8_t*)msd_dma_size, 0, sizeof(msd_dma_size));
 
         // Find xHCI controller
         PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
@@ -1741,7 +1789,10 @@ namespace usb
             }
         }
 
-        // Configure and prepare all mass storage devices
+        // Configure and prepare all mass storage devices. Slots that fail
+        // configuration or never reach readiness are dropped: the block layer
+        // above must not see a counted-but-unusable device.
+        uint8_t ready_count = 0;
         for (uint8_t i = 0; i < mass_storage_count; i++)
         {
             usb_mass_storage_dev* msd = &mass_storage_devs[i];
@@ -1749,8 +1800,22 @@ namespace usb
                 continue;
 
             scsi_inquiry(msd);
-            scsi_test_unit_ready(msd);
-            ensure_capacity_cached(i);
+            if (!scsi_test_unit_ready(msd))
+                continue;
+
+            if (ready_count != i)
+            {
+                mass_storage_devs[ready_count] = *msd;
+                memory::memset((uint8_t*)msd, 0, sizeof(*msd));
+            }
+            ready_count++;
+        }
+        mass_storage_count = ready_count;
+
+        for (uint8_t i = 0; i < mass_storage_count; i++)
+        {
+            if (ensure_capacity_cached(i) != USB_OK)
+                uart::printf("xhci: msd %u: READ CAPACITY failed\n", (uint32_t)i);
         }
 
         return true;
@@ -1820,19 +1885,29 @@ namespace usb
         if (st != USB_OK)
             return st;
 
+        // One request may not exceed the reusable DMA buffer; the block layer
+        // above splits larger transfers.
+        if (count > USB_MAX_XFER_SECTORS)
+            return USB_ERR_INVALID_PARAM;
+
+        // Bounds-check against the capacity READ CAPACITY reported: a bogus
+        // LBA from a broken filesystem must never reach the device.
+        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
+            return USB_ERR_INVALID_PARAM;
+
+        if (!ensure_dma_buffer(dev_index))
+            return USB_ERR_IO;
+
         uint32_t bs = msd_block_size[dev_index];
         uint32_t total = (uint32_t)count * bs;
 
-        uint8_t* dma_buf = (uint8_t*)alloc_xhci_memory(total, 64, 4096);
-        if (!dma_buf)
-            return USB_ERR_IO;
-        uintptr_t dma_phys = xhci_virt_to_phys(dma_buf);
+        uint8_t* dma_buf = msd_dma_buf[dev_index];
+        uintptr_t dma_phys = msd_dma_phys[dev_index];
 
-        bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys);
+        bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys, bs);
         if (ok)
             memory::memcpy((uint8_t*)buffer, dma_buf, total);
 
-        free_xhci_memory(dma_buf);
         return ok ? USB_OK : USB_ERR_IO;
     }
 
@@ -1851,19 +1926,37 @@ namespace usb
         if (st != USB_OK)
             return st;
 
+        if (count > USB_MAX_XFER_SECTORS)
+            return USB_ERR_INVALID_PARAM;
+
+        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
+            return USB_ERR_INVALID_PARAM;
+
+        if (!ensure_dma_buffer(dev_index))
+            return USB_ERR_IO;
+
         uint32_t bs = msd_block_size[dev_index];
         uint32_t total = (uint32_t)count * bs;
 
-        uint8_t* dma_buf = (uint8_t*)alloc_xhci_memory(total, 64, 4096);
-        if (!dma_buf)
-            return USB_ERR_IO;
-        uintptr_t dma_phys = xhci_virt_to_phys(dma_buf);
+        uint8_t* dma_buf = msd_dma_buf[dev_index];
+        uintptr_t dma_phys = msd_dma_phys[dev_index];
 
         memory::memcpy(dma_buf, (uint8_t*)buffer, total);
-        bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys);
+        bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys, bs);
 
-        free_xhci_memory(dma_buf);
         return ok ? USB_OK : USB_ERR_IO;
+    }
+
+    usb_status flush_cache(uint8_t dev_index)
+    {
+        if (dev_index >= mass_storage_count)
+            return USB_ERR_NOT_FOUND;
+
+        usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
+        if (!msd->configured)
+            return USB_ERR_NOT_READY;
+
+        return scsi_synchronize_cache(msd) ? USB_OK : USB_ERR_IO;
     }
 
 } // namespace usb

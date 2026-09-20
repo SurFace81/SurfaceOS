@@ -93,8 +93,13 @@ result() {  # result <ok:0/1> "<description>"
 last_status() { grep "process: session end" "$LOG" | tail -1 | grep -oE '[0-9]+$'; }
 
 wait_for "boot: console ready" "$BOOT_WAIT"; result $? "kernel boots to the console"
+wait_for "boot: root mounted" 10; result $? "root volume automounted at boot"
 
-type_cmd "mount";   sleep 8
+type_cmd "lsblk";  sleep 3
+wait_for "lsblk: usb0" 10; result $? "lsblk lists usb0"
+type_cmd "sync";   sleep 3
+wait_for "sync: ok" 10; result $? "sync flushes the cache"
+
 type_cmd "cd APPS"; sleep 3
 
 # 1. normal exit

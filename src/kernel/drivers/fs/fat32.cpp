@@ -1,6 +1,6 @@
 // src/kernel/drivers/fs/fat32.cpp
 #include "../../../include/drivers/fs/fat32.h"
-#include "../../../include/drivers/usb/xhci.h"
+#include "../../../include/dev/blkdev.h"
 #include "../../../include/drivers/uart.h"
 #include "../../../include/drivers/screen.h"
 #include "../../../include/mm/memory.h"
@@ -15,7 +15,7 @@ static char     cwd_path_buf[CWD_PATH_MAX] = "\\";
 
 // Cached volume parameters after mount
 static bool mounted = false;
-static uint8_t dev_index = 0;
+static blkdev* vol = nullptr;           // the mounted volume (disk or partition)
 static uint32_t bytes_per_sector = 0;
 static uint8_t  sectors_per_cluster = 0;
 static uint32_t fat_start_lba = 0;
@@ -39,24 +39,24 @@ static uint32_t cluster_size()
 
 static bool read_sector(uint32_t lba, void* buffer)
 {
-    return usb::read_sectors(dev_index, lba, 1, buffer) == USB_OK;
+    return block::read(vol, lba, 1, buffer) == 0;
 }
 
 static bool write_sector(uint32_t lba, const void* buffer)
 {
-    return usb::write_sectors(dev_index, lba, 1, buffer) == USB_OK;
+    return block::write(vol, lba, 1, buffer) == 0;
 }
 
 static bool read_cluster_data(uint32_t cluster, void* buffer)
 {
     uint32_t lba = cluster_to_lba(cluster);
-    return usb::read_sectors(dev_index, lba, sectors_per_cluster, buffer) == USB_OK;
+    return block::read(vol, lba, sectors_per_cluster, buffer) == 0;
 }
 
 static bool write_cluster_data(uint32_t cluster, const void* buffer)
 {
     uint32_t lba = cluster_to_lba(cluster);
-    return usb::write_sectors(dev_index, lba, sectors_per_cluster, buffer) == USB_OK;
+    return block::write(vol, lba, sectors_per_cluster, buffer) == 0;
 }
 
 // Build a clean absolute path from current cwd + relative component
@@ -747,7 +747,10 @@ namespace fat32
 {
     void umount()
     {
+        if (mounted && vol)
+            block::flush(vol);
         mounted = false;
+        vol = nullptr;
         cwd_cluster = 0;
         cwd_path_buf[0] = PATH_SEPARATOR;
         cwd_path_buf[1] = '\0';
@@ -760,14 +763,18 @@ namespace fat32
         return mounted;
     }
 
-    bool mount(uint8_t usb_dev)
+    bool mount(blkdev* volume)
     {
         mounted = false;
 
-        uint8_t* sector = (uint8_t*)kmalloc(512);
+        if (!volume)
+            return false;
+
+        uint32_t ss = volume->sector_size;
+        uint8_t* sector = (uint8_t*)kmalloc(ss);
         if (!sector) return false;
 
-        if (usb::read_sectors(usb_dev, 0, 1, sector) != USB_OK)
+        if (block::read(volume, 0, 1, sector) != 0)
         {
             kfree(sector);
             return false;
@@ -775,15 +782,26 @@ namespace fat32
 
         fat32_bpb* bpb = (fat32_bpb*)sector;
 
-        if (bpb->bytes_per_sector < 512 || bpb->sectors_per_cluster == 0 ||
+        if (bpb->bytes_per_sector != ss || bpb->sectors_per_cluster == 0 ||
             bpb->num_fats == 0 || bpb->fat_size_32 == 0)
         {
-            uart::printf("fat32: invalid BPB\n");
+            uart::printf("fat32: invalid BPB (bytes_per_sector %u vs device %u)\n",
+                         (uint32_t)bpb->bytes_per_sector, ss);
             kfree(sector);
             return false;
         }
 
-        dev_index = usb_dev;
+        // Bounds: the FAT and data regions must lie inside the volume.
+        uint64_t fat_end = (uint64_t)bpb->reserved_sectors +
+                           (uint64_t)bpb->num_fats * bpb->fat_size_32;
+        if (fat_end >= volume->sector_count)
+        {
+            uart::printf("fat32: FAT region exceeds the volume\n");
+            kfree(sector);
+            return false;
+        }
+
+        vol = volume;
         bytes_per_sector = bpb->bytes_per_sector;
         sectors_per_cluster = bpb->sectors_per_cluster;
         num_fats = bpb->num_fats;
@@ -793,11 +811,25 @@ namespace fat32
         data_start_lba = bpb->reserved_sectors + (uint32_t)bpb->num_fats * bpb->fat_size_32;
         total_sectors = bpb->total_sectors_32;
 
+        // The BPB's sector count is advisory: the BIOS boot stub carries a
+        // hardcoded one, and a corrupt BPB would otherwise make the cluster
+        // allocator walk the FAT past the end of the device. The device
+        // itself (READ CAPACITY / partition size) is the authority.
+        if ((uint64_t)total_sectors > volume->sector_count)
+        {
+            uart::printf("fat32: BPB total_sectors %u clamped to device %u\n",
+                         total_sectors, (uint32_t)volume->sector_count);
+            total_sectors = (uint32_t)volume->sector_count;
+        }
+
         mounted = true;
 
         cwd_cluster = root_cluster;
         cwd_path_buf[0] = PATH_SEPARATOR;
         cwd_path_buf[1] = '\0';
+
+        uart::printf("fat32: mounted %s cluster=%u sectors=%u\n", vol->name,
+                     (uint32_t)cluster_size(), total_sectors);
 
         kfree(sector);
         return true;

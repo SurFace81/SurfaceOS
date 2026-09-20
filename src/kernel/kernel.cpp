@@ -8,19 +8,124 @@
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
 #include "../include/cpu/syscall.h"
+#include "../include/dev/blkdev.h"
+#include "../include/dev/part.h"
+#include "../include/dev/bcache.h"
 #include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
+#include "../include/drivers/screen.h"
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
+#include "../include/drivers/fs/fat32.h"
 #include "../include/mm/memory.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
+#include "../include/stdlib/string.h"
 
 // Base of the static page tables. The bootloader AllocatePages()es 5 MB here
 // and linker.ld asserts that the kernel image stops short of it.
 #define PAGE_TABLE_BASE 0x300000
+
+namespace
+{
+    // Does `disk` carry the signature the UEFI boot loader reported for the
+    // boot volume? MBR: the 4-byte disk signature at offset 440 of LBA 0.
+    // GPT: the 16-byte disk GUID at offset 56 of the header on LBA 1.
+    bool disk_signature_matches(blkdev* disk, uint32_t sig_type,
+                                const uint8_t* signature)
+    {
+        uint8_t* sector = (uint8_t*)kmalloc(disk->sector_size);
+        if (!sector)
+            return false;
+
+        bool ok = false;
+        if (sig_type == 1)
+        {
+            if (block::read(disk, 0, 1, sector) == 0)
+                ok = memory::memcmp(sector + 440, signature, 4) == 0;
+        }
+        else if (sig_type == 2)
+        {
+            if (disk->sector_count >= 2 && block::read(disk, 1, 1, sector) == 0)
+                ok = memory::memcmp(sector + 56, signature, 16) == 0;
+        }
+
+        kfree(sector);
+        return ok;
+    }
+
+    // Mount the volume UEFI booted from as the root (stage 3.2).
+    //
+    // 1. The bootloader hands over the boot partition's LBA and the disk
+    //    signature (MBR) or GUID (GPT) from the device path of the loaded
+    //    image. A blkdev matches when it starts at that LBA on a disk with
+    //    that signature.
+    // 2. No match (unknown layout, several sticks, ...): take the first
+    //    volume with a KERNEL.BIN in its root - that is our kernel, so that
+    //    volume is where we booted from in all but the strangest setups.
+    // 3. Nothing at all: say so explicitly and run the console rootless;
+    //    every fs command then fails cleanly instead of hanging.
+    void automount_root(const BOOT_HEADER* hdr)
+    {
+        // Pass 1: exact boot-volume match.
+        for (uint32_t i = 0; block::get(i); i++)
+        {
+            blkdev* d = block::get(i);
+
+            bool plausible;
+            if (d->parent)
+                plausible = d->lba_offset == hdr->BootPartitionStart;
+            else
+                plausible = hdr->BootPartitionStart == 0;   // superfloppy
+
+            if (!plausible)
+                continue;
+            if (hdr->BootPartitionSignatureType != 0)
+            {
+                blkdev* disk = d->parent ? d->parent : d;
+                if (!disk_signature_matches(disk, hdr->BootPartitionSignatureType,
+                                            hdr->BootPartitionSignature))
+                    continue;
+            }
+
+            if (fat32::mount(d))
+            {
+                uart::printf("boot: root mounted on %s (boot volume)\n", d->name);
+                screen::printf("Root: %s\n\r", d->name);
+                return;
+            }
+            fat32::umount();
+        }
+
+        if (hdr->BootDevicePathValid)
+            uart::printf("boot: no blkdev matches the UEFI boot volume "
+                         "(start %u sigtype %u), falling back to KERNEL.BIN scan\n",
+                         (uint32_t)hdr->BootPartitionStart,
+                         hdr->BootPartitionSignatureType);
+
+        // Pass 2: first volume that contains our kernel image.
+        for (uint32_t i = 0; block::get(i); i++)
+        {
+            blkdev* d = block::get(i);
+            if (!fat32::mount(d))
+                continue;
+
+            fat32_dir_entry entry;
+            if (fat32::resolve_path_pub("\\KERNEL.BIN", &entry))
+            {
+                uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
+                screen::printf("Root: %s\n\r", d->name);
+                return;
+            }
+            fat32::umount();
+        }
+
+        uart::printf("boot: no mountable FAT32 volume found - running without root\n");
+        screen::printf("No root volume found; fs commands unavailable.\n\r");
+    }
+}
 
 extern "C" void kmain(BOOT_HEADER* BootHeader)
 {
@@ -75,6 +180,14 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
 
     usb::init();
     uart::printf("boot: usb ready\n");
+
+    // Block layer: whole disks from USB MSD, their partitions, then the
+    // sector cache (sized from the devices it found).
+    block::enumerate_usb();
+    part::enumerate();
+    bcache::init();
+
+    automount_root(BootHeader);
 
     syscall::init();
     process::init();

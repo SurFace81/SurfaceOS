@@ -1,6 +1,8 @@
 // src/kernel/drivers/commands.cpp
 #include "../../include/drivers/commands.h"
 #include "../../include/drivers/fs/fat32.h"
+#include "../../include/dev/blkdev.h"
+#include "../../include/dev/bcache.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/usb/xhci.h"
 #include "../../include/mm/heap.h"
@@ -95,29 +97,31 @@ static void cmd_lspci(int argc, const char** argv)
 
 static void cmd_mount(int argc, const char** argv)
 {
-    uint8_t index = 0;
-
-    if (argc > 1)
+    if (argc < 2)
     {
-        for (int i = 0; argv[1][i] != '\0'; i++)
-        {
-            if (argv[1][i] < '0' || argv[1][i] > '9')
-            {
-                screen::printf("\n\rUsage: mount [device_index]");
-                return;
-            }
-            index = index * 10 + (argv[1][i] - '0');
-        }
+        screen::printf("\n\rUsage: mount <device>   (lsblk lists devices)");
+        return;
     }
 
-    if (fat32::mount(index))
-        screen::printf("\n\rFAT32 mounted (device %u)", (uint32_t)index);
+    blkdev* dev = block::find(argv[1]);
+    if (!dev)
+    {
+        screen::printf("\n\rNo such block device: %s", argv[1]);
+        return;
+    }
+
+    if (fat32::is_mounted())
+        fat32::umount();
+
+    if (fat32::mount(dev))
+        screen::printf("\n\rFAT32 mounted (%s)", dev->name);
     else
-        screen::printf("\n\rMount failed");
+        screen::printf("\n\rMount failed: no FAT32 volume on %s", dev->name);
 }
 
 static void cmd_umount(int argc, const char** argv)
 {
+    (void)argc; (void)argv;
     if (!fat32::is_mounted())
     {
         screen::printf("\n\rNothing is mounted");
@@ -126,6 +130,22 @@ static void cmd_umount(int argc, const char** argv)
 
     fat32::umount();
     screen::printf("\n\rUnmounted");
+}
+
+static void cmd_sync(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+    sint64_t rc = bcache::flush(nullptr);
+    if (rc == 0)
+    {
+        screen::printf("\n\rSynchronized");
+        uart::printf("sync: ok\n");
+    }
+    else
+    {
+        screen::printf("\n\rSync failed (%d)", (int)rc);
+        uart::printf("sync: failed %d\n", (int)rc);
+    }
 }
 
 static void cmd_ls(int argc, const char** argv)
@@ -502,34 +522,41 @@ static void cmd_usbinfo(int argc, const char** argv)
 
 static void cmd_lsblk(int argc, const char** argv)
 {
-    uint8_t count = usb::get_block_device_count();
+    (void)argc; (void)argv;
     screen::printf("\n\r");
-    screen::printf("\n\r Block devices: %u", (uint32_t)count);
-    screen::printf("\n\r");
+    uart::printf("lsblk:\n");
 
+    uint32_t count = block::count();
     if (count == 0)
     {
         screen::printf("\n\r No block devices found");
+        uart::printf("lsblk: no block devices\n");
         return;
     }
 
-    for (uint8_t i = 0; i < count; i++)
+    for (uint32_t i = 0; i < count; i++)
     {
-        usb_block_device bdev;
-        if (usb::get_block_device_info(i, &bdev) != USB_OK)
+        blkdev* d = block::get(i);
+        if (!d)
             continue;
 
-        uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
+        uint64_t total_mb = d->sector_count * d->sector_size / (1024 * 1024);
 
-        screen::printf("\n\r  [%u] block_size=%u  sectors=%u",
-            (uint32_t)i, bdev.block_size, bdev.last_lba + 1);
+        screen::printf("\n\r %s%-9s %uB x %u",
+            d->parent ? "  " : " ", d->name,
+            d->sector_size, (uint32_t)d->sector_count);
 
         if (total_mb > 1024)
             screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
         else
             screen::printf("  size=%u MB", (uint32_t)total_mb);
 
-        screen::printf("  %s", bdev.ready ? "ready" : "not ready");
+        if (d->parent)
+            screen::printf("  offset=%u", (uint32_t)d->lba_offset);
+
+        uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
+                     d->sector_size, (uint32_t)d->sector_count,
+                     (uint32_t)d->lba_offset);
     }
 }
 
@@ -757,6 +784,7 @@ namespace commands
         console::register_command("lsusb",   cmd_lsusb);
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
+        console::register_command("sync",    cmd_sync);
         console::register_command("meminfo", cmd_meminfo);
         console::register_command("time",    cmd_time);
         console::register_command("uptime",  cmd_uptime);

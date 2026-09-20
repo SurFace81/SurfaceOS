@@ -3,6 +3,7 @@
 #define FAT32_H
 
 #include "../../cpu/types.h"
+#include "../../dev/blkdev.h"
 
 // BPB + extended BPB for FAT32 (first sector of the volume)
 struct fat32_bpb {
@@ -74,7 +75,10 @@ uint32_t format_83_name(const uint8_t* raw, char* out);
 void format_datetime(uint16_t date, uint16_t time, char* out);
 
 namespace fat32 {
-    bool     mount(uint8_t usb_dev_index);
+    // Mount the FAT32 volume on `volume` (a whole-disk blkdev for a
+    // superfloppy, or a partition blkdev). Stage 3.2 keeps this single-volume
+    // interface; stage 3.3 replaces it with VFS vnode_ops.
+    bool     mount(blkdev* volume);
     void     umount();
     bool     is_mounted();
     bool     resolve_path_pub(const char* path, fat32_dir_entry* out_entry);
