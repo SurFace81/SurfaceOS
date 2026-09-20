@@ -2,9 +2,8 @@
 // memory syscalls. See process.h for the scheduling model.
 //
 // User memory is W^X throughout: code is read+execute, everything writable
-// (data, heap, stack) is NX, and the kernel-written pages (program_info, argv)
-// are read-only. mmap/mprotect are the one sanctioned way to get RWX memory,
-// which a JIT or tcc -run needs.
+// (data, heap, stack) is NX. mmap/mprotect are the one sanctioned way to get
+// RWX memory, which a JIT or tcc -run needs.
 
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/tss.h"
@@ -21,6 +20,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/time.h"
+#include "../../sdk/include/abi/auxv.h"
 
 extern "C" void process_enter_user(cpu_context* ctx);
 extern "C" void process_return_to_kernel(void);
@@ -220,16 +220,15 @@ namespace process
         *iret = p->ctx.iret;
     }
 
-    static void initial_context(cpu_context* ctx, uint64_t entry)
+    static void initial_context(cpu_context* ctx, uint64_t entry, uint64_t rsp)
     {
         memory::memset((uint8_t*)ctx, 0x00, sizeof(cpu_context));
-        ctx->regs.rdi    = USER_INFO_VADDR;         // program_info* for _start
         ctx->iret.rip    = entry;
         ctx->iret.cs     = USER_CS;
         ctx->iret.rflags = RFLAGS_USER;
-        // The SysV ABI wants rsp % 16 == 8 at function entry (as if a call
-        // had just pushed a return address). _start is an ordinary function.
-        ctx->iret.rsp    = USER_STACK_TOP - 8;
+        // The SysV ABI initial-process stack: rsp points at argc and is
+        // 16-byte aligned. _start pops argc from there.
+        ctx->iret.rsp    = rsp;
         ctx->iret.ss     = USER_SS;
     }
 
@@ -237,37 +236,163 @@ namespace process
     // Program loading
     // -----------------------------------------------------------------------
 
-    struct ArgList
+    // argv/envp collection for execve and console launches. Strings live in
+    // one growable kernel buffer, per-string offsets in two growable arrays.
+    // The combined size of strings + pointers is capped at ARG_MAX, like
+    // Linux; overflow is -E2BIG.
+    struct ArgEnv
     {
-        int          argc;
-        uint32_t     used;                              // bytes in data
-        uint32_t     offset[ARG_MAX_COUNT];             // into data
-        char         data[ARG_MAX_BYTES];
+        char*     data;
+        uint32_t  data_used;
+        uint32_t  data_cap;
+
+        uint32_t* a_off;        // argv string offsets into data
+        uint32_t  a_count;
+        uint32_t  a_cap;
+
+        uint32_t* e_off;        // envp string offsets into data
+        uint32_t  e_count;
+        uint32_t  e_cap;
+
+        bool init()
+        {
+            data = nullptr; a_off = nullptr; e_off = nullptr;
+            data_used = data_cap = a_count = a_cap = e_count = e_cap = 0;
+
+            data_cap = 1024;  a_cap = 16;  e_cap = 16;
+            data  = (char*)kmalloc(data_cap);
+            a_off = (uint32_t*)kmalloc(a_cap * sizeof(uint32_t));
+            e_off = (uint32_t*)kmalloc(e_cap * sizeof(uint32_t));
+            return data && a_off && e_off;
+        }
+
+        void destroy()
+        {
+            if (data)  kfree(data);
+            if (a_off) kfree(a_off);
+            if (e_off) kfree(e_off);
+            data = nullptr; a_off = nullptr; e_off = nullptr;
+        }
+
+        // Double the string buffer, never past ARG_MAX. 0 or -errno.
+        int grow_data()
+        {
+            if (data_cap >= ARG_MAX)
+                return -E2BIG;
+            uint32_t nc = data_cap * 2;
+            if (nc > ARG_MAX)
+                nc = ARG_MAX;
+            char* nd = (char*)kmalloc(nc);
+            if (!nd)
+                return -ENOMEM;
+            copy_bytes((uint8_t*)nd, (const uint8_t*)data, data_used);
+            kfree(data);
+            data = nd;
+            data_cap = nc;
+            return 0;
+        }
+
+        // A string of `len` bytes is already sitting at data+data_used
+        // (NUL included in len+1). Record it. 0 or -errno.
+        int finish(bool env, uint32_t len)
+        {
+            // ARG_MAX counts the strings and their stack pointers.
+            if ((uint64_t)data_used + len + 1 +
+                ((uint64_t)a_count + e_count + 1) * 8 > ARG_MAX)
+                return -E2BIG;
+
+            if (env)
+            {
+                if (e_count == e_cap)
+                {
+                    uint32_t nc = e_cap * 2;
+                    uint32_t* na = (uint32_t*)kmalloc(nc * sizeof(uint32_t));
+                    if (!na)
+                        return -ENOMEM;
+                    copy_bytes((uint8_t*)na, (const uint8_t*)e_off,
+                               e_count * sizeof(uint32_t));
+                    kfree(e_off);
+                    e_off = na;
+                    e_cap = nc;
+                }
+                e_off[e_count++] = data_used;
+            }
+            else
+            {
+                if (a_count == a_cap)
+                {
+                    uint32_t nc = a_cap * 2;
+                    uint32_t* na = (uint32_t*)kmalloc(nc * sizeof(uint32_t));
+                    if (!na)
+                        return -ENOMEM;
+                    copy_bytes((uint8_t*)na, (const uint8_t*)a_off,
+                               a_count * sizeof(uint32_t));
+                    kfree(a_off);
+                    a_off = na;
+                    a_cap = nc;
+                }
+                a_off[a_count++] = data_used;
+            }
+
+            data[data_used + len] = '\0';
+            data_used += len + 1;
+            return 0;
+        }
+
+        // Kernel string (console launches, execve fallbacks).
+        int push_kstr(bool env, const char* s)
+        {
+            uint32_t len = 0;
+            while (s[len])
+                len++;
+
+            while (data_used + len + 1 > data_cap)
+            {
+                int g = grow_data();
+                if (g)
+                    return g;
+            }
+            copy_bytes((uint8_t*)data + data_used, (const uint8_t*)s, len);
+            return finish(env, len);
+        }
+
+        // User string: read straight into the buffer, growing on truncation.
+        int push_user(bool env, uint64_t user_str)
+        {
+            for (;;)
+            {
+                if (data_used == data_cap)
+                {
+                    int g = grow_data();
+                    if (g)
+                        return g;
+                }
+
+                uint32_t room = data_cap - data_used;
+                sint64_t r = uaccess::strncpy_from_user(data + data_used,
+                                                        user_str, room);
+                if (r == -1)
+                    return -EFAULT;
+                if (r == -2)
+                {
+                    if (data_cap >= ARG_MAX)
+                        return -E2BIG;
+                    int g = grow_data();
+                    if (g)
+                        return g;
+                    continue;
+                }
+                return finish(env, (uint32_t)r);
+            }
+        }
     };
-
-    static bool args_push(ArgList* a, const char* s)
-    {
-        if (a->argc >= ARG_MAX_COUNT)
-            return false;
-
-        uint32_t len = 0;
-        while (s[len])
-            len++;
-
-        if (a->used + len + 1 > ARG_MAX_BYTES)
-            return false;
-
-        a->offset[a->argc++] = a->used;
-        copy_bytes((uint8_t*)a->data + a->used, (const uint8_t*)s, len + 1);
-        a->used += len + 1;
-        return true;
-    }
 
     struct Image
     {
         uint64_t cr3;
         uint64_t entry;
         uint64_t image_end;
+        uint64_t rsp;           // initial stack pointer (points at argc)
     };
 
     // Map [vaddr, vaddr+size) with zeroed 4 KiB user pages (active space).
@@ -358,10 +483,110 @@ namespace process
         return image;
     }
 
-    // Build a complete address space for `path`: ELF segments, stack,
-    // program_info and argv. The active address space is unchanged on return.
-    // Returns 0 or -errno.
-    static sint64_t load_program(const char* path, const ArgList* args, Image* out)
+    // AT_RANDOM content. No entropy source exists yet (stage 6 plans
+    // getrandom); musl only needs *something* stable for its stack canary.
+    static const uint8_t random_bytes[16] =
+        { 0x53, 0x75, 0x72, 0x66, 0x61, 0x63, 0x65, 0x4F,
+          0x53, 0x2D, 0x61, 0x74, 0x72, 0x6E, 0x64, 0x31 };
+
+    // Build the SysV ABI initial process stack (the exact layout Linux
+    // uses, low addresses first):
+    //
+    //   rsp -> argc                      <- 16-byte aligned
+    //          argv[0..argc-1], NULL
+    //          envp[0..], NULL
+    //          auxv entries ... AT_NULL
+    //          (alignment padding)
+    //          16 random bytes (AT_RANDOM)
+    //          argv/envp strings
+    //   high ->  USER_STACK_TOP
+    //
+    // Everything is staged in a kernel buffer and then copied through the
+    // identity map, so the stack can stay mapped as it is. Returns the
+    // future rsp in *out_rsp, or a negative errno.
+    static sint64_t build_initial_stack(const ArgEnv* ae, const elf::LoadResult* lr,
+                                        uint64_t* out_rsp)
+    {
+        uint32_t strings_size = ae->data_used;
+        uint32_t n_aux = (lr->phdr_vaddr ? 1u : 0u) + 5;  // PHENT PHNUM PAGESZ ENTRY RANDOM
+        uint32_t auxv_size = (n_aux + 1) * 16;            // + AT_NULL
+        uint32_t envp_size = (ae->e_count + 1) * 8;
+        uint32_t argv_size = (ae->a_count + 1) * 8;
+
+        uint32_t fixed = 8 + argv_size + envp_size + auxv_size;
+        uint32_t pad   = (16 - (fixed % 16)) % 16;
+        uint32_t total = fixed + pad + 16 + strings_size;
+        total = (total + 15) & ~(uint32_t)15;
+
+        uint8_t* buf = (uint8_t*)kmalloc(total);
+        if (!buf)
+            return -ENOMEM;
+        memory::memset(buf, 0x00, total);
+
+        uint64_t base       = USER_STACK_TOP - total;
+        uint32_t random_off = fixed + pad;
+        uint32_t strings_off = random_off + 16;
+        uint32_t off = 0;
+
+        // --- argc ---
+        uint64_t argc = ae->a_count;
+        copy_bytes(buf + off, (const uint8_t*)&argc, 8);
+        off += 8;
+
+        // --- argv pointers, NULL-terminated ---
+        for (uint32_t i = 0; i < ae->a_count; i++)
+        {
+            uint64_t v = base + strings_off + ae->a_off[i];
+            copy_bytes(buf + off, (const uint8_t*)&v, 8);
+            off += 8;
+        }
+        off += 8;
+
+        // --- envp pointers, NULL-terminated ---
+        for (uint32_t i = 0; i < ae->e_count; i++)
+        {
+            uint64_t v = base + strings_off + ae->e_off[i];
+            copy_bytes(buf + off, (const uint8_t*)&v, 8);
+            off += 8;
+        }
+        off += 8;
+
+        // --- auxv, AT_NULL-terminated ---
+        struct { uint64_t type; uint64_t val; } entry;
+        if (lr->phdr_vaddr)
+        {
+            entry.type = AT_PHDR;  entry.val = lr->phdr_vaddr;
+            copy_bytes(buf + off, (const uint8_t*)&entry, 16);
+            off += 16;
+        }
+        entry.type = AT_PHENT;  entry.val = lr->phdr_entsize;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+        entry.type = AT_PHNUM;  entry.val = lr->phdr_num;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+        entry.type = AT_PAGESZ; entry.val = PAGE_SIZE_4K;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+        entry.type = AT_ENTRY;  entry.val = lr->entry;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+        entry.type = AT_RANDOM; entry.val = base + random_off;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+        entry.type = AT_NULL;   entry.val = 0;
+        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
+
+        // --- random bytes and the strings ---
+        copy_bytes(buf + random_off, random_bytes, sizeof(random_bytes));
+        copy_bytes(buf + strings_off, (const uint8_t*)ae->data, strings_size);
+
+        poke_user(base, buf, total);
+        kfree(buf);
+
+        *out_rsp = base;
+        return 0;
+    }
+
+    // Build a complete address space for `path`: ELF segments, stack with
+    // the SysV argv/envp/auxv block. The active address space is unchanged
+    // on return. Returns 0 or -errno.
+    static sint64_t load_program(const char* path, const ArgEnv* ae, Image* out)
     {
         int err = 0;
         uint32_t size = 0;
@@ -387,11 +612,8 @@ namespace process
         paging::switch_address_space(as);
 
         elf::LoadResult lr = {0, 0, 0, 0, 0, false};
-        bool ok =
-            map_user_region(USER_INFO_VADDR, PAGE_SIZE_4K, PAGE_NX) &&
-            map_user_region(USER_ARGS_VADDR, USER_ARGS_PAGES * PAGE_SIZE_4K, PAGE_NX) &&
-            map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
-                            PAGE_WRITE | PAGE_NX);
+        bool ok = map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
+                                  PAGE_WRITE | PAGE_NX);
         if (!ok)
             err = ENOMEM;
         else
@@ -402,29 +624,15 @@ namespace process
                 err = ENOEXEC;
         }
 
+        uint64_t rsp = 0;
         if (ok)
         {
-            // argv: pointer array first, then the strings.
-            uint64_t ptr_bytes = (uint64_t)(args->argc + 1) * sizeof(uint64_t);
-            uint64_t strings   = USER_ARGS_VADDR + ptr_bytes;
-
-            for (int i = 0; i < args->argc; i++)
+            sint64_t rc = build_initial_stack(ae, &lr, &rsp);
+            if (rc < 0)
             {
-                uint64_t v = strings + args->offset[i];
-                poke_user(USER_ARGS_VADDR + (uint64_t)i * sizeof(uint64_t),
-                          (const uint8_t*)&v, sizeof(v));
+                err = (int)-rc;
+                ok = false;
             }
-            uint64_t null_ptr = 0;
-            poke_user(USER_ARGS_VADDR + (uint64_t)args->argc * sizeof(uint64_t),
-                      (const uint8_t*)&null_ptr, sizeof(null_ptr));
-            poke_user(strings, (const uint8_t*)args->data, args->used);
-
-            program_info info;
-            info.heap_start = lr.image_end;
-            info.heap_size  = USER_MMAP_BASE - lr.image_end;
-            info.argc       = (uint64_t)args->argc;
-            info.argv       = (char**)USER_ARGS_VADDR;
-            poke_user(USER_INFO_VADDR, (const uint8_t*)&info, sizeof(info));
         }
 
         paging::switch_address_space(prev);
@@ -439,6 +647,7 @@ namespace process
         out->cr3       = as;
         out->entry     = lr.entry;
         out->image_end = lr.image_end;
+        out->rsp       = rsp;
         return 0;
     }
 
@@ -450,7 +659,7 @@ namespace process
         p->mmap_cursor = USER_MMAP_BASE;
         p->line_pos    = 0;
         copy_name(p->name, path);
-        initial_context(&p->ctx, img->entry);
+        initial_context(&p->ctx, img->entry, img->rsp);
         copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
     }
 
@@ -647,37 +856,75 @@ namespace process
         return session_active;
     }
 
-    bool run(const char* path, int argc, const char* const* argv, int* exit_status)
+    // Load `path` with the collected argv/envp and allocate a runnable
+    // process for it. ppid is left at 0; state is Runnable.
+    static Process* launch(const char* path, const ArgEnv* ae)
     {
-        if (session_active)
-            return false;
-
-        ArgList args;
-        memory::memset((uint8_t*)&args, 0x00, sizeof(args));
-        if (argc <= 0)
-        {
-            args_push(&args, path);
-        }
-        else
-        {
-            for (int i = 0; i < argc; i++)
-                if (!args_push(&args, argv[i]))
-                    return false;
-        }
-
         Image img;
-        if (load_program(path, &args, &img) < 0)
-            return false;
+        if (load_program(path, ae, &img) < 0)
+            return nullptr;
 
         Process* p = alloc_process();
         if (!p)
         {
             paging::destroy_address_space(img.cr3);
-            return false;
+            return nullptr;
         }
         adopt_image(p, &img, path);
-        p->ppid  = 0;
         p->state = State::Runnable;
+        return p;
+    }
+
+    // Build the default environment a console-launched process starts with.
+    // 0 or -errno.
+    static int push_default_env(ArgEnv* ae)
+    {
+        int rc = ae->push_kstr(true, "PATH=/bin");
+        if (rc) return rc;
+        rc = ae->push_kstr(true, "HOME=/");
+        if (rc) return rc;
+        rc = ae->push_kstr(true, "TERM=dumb");
+        if (rc) return rc;
+
+        // PWD=<console cwd>. cwd_path() is still the FAT32 global until
+        // stage 3.4 moves it into the process; run() passes it through.
+        const char* cwd = fat32::cwd_path();
+        char pwdbuf[300];
+        const char prefix[] = "PWD=";
+        copy_bytes((uint8_t*)pwdbuf, (const uint8_t*)prefix, 4);
+        uint32_t n = 4;
+        for (uint32_t i = 0; cwd[i] && n < sizeof(pwdbuf) - 1; i++, n++)
+            pwdbuf[n] = cwd[i];
+        pwdbuf[n] = '\0';
+        return ae->push_kstr(true, pwdbuf);
+    }
+
+    bool run(const char* path, int argc, const char* const* argv, int* exit_status)
+    {
+        if (session_active)
+            return false;
+
+        ArgEnv ae;
+        if (!ae.init())
+            return false;
+
+        int rc = 0;
+        if (argc <= 0)
+            rc = ae.push_kstr(false, path);
+        else
+            for (int i = 0; i < argc && rc == 0; i++)
+                rc = ae.push_kstr(false, argv[i]);
+
+        if (rc == 0)
+            rc = push_default_env(&ae);
+
+        Process* p = rc == 0 ? launch(path, &ae) : nullptr;
+        ae.destroy();
+
+        if (!p)
+            return false;
+
+        p->ppid = 0;
 
         root_pid       = p->pid;
         root_status    = 0;
@@ -906,58 +1153,87 @@ namespace process
         regs->rax = (uint64_t)child->pid;
     }
 
+    // execve(path, argv, envp). argv and envp are copied out of the *old*
+    // address space before the new image is built; the old program keeps
+    // running if anything fails.
     void sys_execve(user_regs* regs, iret_frame* iret)
     {
         char path[uaccess::MAX_PATH];
-        if (uaccess::strncpy_from_user(path, regs->rdi, sizeof(path)) <= 0)
+        sint64_t plen = uaccess::strncpy_from_user(path, regs->rdi, sizeof(path));
+        if (plen == -1)
         {
             regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
+        if (plen <= 0)              // empty path
+        {
+            regs->rax = SYSCALL_ERR(ENOENT);
+            return;
+        }
 
-        // Copy argv into the kernel before the old address space goes away.
-        ArgList args;
-        memory::memset((uint8_t*)&args, 0x00, sizeof(args));
         uint64_t argv_ptr = regs->rsi;
+        uint64_t envp_ptr = regs->rdx;
 
+        ArgEnv ae;
+        if (!ae.init())
+        {
+            regs->rax = SYSCALL_ERR(ENOMEM);
+            return;
+        }
+
+        int rc = 0;
+
+        // --- argv ---
         if (!argv_ptr)
         {
-            args_push(&args, path);
+            rc = ae.push_kstr(false, path);
         }
         else
         {
-            for (int i = 0; ; i++)
+            for (int i = 0; rc == 0; i++)
             {
                 uint64_t str = 0;
                 if (!uaccess::copy_from_user(&str, argv_ptr + (uint64_t)i * 8, 8))
                 {
-                    regs->rax = SYSCALL_ERR(EFAULT);
-                    return;
+                    rc = -EFAULT;
+                    break;
                 }
                 if (!str)
                     break;
-
-                char arg[ARG_MAX_BYTES];
-                if (uaccess::strncpy_from_user(arg, str, sizeof(arg)) < 0)
-                {
-                    regs->rax = SYSCALL_ERR(EFAULT);
-                    return;
-                }
-                if (!args_push(&args, arg))
-                {
-                    regs->rax = SYSCALL_ERR(E2BIG);
-                    return;
-                }
+                rc = ae.push_user(false, str);
             }
-            if (args.argc == 0)
-                args_push(&args, path);
+            if (rc == 0 && ae.a_count == 0)
+                rc = ae.push_kstr(false, path);
+        }
+
+        // --- envp ---
+        if (rc == 0 && envp_ptr)
+        {
+            for (int i = 0; rc == 0; i++)
+            {
+                uint64_t str = 0;
+                if (!uaccess::copy_from_user(&str, envp_ptr + (uint64_t)i * 8, 8))
+                {
+                    rc = -EFAULT;
+                    break;
+                }
+                if (!str)
+                    break;
+                rc = ae.push_user(true, str);
+            }
         }
 
         Image img;
-        sint64_t rc = load_program(path, &args, &img);
-        if (rc < 0)
+        if (rc == 0)
         {
-            regs->rax = (uint64_t)rc;       // the old program keeps running
+            sint64_t lr = load_program(path, &ae, &img);
+            rc = (lr < 0) ? (int)lr : 0;
+        }
+        ae.destroy();
+
+        if (rc != 0)
+        {
+            regs->rax = SYSCALL_ERR(-rc);   // the old program keeps running
             return;
         }
 
@@ -1329,7 +1605,6 @@ namespace process
         uint64_t size  = pages * PAGE_SIZE_4K;
 
         // The image, heap, mmap region and stack are the app's to change.
-        // program_info and argv are not.
         bool allowed =
             range_in(addr, size, USER_IMAGE_VADDR, USER_MMAP_LIMIT) ||
             range_in(addr, size, USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_TOP);

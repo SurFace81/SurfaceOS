@@ -7,20 +7,24 @@ ENTRY(_start)
  * page permissions (no PF_X -> PAGE_NX, no PF_W -> read-only), so these
  * headers are what gives an app W^X.
  *
+ * FILEHDR PHDRS on the first segment includes the ELF header and the phdr
+ * table in it at file offset 0 (the Linux layout), which is what makes
+ * AT_PHDR point at real memory in the loaded image.
+ *
  * The link address must stay inside [USER_BASE, USER_MMAP_BASE); see
  * USER_IMAGE_VADDR in src/include/cpu/process.h.
  */
 PHDRS
 {
-    text   PT_LOAD FLAGS(5);    /* R X */
-    rodata PT_LOAD FLAGS(4);    /* R   */
-    data   PT_LOAD FLAGS(6);    /* R W */
+    text   PT_LOAD FILEHDR PHDRS FLAGS(5);    /* R X */
+    rodata PT_LOAD FLAGS(4);                  /* R   */
+    data   PT_LOAD FLAGS(6);                  /* R W */
 }
 
 SECTIONS {
-    . = 0x40000100000;
+    . = 0x40000100000 + SIZEOF_HEADERS;
 
-    .text : ALIGN(0x1000) {
+    .text : {
         *(.text._start)
         *(.text .text.*)
         *(.gnu.linkonce.t.*)

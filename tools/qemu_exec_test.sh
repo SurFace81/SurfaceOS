@@ -16,7 +16,7 @@ IMG=test_disk.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest"
+APPS="hi hello memtest proctest argtest"
 
 make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt bin/boot/bios/stub.bin >/dev/null || exit 1
 for a in $APPS; do make bin/apps/$a.bin >/dev/null || exit 1; done
@@ -132,7 +132,13 @@ grep -q "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no fail
 sleep 1; key ret
 wait_session_end 5 20; result $? "proctest exits"
 
-# 6. console still alive
+# 6. argtest (SysV stack: argv/envp/auxv, execve with 1000 args, E2BIG)
+type_cmd "exec argtest.bin"
+wait_for "argtest: " 240; result $? "argtest finished"
+grep -q "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
+wait_session_end 6 20; result $? "argtest exits"
+
+# 7. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -q "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
@@ -142,7 +148,7 @@ sleep 1
 
 echo
 echo "=== summary lines ==="
-grep -E "^cpu:|^pmm:|memtest: |proctest: |session (start|end)|kernel fault|app fault" "$LOG"
+grep -E "^cpu:|^pmm:|memtest: |proctest: |argtest: |session (start|end)|kernel fault|app fault" "$LOG"
 echo
 if [ $FAILS -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$FAILS CHECK(S) FAILED"; fi
 exit $FAILS

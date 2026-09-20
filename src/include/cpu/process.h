@@ -12,22 +12,23 @@
 //
 //   USER_BASE + 1 MiB     ELF image (PT_LOAD segments, see src/sdk/linker.ld)
 //   image_end             heap, grows up via SYS_BRK      (up to USER_MMAP_BASE)
-//   USER_MMAP_BASE        anonymous mmap region           (256 MiB .. 768 MiB)
-//   USER_INFO_VADDR       program_info, read-only         (one page)
-//   USER_ARGS_VADDR       argv strings + pointers, read-only
-//   USER_STACK_TOP        stack, grows down, NX           (one guard page above)
+//   USER_MMAP_BASE        anonymous mmap region           (up to the stack)
+//   stack bottom          stack, grows down, NX           (one guard page above)
 //
 // Everything must stay inside [USER_BASE, USER_LIMIT); paging::map_user_page
 // enforces that.
+//
+// The argv/envp/auxv block execve() builds lives at the top of this same
+// stack (the SysV ABI initial-process-stack layout), so there is no separate
+// args region any more.
 #define USER_IMAGE_VADDR    (USER_BASE + 0x100000)
-#define USER_IMAGE_MAX      (4 * 1024 * 1024)       // largest executable file
+#define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
 #define USER_MMAP_BASE      (USER_BASE + 0x10000000)
-#define USER_MMAP_LIMIT     (USER_BASE + 0x30000000)
-#define USER_INFO_VADDR     (USER_BASE + 0x30000000)
-#define USER_ARGS_VADDR     (USER_INFO_VADDR + PAGE_SIZE_4K)
-#define USER_ARGS_PAGES     1                       // ARG_MAX_BYTES + pointers fit
+#define USER_STACK_SIZE     (1024 * 1024)           // 1 MiB: args + program stack
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
-#define USER_STACK_SIZE     (256 * 1024)
+// The mmap region runs up to the bottom of the stack (leaving a gap so the
+// two never collide): stack bottom is USER_STACK_TOP - USER_STACK_SIZE.
+#define USER_MMAP_LIMIT     (USER_STACK_TOP - USER_STACK_SIZE)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32

@@ -73,14 +73,27 @@ static bool heap_grow(size_t need)
     return true;
 }
 
-void heap_init(void* start, size_t size)
+// The process environment; published by __libc_start (start.cpp).
+char** environ = (char**)NULL;
+
+const char* getenv(const char* name)
 {
-    // Legacy entry point kept for compatibility. The heap now grows on
-    // demand via brk, so the fixed region is ignored.
-    (void)start;
-    (void)size;
-    heap_start = (BlockHeader*)NULL;
-    heap_brk = 0;
+    if (!environ)
+        return (const char*)NULL;
+
+    uint32_t nlen = 0;
+    while (name[nlen])
+        nlen++;
+
+    for (char** e = environ; *e; e++)
+    {
+        uint32_t i = 0;
+        while (i < nlen && (*e)[i] == name[i])
+            i++;
+        if (i == nlen && (*e)[nlen] == '=')
+            return *e + nlen + 1;
+    }
+    return (const char*)NULL;
 }
 
 void* malloc(size_t size)

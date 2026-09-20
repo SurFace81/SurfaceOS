@@ -63,15 +63,20 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/features.o \
 				bin/kernel/cpu/uaccess.o \
 
-# SDK: entry.o is always linked first (contains _start, must be at PROGRAM_BASE)
+# SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -mcmodel=large -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
 SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
 SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
-SDK_ENTRY   = bin/sdk/entry.o
+SDK_ENTRY   = bin/sdk/crt0.o
 SDK_LIB_OBJ = $(filter-out $(SDK_ENTRY), $(SDK_ALL_OBJ))
 SDK_LIB     = bin/sdk/libsfos.a
+
+# crt0.S: the _start stub (SysV initial stack -> __libc_start)
+bin/sdk/crt0.o: src/sdk/libc/crt0.S
+	mkdir -p $(dir $@)
+	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
 
 # Apps: every .cpp in src/apps/ becomes a .bin
 APP_SRC		= $(wildcard src/apps/*.cpp)
@@ -142,7 +147,7 @@ $(SDK_LIB): $(SDK_LIB_OBJ)
 # -z max-page-size=0x1000: keep the ELF compact. The x86_64-elf default is a
 # 2 MB segment alignment, which pads a 10 KB app to ~1 MB of zeros on disk.
 # That made read_file pull hundreds of clusters over USB and froze the shell.
-bin/apps/%.bin: src/apps/%.cpp $(SDK_ENTRY) $(SDK_LIB)
+bin/apps/%.bin: src/apps/%.cpp src/sdk/linker.ld $(SDK_ENTRY) $(SDK_LIB)
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) -c -o bin/apps/$*.o $<
 	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/linker.ld -nostdlib -o $@ \

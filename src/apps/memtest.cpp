@@ -195,7 +195,7 @@ static void test_jit()
 
     check("mprotect of an unmapped range is refused",
           mprotect((void*)((uint64_t)code + 64 * PAGE), PAGE, PROT_READ) != 0);
-    check("mprotect of the argv page is refused",
+    check("mprotect of an unmapped page is refused",
           mprotect((void*)0x40030001000ULL, PAGE, PROT_READ | PROT_WRITE) != 0);
 
     munmap(code, PAGE);

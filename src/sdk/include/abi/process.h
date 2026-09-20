@@ -57,17 +57,8 @@ typedef sint32_t pid_t;
 
 #define MAP_FAILED          ((void*)-1)
 
-// Limits (until stage 3.1 replaces them with the 128 KiB ARG_MAX stack copy)
-#define ARG_MAX_COUNT       16      // argv entries, including argv[0]
-#define ARG_MAX_BYTES       1024    // all argv strings together
-
-// What the kernel passes to _start in rdi.
-struct program_info
-{
-    uint64_t heap_start;    // initial program break
-    uint64_t heap_size;     // how far brk may grow
-    uint64_t argc;
-    char**   argv;          // argv[argc] == NULL
-};
+// Limits
+#define ARG_MAX             (128 * 1024)    // argv+envp strings and pointers,
+                                            // copied onto the new stack
 
 #endif

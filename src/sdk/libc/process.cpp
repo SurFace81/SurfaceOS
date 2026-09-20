@@ -10,7 +10,14 @@ pid_t fork()    { return (pid_t)__syscall_ret(syscall(SYS_FORK)); }
 
 int execv(const char* path, char* const argv[])
 {
-    return (int)__syscall_ret(syscall(SYS_EXECVE, (uint64_t)path, (uint64_t)argv));
+    extern char** environ;
+    return execve(path, argv, environ);
+}
+
+int execve(const char* path, char* const argv[], char* const envp[])
+{
+    return (int)__syscall_ret(syscall(SYS_EXECVE, (uint64_t)path, (uint64_t)argv,
+                                      (uint64_t)envp));
 }
 
 pid_t waitpid(pid_t pid, int* status, int options)
