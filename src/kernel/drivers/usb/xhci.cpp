@@ -956,8 +956,6 @@ static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba
     *out_block_size =
         ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | (uint32_t)data[7];
 
-    uint64_t total_bytes = ((uint64_t)*out_last_lba + 1) * (uint64_t)*out_block_size;
-
     free_xhci_memory(data);
     return true;
 }

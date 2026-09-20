@@ -30,6 +30,10 @@ QEMU_UEFI	= 	qemu-system-x86_64 \
 				-no-reboot -no-shutdown
 QEMU_BIOS	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 64M -cpu qemu64 # -no-reboot -no-shutdown
 DISK_IMG	= surfaceos.img
+# Disk layout: superfloppy (legacy, BIOS stub), mbr or gpt (default - how a
+# real USB stick looks; UEFI boot). Passed to tools/mkimg.py.
+LAYOUT		?= gpt
+IMG_SIZE_MIB	?= 64
 
 SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/gdt.o \
@@ -85,7 +89,7 @@ bin/sdk/crt0.o: src/sdk/libc/crt0.S
 APP_SRC		= $(wildcard src/apps/*.cpp)
 APP_BINS	= $(patsubst src/apps/%.cpp, bin/apps/%.bin, $(APP_SRC))
 
-.PHONY: run clean create_disk version
+.PHONY: run clean create_disk version usb
 
 # Bootloader
 bin/boot/bios/%.bin: src/boot/bios/%.asm
@@ -180,36 +184,31 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 
-# Disk and test
-$(DISK_IMG): create_disk bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
-	mkfs.fat -F32 $(DISK_IMG)
-
-	mkdir -p ./disk/EFI/Boot
-	cp bin/boot/efi/BOOTX64.EFI ./disk/EFI/Boot
-
-	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync
-	dd if=bin/boot/bios/stub.bin of=$(DISK_IMG) conv=notrunc,fsync bs=512 seek=6		# copy of bootloader
-#	dd if=bin/boot/bios/stage2.bin of=$(DISK_IMG) conv=notrunc,fsync bs=512 seek=16		# if you want support BIOS
-
-	sudo mount $(DISK_IMG) ./tmp
-	sudo cp -R ./disk/EFI ./tmp
-	sudo cp ./bin/kernel/kernel.bin ./tmp/KERNEL.BIN
-	sudo cp ./bin/kernel/data/stdfont.fnt ./tmp/FONT.FNT
-	sudo sh -c 'echo "Hello from file!" > ./tmp/FILE.TXT'
-	sudo mkdir -p ./tmp/APPS
-	@for f in $(APP_BINS); do sudo cp $$f ./tmp/APPS/$$(basename $$f | tr 'a-z' 'A-Z'); done
-	sleep 0.6
-	sudo umount ./tmp
+# Disk image: built by tools/mkimg.py (pyfatfs, no sudo). LAYOUT=gpt|mbr|
+# superfloppy, IMG_SIZE_MIB=64. Apps land in /APPS (8.3) until stage 3.7
+# moves them to /bin with LFN names.
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
+	python3 tools/mkimg.py $(DISK_IMG) \
+		bin/boot/efi/BOOTX64.EFI \
+		bin/kernel/kernel.bin \
+		bin/kernel/data/stdfont.fnt \
+		$(APP_BINS) \
+		--layout=$(LAYOUT) --size=$(IMG_SIZE_MIB) \
+		--bios-stub=bin/boot/bios/stub.bin
 
 run: $(DISK_IMG)
-#	$(QEMU_UEFI) -hda $(DISK_IMG)
 	$(QEMU_UEFI) -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
-#	$(QEMU_BIOS) -hda $(DISK_IMG)
 
+# Write the image to a real stick: make usb DEV=/dev/sdX [LAYOUT=gpt]
+usb: $(DISK_IMG)
+	@test -n "$(DEV)" || { echo "usage: make usb DEV=/dev/sdX"; false; }
+	@ls -l $(DEV)
+	@echo "WARNING: $(DEV) will be overwritten. Ctrl-C now to abort."; sleep 3
+	sudo dd if=$(DISK_IMG) of=$(DEV) bs=4M conv=fsync status=progress
+	@echo "Done. The stick can be removed."
 
 create_disk:
 	@rm -rf $(DISK_IMG)
-	dd if=/dev/zero of=$(DISK_IMG) bs=1M count=8
 
 clean:
 	@rm -rf bin/boot/bios/*.bin

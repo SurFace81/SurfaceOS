@@ -31,10 +31,14 @@
 namespace
 {
     // Does `disk` carry the signature the UEFI boot loader reported for the
-    // boot volume? MBR: the 4-byte disk signature at offset 440 of LBA 0.
-    // GPT: the 16-byte disk GUID at offset 56 of the header on LBA 1.
+    // boot volume?
+    //   MBR (sigtype 1): the 4-byte disk signature at offset 440 of LBA 0.
+    //   GPT (sigtype 2): the boot partition's UniquePartitionGUID (the UEFI
+    //     HARDDRIVE_DP node carries the *partition* GUID, not the disk GUID):
+    //     walk the GPT entry array and compare the GUID of the entry that
+    //     starts at the reported LBA.
     bool disk_signature_matches(blkdev* disk, uint32_t sig_type,
-                                const uint8_t* signature)
+                                const uint8_t* signature, uint64_t part_start)
     {
         uint8_t* sector = (uint8_t*)kmalloc(disk->sector_size);
         if (!sector)
@@ -46,10 +50,43 @@ namespace
             if (block::read(disk, 0, 1, sector) == 0)
                 ok = memory::memcmp(sector + 440, signature, 4) == 0;
         }
-        else if (sig_type == 2)
+        else if (sig_type == 2 && disk->sector_count >= 2 &&
+                 block::read(disk, 1, 1, sector) == 0)
         {
-            if (disk->sector_count >= 2 && block::read(disk, 1, 1, sector) == 0)
-                ok = memory::memcmp(sector + 56, signature, 16) == 0;
+            // GPT header: entries_lba @72, num_entries @80, entry_size @84.
+            if (memory::memcmp(sector, (const uint8_t*)"EFI PART", 8) == 0)
+            {
+                uint64_t entries_lba = *(const uint64_t*)(sector + 72);
+                uint32_t num  = *(const uint32_t*)(sector + 80);
+                uint32_t esz  = *(const uint32_t*)(sector + 84);
+
+                if (esz >= 128 && num > 0 && num <= 128 &&
+                    entries_lba < disk->sector_count)
+                {
+                    for (uint32_t i = 0; i < num && !ok; i++)
+                    {
+                        uint64_t lba = entries_lba + (uint64_t)i * esz / disk->sector_size;
+                        uint32_t in_off = (uint32_t)((uint64_t)i * esz % disk->sector_size);
+
+                        if (in_off + 128 > disk->sector_size)
+                            break;                  // entry straddles sectors: skip
+                        if (block::read(disk, lba, 1, sector) != 0)
+                            break;
+
+                        const uint8_t* e = sector + in_off;
+                        // Empty slot: zero type GUID.
+                        static const uint8_t zero16[16] = {0};
+                        if (memory::memcmp(e, zero16, 16) == 0)
+                            continue;
+
+                        uint64_t first_lba = *(const uint64_t*)(e + 32);
+                        const uint8_t* uniq = e + 16;
+                        if (first_lba == part_start &&
+                            memory::memcmp(uniq, signature, 16) == 0)
+                            ok = true;
+                    }
+                }
+            }
         }
 
         kfree(sector);
@@ -59,9 +96,9 @@ namespace
     // Mount the volume UEFI booted from as the root (stage 3.2).
     //
     // 1. The bootloader hands over the boot partition's LBA and the disk
-    //    signature (MBR) or GUID (GPT) from the device path of the loaded
-    //    image. A blkdev matches when it starts at that LBA on a disk with
-    //    that signature.
+    //    signature (MBR) or partition GUID (GPT) from the device path of the
+    //    loaded image. A blkdev matches when it starts at that LBA on a disk
+    //    with that signature.
     // 2. No match (unknown layout, several sticks, ...): take the first
     //    volume with a KERNEL.BIN in its root - that is our kernel, so that
     //    volume is where we booted from in all but the strangest setups.
@@ -82,11 +119,12 @@ namespace
 
             if (!plausible)
                 continue;
-            if (hdr->BootPartitionSignatureType != 0)
+            if (hdr->BootDevicePathValid && hdr->BootPartitionSignatureType != 0)
             {
                 blkdev* disk = d->parent ? d->parent : d;
                 if (!disk_signature_matches(disk, hdr->BootPartitionSignatureType,
-                                            hdr->BootPartitionSignature))
+                                            hdr->BootPartitionSignature,
+                                            hdr->BootPartitionStart))
                     continue;
             }
 

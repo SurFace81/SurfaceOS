@@ -12,21 +12,10 @@ BOOT_WAIT=${2:-20}
 RUN_WAIT=${3:-20}
 IMG=test_disk.img
 MON=/tmp/qmon_int
+LAYOUT=${LAYOUT:-gpt}
 
-make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt bin/boot/bios/stub.bin >/dev/null 2>&1
-make bin/apps/hello.bin >/dev/null 2>&1 || true
-
-rm -f "$IMG" uart.log /tmp/screen_int.ppm
-dd if=/dev/zero of="$IMG" bs=1M count=32 status=none
-mkfs.fat -F32 "$IMG" >/dev/null 2>&1
-dd if=bin/boot/bios/stub.bin of="$IMG" conv=notrunc,fsync status=none
-dd if=bin/boot/bios/stub.bin of="$IMG" conv=notrunc,fsync bs=512 seek=6 status=none
-
-python3 tools/mkimg.py "$IMG" \
-    bin/boot/efi/BOOTX64.EFI \
-    bin/kernel/kernel.bin \
-    bin/kernel/data/stdfont.fnt \
-    bin/apps/hello.bin >/dev/null 2>&1
+rm -f uart.log /tmp/screen_int.ppm
+bash tools/make_test_image.sh "$IMG" "hello" "$LAYOUT"
 
 rm -f "$MON"
 qemu-system-x86_64 \

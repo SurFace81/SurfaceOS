@@ -17,22 +17,31 @@ MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
 APPS="hi hello memtest proctest argtest"
+# LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
+LAYOUT=${LAYOUT:-gpt}
+# SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
+SECTOR=${SECTOR:-512}
+# A 4K-sector FAT32 needs >= 65536 sectors to get a 32-bit TotalSectors:
+# at least 256 MiB.
+if [ "$SECTOR" != "512" ]; then
+    IMG_SIZE=${IMG_SIZE:-512}
+else
+    IMG_SIZE=${IMG_SIZE:-64}
+fi
 
-make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt bin/boot/bios/stub.bin >/dev/null || exit 1
-for a in $APPS; do make bin/apps/$a.bin >/dev/null || exit 1; done
+bash tools/make_test_image.sh "$IMG" "$APPS" "$LAYOUT" "$IMG_SIZE" "$SECTOR"
 
-rm -f "$IMG" "$LOG" /tmp/scr_*.ppm
-dd if=/dev/zero of="$IMG" bs=1M count=32 status=none
-mkfs.fat -F32 "$IMG" >/dev/null 2>&1
-dd if=bin/boot/bios/stub.bin of="$IMG" conv=notrunc,fsync status=none
-dd if=bin/boot/bios/stub.bin of="$IMG" conv=notrunc,fsync bs=512 seek=6 status=none
+# QEMU device for a non-512 sector size: usb-storage does not forward
+# logical_block_size to its child scsi-hd, so the 4K device is built as
+# usb-bot + explicit scsi-hd. Note: the 4K image must be >= 256 MiB for
+# mkfs.fat to produce a valid FAT32 (64 MiB fits in TotalSectors16).
+if [ "$SECTOR" = "512" ]; then
+    USB_DEV="-device usb-storage,drive=usbstick"
+else
+    USB_DEV="-device usb-bot,id=msd -device scsi-hd,bus=msd.0,drive=usbstick,logical_block_size=$SECTOR,physical_block_size=$SECTOR"
+fi
 
-python3 tools/mkimg.py "$IMG" \
-    bin/boot/efi/BOOTX64.EFI \
-    bin/kernel/kernel.bin \
-    bin/kernel/data/stdfont.fnt \
-    $(for a in $APPS; do echo bin/apps/$a.bin; done) >/dev/null 2>&1
-
+rm -f "$LOG" /tmp/scr_*.ppm
 rm -f "$MON"
 qemu-system-x86_64 \
     -chardev file,id=uart0,path=$LOG \
@@ -42,7 +51,7 @@ qemu-system-x86_64 \
     -device qemu-xhci \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
-    -device usb-storage,drive=usbstick \
+    $USB_DEV \
     -display none -no-reboot -no-shutdown \
     -monitor unix:$MON,server,nowait >/dev/null 2>&1 &
 QEMU_PID=$!

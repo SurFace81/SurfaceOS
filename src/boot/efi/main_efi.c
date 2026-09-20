@@ -8,6 +8,9 @@
 
 // MEDIA_HARDDRIVE_DP node (UEFI spec, Media Device Path, subtype 1).
 // Laid over EFI_DEVICE_PATH_PROTOCOL by hand: efi.h does not define it.
+// packed: the on-wire node is exactly 42 bytes; natural alignment would pad
+// UINT64 PartitionStart and inflate sizeof() to 48, so the length check
+// `len >= sizeof(...)` would skip every real node.
 typedef struct {
     UINT8   Type;           // 4  (MEDIA_DEVICE_PATH)
     UINT8   SubType;        // 1  (MEDIA_HARDDRIVE_DP)
@@ -19,7 +22,7 @@ typedef struct {
                             // GPT: disk GUID
     UINT8   MBRType;        // 1: MBR w/ 0x55AA, 2: GPT protective MBR
     UINT8   SignatureType;  // 0: none, 1: MBR, 2: GUID
-} HARDDRIVE_DEVICE_PATH;
+} __attribute__((packed)) HARDDRIVE_DEVICE_PATH;
 
 #define MEDIA_DEVICE_PATH   4
 #define MEDIA_HARDDRIVE_DP  1
@@ -42,10 +45,22 @@ static void fill_boot_partition_info(EFI_DEVICE_PATH_PROTOCOL *DevicePath,
     if (!DevicePath)
         return;
 
+    // Debug aid: record the (Type,SubType) pairs of up to 8 walked nodes in
+    // the signature bytes when no HARDDRIVE_DP is found; the kernel logs it.
+    UINT8 trace[16];
+    for (int i = 0; i < 16; i++)
+        trace[i] = 0;
+    int ti = 0;
+
     for (;;) {
         UINT16 len = (UINT16)(DevicePath->Length[0] | (DevicePath->Length[1] << 8));
         if (len < 4)
             break;
+
+        if (ti < 16)
+            trace[ti++] = DevicePath->Type;
+        if (ti < 16)
+            trace[ti++] = DevicePath->SubType;
 
         if (DevicePath->Type == MEDIA_DEVICE_PATH &&
             DevicePath->SubType == MEDIA_HARDDRIVE_DP &&
@@ -66,6 +81,9 @@ static void fill_boot_partition_info(EFI_DEVICE_PATH_PROTOCOL *DevicePath,
 
         DevicePath = (EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)DevicePath + len);
     }
+
+    for (int i = 0; i < 16; i++)
+        BootHeader->BootPartitionSignature[i] = trace[i];
 }
 
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
