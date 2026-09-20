@@ -59,6 +59,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/dev/blkdev.o \
 				bin/kernel/dev/part.o \
 				bin/kernel/dev/bcache.o \
+				bin/kernel/fs/vfs.o \
 				bin/kernel/drivers/commands.o \
 				bin/kernel/drivers/pit.o \
 				bin/kernel/drivers/rtc.o \
@@ -124,6 +125,10 @@ bin/kernel/drivers/fs/%.o: src/kernel/drivers/fs/%.cpp
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/dev/%.o: src/kernel/dev/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(CCFLAGS) -o $@ $^
+
+bin/kernel/fs/%.o: src/kernel/fs/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
@@ -218,7 +223,7 @@ clean:
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
-	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o
+	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o
 	@rm -rf bin/sdk/*.o bin/sdk/*.a
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h
