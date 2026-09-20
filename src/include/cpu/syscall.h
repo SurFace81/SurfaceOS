@@ -5,4 +5,10 @@
 
 extern "C" void syscall_entry();
 
+namespace syscall
+{
+    // Build the dispatch tables. Called once from kmain.
+    void init();
+}
+
 #endif

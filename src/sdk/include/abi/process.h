@@ -13,6 +13,7 @@ typedef sint32_t pid_t;
 // Exit status reported by waitpid() / the console. A normal exit reports the
 // value passed to exit() or returned from main(). A process that did not exit
 // on its own reports one of these instead.
+// (Transitional: replaced by the Linux (code<<8)/signal encoding in step 3.0.2)
 #define EXIT_ESCAPE         130                 // terminated with Esc
 #define EXIT_KILLED         137                 // terminated with kill()
 #define EXIT_FAULT_BASE     200                 // + CPU exception vector

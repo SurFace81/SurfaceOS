@@ -14,9 +14,9 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <mman.h>
+#include <syscall.h>
+#include <errno.h>
 #include <abi/syscall.h>
-
-extern uint64_t syscall(uint64_t num, uint64_t arg0 = 0, uint64_t arg1 = 0, uint64_t arg2 = 0);
 
 static const uint64_t PAGE = 4096;
 static int passed = 0;
@@ -247,22 +247,22 @@ static void test_uaccess()
     const uint64_t page_tables   = 0x300000;
 
     check("SYS_TIME into the PMM bitmap is refused",
-          syscall(SYS_TIME, pmm_bitmap) == (uint64_t)-1);
+          syscall(SYS_TIME, pmm_bitmap) == -EFAULT);
     check("SYS_UPTIME into the page tables is refused",
-          syscall(SYS_UPTIME, page_tables) == (uint64_t)-1);
+          syscall(SYS_UPTIME, page_tables) == -EFAULT);
     check("SYS_READ_KEY into the kernel image is refused",
-          syscall(SYS_READ_KEY, kernel_image) == (uint64_t)-1);
+          syscall(SYS_READ_KEY, kernel_image) == -EFAULT);
     check("SYS_WRITE of a kernel string is refused",
-          syscall(SYS_WRITE, kernel_image) == (uint64_t)-1);
+          syscall(SYS_WRITE, kernel_image) == -EFAULT);
     check("SYS_STAT_FILE with a kernel path is refused",
-          syscall(SYS_STAT_FILE, kernel_image, pmm_bitmap) == (uint64_t)-1);
+          syscall(SYS_STAT_FILE, kernel_image, pmm_bitmap) == -EFAULT);
     check("SYS_WAITPID status into the kernel is refused",
-          syscall(SYS_WAITPID, (uint64_t)-1, pmm_bitmap, WNOHANG) == (uint64_t)-1);
+          syscall(SYS_WAITPID, (uint64_t)-1, pmm_bitmap, WNOHANG) == -EFAULT);
 
     static const char rodata[] = "read-only";
     datetime_t* ro = (datetime_t*)(uint64_t)rodata;
     check("SYS_TIME into our own .rodata is refused",
-          syscall(SYS_TIME, (uint64_t)ro) == (uint64_t)-1);
+          syscall(SYS_TIME, (uint64_t)ro) == -EFAULT);
 
     datetime_t ok;
     check("SYS_TIME into a valid buffer still works",

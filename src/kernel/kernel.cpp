@@ -7,6 +7,7 @@
 #include "../include/cpu/pci.h"
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
+#include "../include/cpu/syscall.h"
 #include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
@@ -75,6 +76,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     usb::init();
     uart::printf("boot: usb ready\n");
 
+    syscall::init();
     process::init();
 
     console::init();

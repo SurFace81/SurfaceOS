@@ -19,6 +19,7 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
+#include "../../sdk/include/abi/errno.h"
 
 extern "C" void process_enter_user(cpu_context* ctx);
 extern "C" void process_return_to_kernel(void);
@@ -29,7 +30,9 @@ extern "C" void process_return_to_kernel(void);
 #define INT80_LENGTH        2           // `int $0x80` is CD 80
 #define TIME_SLICE_TICKS    10          // PIT ticks (~10 ms at 1 kHz)
 #define LINE_CAPACITY       256
-#define SYSCALL_ERROR       ((uint64_t)-1)
+
+// Syscall failure: -errno in rax (Linux convention, see abi/errno.h).
+#define SYSCALL_ERR(e)      ((uint64_t)(sint64_t)-(e))
 
 namespace process
 {
@@ -305,56 +308,78 @@ namespace process
     }
 
     // Read the whole executable into kernel memory, sized from its directory
-    // entry.
-    static uint8_t* read_executable(const char* path, uint32_t* out_size)
+    // entry. Returns the buffer or nullptr with *out_err set to -errno.
+    static uint8_t* read_executable(const char* path, uint32_t* out_size, int* out_err)
     {
         fat32_dir_entry entry;
         if (!fat32::resolve_path_pub(path, &entry))
+        {
+            *out_err = ENOENT;
             return nullptr;
+        }
 
-        if (entry.file_size == 0 || entry.file_size > USER_IMAGE_MAX)
+        if (entry.attr & FAT32_ATTR_DIRECTORY)
+        {
+            *out_err = EISDIR;
+            return nullptr;
+        }
+
+        if (entry.file_size == 0)
+        {
+            *out_err = ENOEXEC;
+            return nullptr;
+        }
+        if (entry.file_size > USER_IMAGE_MAX)
         {
             uart::printf("process: %s has an unusable size (%u bytes)\n",
                          path, entry.file_size);
+            *out_err = EFBIG;
             return nullptr;
         }
 
         uint8_t* image = (uint8_t*)kmalloc(entry.file_size);
         if (!image)
+        {
+            *out_err = ENOMEM;
             return nullptr;
+        }
 
         uint32_t read = fat32::read_file(path, image, entry.file_size);
         if (read == (uint32_t)-1 || read == 0)
         {
             kfree(image);
+            *out_err = EIO;
             return nullptr;
         }
 
+        *out_err = 0;
         *out_size = read;
         return image;
     }
 
     // Build a complete address space for `path`: ELF segments, stack,
     // program_info and argv. The active address space is unchanged on return.
-    static bool load_program(const char* path, const ArgList* args, Image* out)
+    // Returns 0 or -errno.
+    static sint64_t load_program(const char* path, const ArgList* args, Image* out)
     {
+        int err = 0;
         uint32_t size = 0;
-        uint8_t* file = read_executable(path, &size);
+        uint8_t* file = read_executable(path, &size, &err);
         if (!file)
-            return false;
+            return -(sint64_t)err;
 
         if (!elf::is_elf(file, size))
         {
             uart::printf("process: %s is not an ELF64 executable\n", path);
             kfree(file);
-            return false;
+            return -ENOEXEC;
         }
 
         uint64_t as = paging::create_address_space();
         if (!as)
         {
             kfree(file);
-            return false;
+            return -ENOMEM;
         }
 
         uint64_t prev = read_cr3();
@@ -366,10 +391,14 @@ namespace process
             map_user_region(USER_ARGS_VADDR, USER_ARGS_PAGES * PAGE_SIZE_4K, PAGE_NX) &&
             map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
                             PAGE_WRITE | PAGE_NX);
-        if (ok)
+        if (!ok)
+            err = ENOMEM;
+        else
         {
             lr = elf::load(file, size);
             ok = lr.valid && lr.image_end <= USER_MMAP_BASE;
+            if (!ok)
+                err = ENOEXEC;
         }
 
         if (ok)
@@ -403,13 +432,13 @@ namespace process
         if (!ok)
         {
             paging::destroy_address_space(as);
-            return false;
+            return -(sint64_t)err;
         }
 
         out->cr3       = as;
         out->entry     = lr.entry;
         out->image_end = lr.image_end;
-        return true;
+        return 0;
     }
 
     static void adopt_image(Process* p, const Image* img, const char* path)
@@ -634,7 +663,7 @@ namespace process
         }
 
         Image img;
-        if (!load_program(path, &args, &img))
+        if (load_program(path, &args, &img) < 0)
             return false;
 
         Process* p = alloc_process();
@@ -796,7 +825,7 @@ namespace process
         Process* child = alloc_process();
         if (!child)
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(EAGAIN);
             return;
         }
 
@@ -806,7 +835,7 @@ namespace process
             if (child->cr3)
                 paging::destroy_address_space(child->cr3);
             free_process(child);
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(ENOMEM);
             return;
         }
 
@@ -831,7 +860,7 @@ namespace process
         char path[uaccess::MAX_PATH];
         if (uaccess::strncpy_from_user(path, regs->rdi, sizeof(path)) <= 0)
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
 
@@ -851,17 +880,21 @@ namespace process
                 uint64_t str = 0;
                 if (!uaccess::copy_from_user(&str, argv_ptr + (uint64_t)i * 8, 8))
                 {
-                    regs->rax = SYSCALL_ERROR;
+                    regs->rax = SYSCALL_ERR(EFAULT);
                     return;
                 }
                 if (!str)
                     break;
 
                 char arg[ARG_MAX_BYTES];
-                if (uaccess::strncpy_from_user(arg, str, sizeof(arg)) < 0 ||
-                    !args_push(&args, arg))
+                if (uaccess::strncpy_from_user(arg, str, sizeof(arg)) < 0)
                 {
-                    regs->rax = SYSCALL_ERROR;
+                    regs->rax = SYSCALL_ERR(EFAULT);
+                    return;
+                }
+                if (!args_push(&args, arg))
+                {
+                    regs->rax = SYSCALL_ERR(E2BIG);
                     return;
                 }
             }
@@ -870,9 +903,10 @@ namespace process
         }
 
         Image img;
-        if (!load_program(path, &args, &img))
+        sint64_t rc = load_program(path, &args, &img);
+        if (rc < 0)
         {
-            regs->rax = SYSCALL_ERROR;      // the old program keeps running
+            regs->rax = (uint64_t)rc;       // the old program keeps running
             return;
         }
 
@@ -895,7 +929,7 @@ namespace process
 
         if (status_ptr && !uaccess::writable(status_ptr, sizeof(int)))
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
 
@@ -915,7 +949,7 @@ namespace process
             int status = q->exit_status;
             if (status_ptr && !uaccess::copy_to_user(status_ptr, &status, sizeof(status)))
             {
-                regs->rax = SYSCALL_ERROR;
+                regs->rax = SYSCALL_ERR(EFAULT);
                 return;
             }
 
@@ -926,7 +960,7 @@ namespace process
 
         if (!has_child)
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(ECHILD);
             return;
         }
 
@@ -945,7 +979,7 @@ namespace process
         Process* target = find_live((pid_t)(sint32_t)regs->rdi);
         if (!target)
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(ESRCH);
             return;
         }
 
@@ -968,7 +1002,7 @@ namespace process
     {
         if (!uaccess::writable(regs->rdi, sizeof(keyboard_event_t)))
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
 
@@ -979,7 +1013,7 @@ namespace process
         }
 
         keyboard_event_t e = pop_key();
-        regs->rax = uaccess::copy_to_user(regs->rdi, &e, sizeof(e)) ? 0 : SYSCALL_ERROR;
+        regs->rax = uaccess::copy_to_user(regs->rdi, &e, sizeof(e)) ? 0 : SYSCALL_ERR(EFAULT);
     }
 
     void sys_read_line(user_regs* regs, iret_frame* iret)
@@ -987,9 +1021,14 @@ namespace process
         uint64_t user_buf = regs->rdi;
         uint64_t max_len  = regs->rsi;
 
-        if (max_len == 0 || max_len > 4096 || !uaccess::writable(user_buf, max_len))
+        if (max_len == 0 || max_len > 4096)
         {
-            regs->rax = SYSCALL_ERROR;
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+        if (!uaccess::writable(user_buf, max_len))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
 
@@ -1011,7 +1050,7 @@ namespace process
                 current->line[len] = '\0';
                 current->line_pos = 0;
                 regs->rax = uaccess::copy_to_user(user_buf, current->line, len + 1)
-                          ? (uint64_t)len : SYSCALL_ERROR;
+                          ? (uint64_t)len : SYSCALL_ERR(EFAULT);
                 return;
             }
 
@@ -1152,7 +1191,7 @@ namespace process
         uint64_t hint = regs->rdi;
         uint64_t len  = regs->rsi;
         uint64_t prot = regs->rdx;
-        regs->rax = SYSCALL_ERROR;
+        regs->rax = SYSCALL_ERR(EINVAL);
 
         if (len == 0 || len > USER_MMAP_LIMIT - USER_MMAP_BASE ||
             (prot & ~(uint64_t)(PROT_READ | PROT_WRITE | PROT_EXEC)))
@@ -1170,7 +1209,10 @@ namespace process
             addr = find_free_range(current, pages);
 
         if (!addr)
+        {
+            regs->rax = SYSCALL_ERR(ENOMEM);
             return;
+        }
 
         uint64_t flags = prot_to_flags(prot);
 
@@ -1192,6 +1234,7 @@ namespace process
             if (!ok)
             {
                 release_range(addr, i + 1);
+                regs->rax = SYSCALL_ERR(ENOMEM);
                 return;
             }
         }
@@ -1207,7 +1250,7 @@ namespace process
     {
         uint64_t addr = regs->rdi;
         uint64_t len  = regs->rsi;
-        regs->rax = SYSCALL_ERROR;
+        regs->rax = SYSCALL_ERR(EINVAL);
 
         if (!len || (addr & (PAGE_SIZE_4K - 1)))
             return;
@@ -1225,7 +1268,7 @@ namespace process
         uint64_t addr = regs->rdi;
         uint64_t len  = regs->rsi;
         uint64_t prot = regs->rdx;
-        regs->rax = SYSCALL_ERROR;
+        regs->rax = SYSCALL_ERR(EINVAL);
 
         if (!len || (addr & (PAGE_SIZE_4K - 1)) ||
             (prot & ~(uint64_t)(PROT_READ | PROT_WRITE | PROT_EXEC)))
@@ -1245,7 +1288,10 @@ namespace process
         // All or nothing: every page must exist before any is changed.
         for (uint64_t i = 0; i < pages; i++)
             if (!paging::page_frame(addr + i * PAGE_SIZE_4K))
+            {
+                regs->rax = SYSCALL_ERR(ENOMEM);
                 return;
+            }
 
         uint64_t flags = prot_to_flags(prot);
         for (uint64_t i = 0; i < pages; i++)

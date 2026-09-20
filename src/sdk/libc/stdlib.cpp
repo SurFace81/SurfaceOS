@@ -1,8 +1,6 @@
 #include "../include/stdlib.h"
-#include "../include/abi/syscall.h"
-
-extern uint64_t syscall(uint64_t num, uint64_t arg0 = 0, uint64_t arg1 = 0, uint64_t arg2 = 0);
-extern uint64_t brk(uint64_t new_brk);
+#include "../include/syscall.h"
+#include "../include/mman.h"
 
 struct BlockHeader
 {
