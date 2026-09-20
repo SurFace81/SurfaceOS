@@ -68,7 +68,7 @@ namespace elf
 
     LoadResult load(const uint8_t* image, uint32_t image_size)
     {
-        LoadResult result = {0, 0, false};
+        LoadResult result = {0, 0, 0, 0, 0, false};
 
         if (!is_elf(image, image_size))
             return result;
@@ -81,6 +81,7 @@ namespace elf
             return result;
 
         uint64_t image_end = 0;
+        uint64_t phdr_vaddr = 0;
 
         for (uint16_t i = 0; i < ehdr->e_phnum; i++)
         {
@@ -119,6 +120,12 @@ namespace elf
             uint64_t seg_start    = phdr->p_vaddr;
             uint64_t seg_end      = phdr->p_vaddr + phdr->p_memsz;
             uint64_t seg_file_end = phdr->p_vaddr + phdr->p_filesz;
+
+            // AT_PHDR: does this segment carry the program header table?
+            if (ehdr->e_phoff >= phdr->p_offset &&
+                ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize <=
+                    phdr->p_offset + phdr->p_filesz)
+                phdr_vaddr = phdr->p_vaddr + (ehdr->e_phoff - phdr->p_offset);
 
             uint64_t first_page = seg_start & ~(PAGE_SIZE_4K - 1);
             uint64_t last_page  = (seg_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
@@ -164,6 +171,9 @@ namespace elf
 
         result.entry = ehdr->e_entry;
         result.image_end = (image_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
+        result.phdr_vaddr = phdr_vaddr;
+        result.phdr_entsize = ehdr->e_phentsize;
+        result.phdr_num = ehdr->e_phnum;
         result.valid = true;
         return result;
     }

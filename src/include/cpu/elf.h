@@ -75,6 +75,15 @@ namespace elf
     {
         uint64_t entry;         // entry point virtual address
         uint64_t image_end;     // highest mapped vaddr (page-aligned)
+
+        // Where the program header table ended up in the image, for AT_PHDR.
+        // phdr_vaddr == 0 means no PT_LOAD segment covers e_phoff (a static
+        // executable that does not map its own phdrs - musl tolerates that
+        // by ignoring AT_PHDR, but our SDK images always include it).
+        uint64_t phdr_vaddr;
+        uint64_t phdr_entsize;
+        uint64_t phdr_num;
+
         bool     valid;
     };
 

@@ -386,7 +386,7 @@ namespace process
         uint64_t prev = read_cr3();
         paging::switch_address_space(as);
 
-        elf::LoadResult lr = {0, 0, false};
+        elf::LoadResult lr = {0, 0, 0, 0, 0, false};
         bool ok =
             map_user_region(USER_INFO_VADDR, PAGE_SIZE_4K, PAGE_NX) &&
             map_user_region(USER_ARGS_VADDR, USER_ARGS_PAGES * PAGE_SIZE_4K, PAGE_NX) &&
