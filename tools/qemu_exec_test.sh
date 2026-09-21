@@ -13,14 +13,21 @@
 #   8. meminfo around a session   -> no leaked frames (per-process kstacks)
 #   9. hi, Ctrl+D                 -> EOF ends a canonical read
 #  10. termtest                   -> CP437 upper half renders
+#  11. keys                      -> every key reaches the app with its code
 set -u
+
+# termtest writes raw CP437 bytes and escape sequences to the serial log, so
+# in a UTF-8 locale grep starts seeing NEL line terminators and stray
+# encodings, and anchors stop matching. Byte semantics everywhere, and -a on
+# every grep, keeps the log parsing independent of what the apps printed.
+export LC_ALL=C
 
 cd "$(dirname "$0")/.."
 IMG=test_disk.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest argtest fstest termtest"
+APPS="hi hello memtest proctest argtest fstest termtest keys"
 # LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
 LAYOUT=${LAYOUT:-gpt}
 # SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
@@ -80,13 +87,13 @@ type_cmd() { python3 tools/send_keys.py "$MON" "$1"; key ret; }
 wait_for() {
     local deadline=$((SECONDS + $2))
     while [ $SECONDS -lt $deadline ]; do
-        grep -qF -- "$1" "$LOG" 2>/dev/null && return 0
+        grep -aqF -- "$1" "$LOG" 2>/dev/null && return 0
         sleep 1
     done
     return 1
 }
 
-sessions_ended() { grep -c "process: session end" "$LOG" 2>/dev/null || echo 0; }
+sessions_ended() { grep -ac "process: session end" "$LOG" 2>/dev/null || echo 0; }
 
 # wait until the N-th session has ended
 wait_session_end() {
@@ -103,7 +110,7 @@ result() {  # result <ok:0/1> "<description>"
     if [ "$1" -eq 0 ]; then echo "PASS  $2"; else echo "FAIL  $2"; FAILS=$((FAILS+1)); fi
 }
 
-last_status() { grep "process: session end" "$LOG" | tail -1 | grep -oE '[0-9]+$'; }
+last_status() { grep -a "process: session end" "$LOG" | tail -1 | grep -aoE '[0-9]+$'; }
 
 wait_for "boot: console ready" "$BOOT_WAIT"; result $? "kernel boots to the console"
 wait_for "boot: root mounted" 10; result $? "root volume automounted at boot"
@@ -138,29 +145,29 @@ wait_session_end 3 15; result $? "Esc ends an app spinning in ring 3"
 # 4. memtest
 type_cmd "exec memtest"
 wait_for "memtest: " 240; result $? "memtest finished"
-grep -E "\[FAIL\]|status [0-9-]+, expected" "$LOG" | sed 's/^/      /'
-grep -q "memtest: [0-9]* passed, 0 failed" "$LOG"; result $? "memtest: no failed checks"
+grep -aE "\[FAIL\]|status [0-9-]+, expected" "$LOG" | sed 's/^/      /'
+grep -aq "memtest: [0-9]* passed, 0 failed" "$LOG"; result $? "memtest: no failed checks"
 sleep 1; key ret
 wait_session_end 4 20; result $? "memtest exits"
 
 # 5. proctest
 type_cmd "exec proctest"
 wait_for "proctest: " 240; result $? "proctest finished"
-grep -q "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no failed checks"
+grep -aq "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no failed checks"
 sleep 1; key ret
 wait_session_end 5 20; result $? "proctest exits"
 
 # 6. argtest (SysV stack: argv/envp/auxv, execve with 1000 args, E2BIG)
 type_cmd "exec argtest"
 wait_for "argtest: " 240; result $? "argtest finished"
-grep -q "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
+grep -aq "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
 wait_session_end 6 20; result $? "argtest exits"
 
 # 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, /dev)
 type_cmd "exec fstest"
 wait_for "fstest: " 600; result $? "fstest finished"
-grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
-grep -q "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
 wait_session_end 7 30; result $? "fstest exits"
 
 # 8. Ctrl+D on an empty line is EOF. Until the keyboard learned to fold Ctrl,
@@ -183,7 +190,23 @@ monitor "screendump /tmp/scr_term.ppm"
 sleep 1; key ret
 wait_session_end $WANT 20; result $? "termtest exits"
 
-# 10. umount refuses while the FS is in use, and succeeds once it is not.
+# 10. keys: every key reaches an application with a distinct code. Function
+#     keys, the navigation cluster and the keypad used to be dropped by a
+#     whitelist in the driver, or arrive with no character at all.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec keys"
+wait_for "keys: press any key" 30; result $? "keys started"
+for k in f5 up home delete ctrl-a; do key $k; sleep 1; done
+sleep 2
+grep -aq "key code=63 .*name=F5"        "$LOG"; result $? "F5 reaches the app"
+grep -aq "key code=200 .*name=Up"       "$LOG"; result $? "arrow keys reach the app"
+grep -aq "key code=199 .*name=Home"     "$LOG"; result $? "Home reaches the app"
+grep -aq "key code=211 .*name=Delete"   "$LOG"; result $? "Delete reaches the app"
+grep -aq "key code=30 char=0x0*1 mods=CTRL" "$LOG"; result $? "Ctrl+A folds to 0x01"
+key esc
+wait_session_end $WANT 20; result $? "keys exits"
+
+# 11. umount refuses while the FS is in use, and succeeds once it is not.
 #    Standing in /dev gives the console cwd a reference on the devfs root;
 #    before the stage-3 cleanup umount freed those vnodes anyway.
 type_cmd "cd /dev"; sleep 2
@@ -193,32 +216,32 @@ type_cmd "cd /"; sleep 2
 type_cmd "umount /dev"; sleep 3
 wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
 
-# 11. per-process kernel stacks are handed back when a session ends: run a
+# 12. per-process kernel stacks are handed back when a session ends: run a
 #    session between two meminfo samples and compare the free-frame counts.
 type_cmd "meminfo"; sleep 3
-FRAMES_BEFORE=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
+FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec hi"
 wait_for "Hello world!" 20
 sleep 1; key ret
 wait_session_end $WANT 15; result $? "session between meminfo samples ended"
 type_cmd "meminfo"; sleep 3
-FRAMES_AFTER=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
+FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a session leaks no physical frames (kernel stacks freed)"
 
-# 12. console still alive
+# 13. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
-! grep -q "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
+! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
 
 monitor "quit"
 sleep 1
 
 echo
 echo "=== summary lines ==="
-grep -E "^cpu:|^pmm:|memtest: |proctest: |argtest: |fstest: |session (start|end)|kernel fault|app fault" "$LOG"
+grep -aE "^cpu:|^pmm:|memtest: |proctest: |argtest: |fstest: |session (start|end)|kernel fault|app fault" "$LOG"
 echo
 if [ $FAILS -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$FAILS CHECK(S) FAILED"; fi
 exit $FAILS
