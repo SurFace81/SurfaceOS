@@ -1,15 +1,23 @@
-// ELF64 loader: maps PT_LOAD segments of an executable into the current
-// address space with per-segment permissions.
+// ELF64 loader: maps PT_LOAD segments of a vnode into the current address
+// space with per-segment permissions.
 //
 // The image is untrusted input: every header field is range-checked before
 // it is used, and every mapping goes through paging::map_user_page so a
 // segment can only ever land inside the process's own PML4 entry.
+//
+// Segments are read from the file by p_offset in page-sized chunks straight
+// into their destination physical frames - the executable is never copied
+// whole into kernel memory (USER_IMAGE_MAX is 64 MiB, a kmalloc of that on
+// a 128 MiB machine would be reckless). The header and phdr table are small
+// and are read into scratch buffers.
 
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/paging.h"
 #include "../../include/mm/pmm.h"
+#include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
+#include "../../sdk/include/abi/errno.h"
 
 namespace elf
 {
@@ -66,19 +74,92 @@ namespace elf
         return true;
     }
 
-    LoadResult load(const uint8_t* image, uint32_t image_size)
+    // Read `len` bytes of the file at `off` into `dst`. Returns the number
+    // of bytes read (short reads are legal near EOF), or -errno.
+    static sint64_t read_at(vnode* v, uint64_t off, void* dst, uint64_t len)
+    {
+        uint64_t done = 0;
+        sint64_t rc = v->ops->read(v, off, dst, len, &done);
+        if (rc != 0)
+            return rc;
+        return (sint64_t)done;
+    }
+
+    LoadResult load_file(vnode* v, uint64_t file_size, sint64_t* out_rc)
     {
         LoadResult result = {0, 0, 0, 0, 0, false};
 
-        if (!is_elf(image, image_size))
+        if (file_size < sizeof(Elf64_Ehdr))
+        {
+            *out_rc = -ENOEXEC;
             return result;
+        }
 
-        const Elf64_Ehdr* ehdr = (const Elf64_Ehdr*)image;
+        // Header into a scratch buffer.
+        Elf64_Ehdr* ehdr = (Elf64_Ehdr*)kmalloc(sizeof(Elf64_Ehdr));
+        if (!ehdr)
+        {
+            *out_rc = -ENOMEM;
+            return result;
+        }
 
-        if (ehdr->e_phentsize < sizeof(Elf64_Phdr))
+        sint64_t got = read_at(v, 0, ehdr, sizeof(Elf64_Ehdr));
+        if (got != (sint64_t)sizeof(Elf64_Ehdr))
+        {
+            kfree(ehdr);
+            *out_rc = got < 0 ? (sint64_t)got : -EIO;
             return result;
-        if (ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize > image_size)
+        }
+
+        if (!is_elf((const uint8_t*)ehdr, sizeof(Elf64_Ehdr)))
+        {
+            kfree(ehdr);
+            *out_rc = -ENOEXEC;
             return result;
+        }
+
+        if (ehdr->e_phentsize < sizeof(Elf64_Phdr) || ehdr->e_phnum == 0 ||
+            ehdr->e_phnum > 1024)
+        {
+            kfree(ehdr);
+            *out_rc = -ENOEXEC;
+            return result;
+        }
+        uint64_t ph_bytes = (uint64_t)ehdr->e_phnum * ehdr->e_phentsize;
+        if (ehdr->e_phoff + ph_bytes > file_size)
+        {
+            kfree(ehdr);
+            *out_rc = -ENOEXEC;
+            return result;
+        }
+
+        // Program header table into scratch.
+        Elf64_Phdr* phdrs = (Elf64_Phdr*)kmalloc(ph_bytes);
+        if (!phdrs)
+        {
+            kfree(ehdr);
+            *out_rc = -ENOMEM;
+            return result;
+        }
+        got = read_at(v, ehdr->e_phoff, phdrs, ph_bytes);
+        if (got != (sint64_t)ph_bytes)
+        {
+            kfree(phdrs);
+            kfree(ehdr);
+            *out_rc = got < 0 ? (sint64_t)got : -EIO;
+            return result;
+        }
+
+        // One chunk buffer for copying file-backed segment slices into their
+        // destination pages.
+        uint8_t* chunk = (uint8_t*)kmalloc(PAGE_SIZE_4K);
+        if (!chunk)
+        {
+            kfree(phdrs);
+            kfree(ehdr);
+            *out_rc = -ENOMEM;
+            return result;
+        }
 
         uint64_t image_end = 0;
         uint64_t phdr_vaddr = 0;
@@ -86,29 +167,29 @@ namespace elf
         for (uint16_t i = 0; i < ehdr->e_phnum; i++)
         {
             const Elf64_Phdr* phdr =
-                (const Elf64_Phdr*)(image + ehdr->e_phoff + (uint64_t)i * ehdr->e_phentsize);
+                (const Elf64_Phdr*)((const uint8_t*)phdrs + (uint64_t)i * ehdr->e_phentsize);
 
             if (phdr->p_type != PT_LOAD)
                 continue;
 
             if (phdr->p_filesz > phdr->p_memsz)
-                return result;
-
+            {
+                *out_rc = -ENOEXEC;
+                goto fail;
+            }
             // Bounds-check only the file-backed part. A pure-BSS segment
-            // (filesz == 0) may have p_offset beyond the end of the file;
-            // that is valid and must not be rejected.
-            if (phdr->p_filesz > 0 && phdr->p_offset + phdr->p_filesz > image_size)
-                return result;
-
-            // The segment must fit inside this process's own address space.
-            // Without this, an ELF asking for p_vaddr in the low canonical
-            // range would have the loader walk PML4[0] - shared with the
-            // kernel - and map user-writable pages into the kernel's tables.
+            // (filesz == 0) may have p_offset beyond the end of the file.
+            if (phdr->p_filesz > 0 && phdr->p_offset + phdr->p_filesz > file_size)
+            {
+                *out_rc = -ENOEXEC;
+                goto fail;
+            }
             if (!paging::is_user_range(phdr->p_vaddr, phdr->p_memsz))
             {
                 uart::printf("elf: segment %u at %llx is outside user space\n",
                              (uint32_t)i, phdr->p_vaddr);
-                return result;
+                *out_rc = -ENOEXEC;
+                goto fail;
             }
 
             uint64_t flags = 0;
@@ -121,41 +202,44 @@ namespace elf
             uint64_t seg_end      = phdr->p_vaddr + phdr->p_memsz;
             uint64_t seg_file_end = phdr->p_vaddr + phdr->p_filesz;
 
-            // AT_PHDR: does this segment carry the program header table?
-            if (ehdr->e_phoff >= phdr->p_offset &&
-                ehdr->e_phoff + (uint64_t)ehdr->e_phnum * ehdr->e_phentsize <=
-                    phdr->p_offset + phdr->p_filesz)
-                phdr_vaddr = phdr->p_vaddr + (ehdr->e_phoff - phdr->p_offset);
-
             uint64_t first_page = seg_start & ~(PAGE_SIZE_4K - 1);
             uint64_t last_page  = (seg_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
 
             for (uint64_t page = first_page; page < last_page; page += PAGE_SIZE_4K)
             {
                 if (!map_zero_page(page, flags))
-                    return result;
+                {
+                    *out_rc = -ENOMEM;
+                    goto fail;
+                }
 
-                // Copy the file-backed slice that falls inside *this* page.
-                // Clamping to the page end is what keeps a segment whose
-                // p_vaddr is not page-aligned - the normal case for anything
-                // not linked by our own SDK script - from running the memcpy
-                // off the end of the frame and into an unrelated one.
+                // Copy the file-backed slice that falls inside *this* page,
+                // reading it from the file in at most one page at a time.
                 uint64_t page_end   = page + PAGE_SIZE_4K;
                 uint64_t copy_start = (page > seg_start) ? page : seg_start;
                 uint64_t copy_end   = (page_end < seg_file_end) ? page_end : seg_file_end;
 
                 if (copy_end <= copy_start)
-                    continue;
+                    continue;               // BSS-only part: page already zeroed
 
                 uint64_t src_off  = phdr->p_offset + (copy_start - phdr->p_vaddr);
+                uint64_t copy_len = copy_end - copy_start;
                 uint64_t dst_phys = paging::virtual_to_phys(copy_start);
                 if (!dst_phys)
-                    return result;
+                {
+                    *out_rc = -EFAULT;
+                    goto fail;
+                }
 
+                sint64_t rd = read_at(v, src_off, chunk, copy_len);
+                if (rd != (sint64_t)copy_len)
+                {
+                    *out_rc = rd < 0 ? (sint64_t)rd : -EIO;
+                    goto fail;
+                }
                 // Written through the identity map, i.e. as supervisor memory:
-                // this is deliberately not a uaccess copy.
-                memory::memcpy((uint8_t*)dst_phys, (uint8_t*)image + src_off,
-                               copy_end - copy_start);
+                // deliberately not a uaccess copy.
+                memory::memcpy((uint8_t*)dst_phys, chunk, copy_len);
             }
 
             if (seg_end > image_end)
@@ -163,18 +247,50 @@ namespace elf
         }
 
         if (!image_end)
-            return result;              // no loadable segment
+        {
+            *out_rc = -ENOEXEC;             // no loadable segment
+            goto fail;
+        }
 
         // The entry point has to be inside something we actually mapped.
         if (ehdr->e_entry < USER_BASE || ehdr->e_entry >= image_end)
-            return result;
+        {
+            *out_rc = -ENOEXEC;
+            goto fail;
+        }
 
-        result.entry = ehdr->e_entry;
-        result.image_end = (image_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
-        result.phdr_vaddr = phdr_vaddr;
+        // AT_PHDR: does a PT_LOAD segment carry the program header table?
+        for (uint16_t i = 0; i < ehdr->e_phnum; i++)
+        {
+            const Elf64_Phdr* phdr =
+                (const Elf64_Phdr*)((const uint8_t*)phdrs + (uint64_t)i * ehdr->e_phentsize);
+            if (phdr->p_type != PT_LOAD)
+                continue;
+            if (ehdr->e_phoff >= phdr->p_offset &&
+                ehdr->e_phoff + ph_bytes <= phdr->p_offset + phdr->p_filesz)
+            {
+                phdr_vaddr = phdr->p_vaddr + (ehdr->e_phoff - phdr->p_offset);
+                break;
+            }
+        }
+
+        result.entry        = ehdr->e_entry;
+        result.image_end    = (image_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
+        result.phdr_vaddr   = phdr_vaddr;
         result.phdr_entsize = ehdr->e_phentsize;
-        result.phdr_num = ehdr->e_phnum;
-        result.valid = true;
+        result.phdr_num     = ehdr->e_phnum;
+        result.valid        = true;
+        *out_rc = 0;
+
+        kfree(chunk);
+        kfree(phdrs);
+        kfree(ehdr);
         return result;
+
+    fail:
+        kfree(chunk);
+        kfree(phdrs);
+        kfree(ehdr);
+        return result;      // valid == false, *out_rc set
     }
 } // namespace elf

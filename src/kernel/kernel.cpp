@@ -12,6 +12,7 @@
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
 #include "../include/fs/vfs.h"
+#include "../include/fs/file.h"
 #include "../include/fs/fat32fs.h"
 #include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
@@ -227,6 +228,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     part::enumerate();
     bcache::init();
     vfs::init();
+    filesys::init();
 
     automount_root(BootHeader);
 

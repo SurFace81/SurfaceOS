@@ -13,7 +13,8 @@
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
-#include "../../include/drivers/fs/fat32.h"
+#include "../../include/fs/vfs.h"
+#include "../../include/fs/file.h"
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/pit.h"
@@ -21,6 +22,7 @@
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/time.h"
 #include "../../sdk/include/abi/auxv.h"
+#include "../../sdk/include/abi/fcntl.h"
 
 extern "C" void process_enter_user(cpu_context* ctx);
 extern "C" void process_return_to_kernel(void);
@@ -64,7 +66,12 @@ namespace process
         cpu_context ctx;            // user state while not running
         uint8_t     fpu[512] __attribute__((aligned(16)));   // FXSAVE area
 
-        // SYS_READ_LINE edits across restarts, so its buffer lives here.
+        // POSIX file state: descriptors, cwd (referenced vnode) and umask.
+        fd_table    fds;
+        vnode*      cwd;
+        uint32_t    umask;
+
+        // SYSX_READ_LINE edits across restarts, so its buffer lives here.
         char        line[LINE_CAPACITY];
         uint32_t    line_pos;
     };
@@ -130,6 +137,10 @@ namespace process
             p->pid = next_pid++;
             if (next_pid <= 0)
                 next_pid = 1;
+
+            filesys::fdtable_init(&p->fds);
+            p->umask = 022;
+            p->cwd = vfs::cwd_ref();        // inherit the system cwd
             return p;
         }
         return nullptr;
@@ -137,6 +148,12 @@ namespace process
 
     static void free_process(Process* p)
     {
+        filesys::fdtable_close_all(&p->fds);
+        if (p->cwd)
+        {
+            vfs::unref(p->cwd);
+            p->cwd = nullptr;
+        }
         p->state = State::Unused;
         p->pid = 0;
     }
@@ -433,54 +450,46 @@ namespace process
         }
     }
 
-    // Read the whole executable into kernel memory, sized from its directory
-    // entry. Returns the buffer or nullptr with *out_err set to -errno.
-    static uint8_t* read_executable(const char* path, uint32_t* out_size, int* out_err)
+    // Open the executable at `path` and validate it is a regular file of a
+    // loadable size. Returns a referenced vnode (the caller unrefs it) or
+    // nullptr with *out_err = errno. The ELF segments are read directly from
+    // the vnode in load_program, so the file is never buffered whole.
+    static vnode* open_executable(const char* path, vnode* cwd,
+                                  uint64_t* out_size, int* out_err)
     {
-        fat32_dir_entry entry;
-        if (!fat32::resolve_path_pub(path, &entry))
+        vnode* v = nullptr;
+        sint64_t rc = vfs::lookup(path, cwd, &v, false);
+        if (rc != 0)
         {
-            *out_err = ENOENT;
+            *out_err = (int)-rc;
             return nullptr;
         }
 
-        if (entry.attr & FAT32_ATTR_DIRECTORY)
+        if (v->type != vtype::REG)
         {
-            *out_err = EISDIR;
+            vfs::unref(v);
+            *out_err = (v->type == vtype::DIR) ? EISDIR : EACCES;
             return nullptr;
         }
 
-        if (entry.file_size == 0)
+        if (v->size == 0)
         {
+            vfs::unref(v);
             *out_err = ENOEXEC;
             return nullptr;
         }
-        if (entry.file_size > USER_IMAGE_MAX)
+        if (v->size > USER_IMAGE_MAX)
         {
-            uart::printf("process: %s has an unusable size (%u bytes)\n",
-                         path, entry.file_size);
+            uart::printf("process: %s is too large (%u bytes)\n",
+                         path, (uint32_t)v->size);
+            vfs::unref(v);
             *out_err = EFBIG;
             return nullptr;
         }
 
-        uint8_t* image = (uint8_t*)kmalloc(entry.file_size);
-        if (!image)
-        {
-            *out_err = ENOMEM;
-            return nullptr;
-        }
-
-        uint32_t read = fat32::read_file(path, image, entry.file_size);
-        if (read == (uint32_t)-1 || read == 0)
-        {
-            kfree(image);
-            *out_err = EIO;
-            return nullptr;
-        }
-
         *out_err = 0;
-        *out_size = read;
-        return image;
+        *out_size = v->size;
+        return v;
     }
 
     // AT_RANDOM content. No entropy source exists yet (stage 6 plans
@@ -583,28 +592,22 @@ namespace process
         return 0;
     }
 
-    // Build a complete address space for `path`: ELF segments, stack with
-    // the SysV argv/envp/auxv block. The active address space is unchanged
-    // on return. Returns 0 or -errno.
-    static sint64_t load_program(const char* path, const ArgEnv* ae, Image* out)
+    // Build a complete address space for `path` (resolved against `cwd`):
+    // ELF segments, stack with the SysV argv/envp/auxv block. The active
+    // address space is unchanged on return. Returns 0 or -errno.
+    static sint64_t load_program(const char* path, vnode* cwd,
+                                 const ArgEnv* ae, Image* out)
     {
         int err = 0;
-        uint32_t size = 0;
-        uint8_t* file = read_executable(path, &size, &err);
-        if (!file)
+        uint64_t size = 0;
+        vnode* v = open_executable(path, cwd, &size, &err);
+        if (!v)
             return -(sint64_t)err;
-
-        if (!elf::is_elf(file, size))
-        {
-            uart::printf("process: %s is not an ELF64 executable\n", path);
-            kfree(file);
-            return -ENOEXEC;
-        }
 
         uint64_t as = paging::create_address_space();
         if (!as)
         {
-            kfree(file);
+            vfs::unref(v);
             return -ENOMEM;
         }
 
@@ -614,14 +617,20 @@ namespace process
         elf::LoadResult lr = {0, 0, 0, 0, 0, false};
         bool ok = map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
                                   PAGE_WRITE | PAGE_NX);
+        sint64_t elf_rc = -ENOEXEC;
         if (!ok)
             err = ENOMEM;
         else
         {
-            lr = elf::load(file, size);
+            lr = elf::load_file(v, size, &elf_rc);
             ok = lr.valid && lr.image_end <= USER_MMAP_BASE;
             if (!ok)
-                err = ENOEXEC;
+            {
+                err = (elf_rc < 0) ? (int)-elf_rc : ENOEXEC;
+                if (err == ENOEXEC)
+                    uart::printf("process: %s is not a loadable ELF64 executable\n",
+                                 path);
+            }
         }
 
         uint64_t rsp = 0;
@@ -636,7 +645,7 @@ namespace process
         }
 
         paging::switch_address_space(prev);
-        kfree(file);
+        vfs::unref(v);
 
         if (!ok)
         {
@@ -678,6 +687,15 @@ namespace process
                 paging::switch_address_space(paging::kernel_pml4());
             paging::destroy_address_space(p->cr3);
             p->cr3 = 0;
+        }
+
+        // POSIX: descriptors close and the cwd is released when the process
+        // exits, not when the parent reaps the zombie.
+        filesys::fdtable_close_all(&p->fds);
+        if (p->cwd)
+        {
+            vfs::unref(p->cwd);
+            p->cwd = nullptr;
         }
 
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
@@ -861,7 +879,7 @@ namespace process
     static Process* launch(const char* path, const ArgEnv* ae)
     {
         Image img;
-        if (load_program(path, ae, &img) < 0)
+        if (load_program(path, vfs::cwd(), ae, &img) < 0)
             return nullptr;
 
         Process* p = alloc_process();
@@ -886,16 +904,14 @@ namespace process
         rc = ae->push_kstr(true, "TERM=dumb");
         if (rc) return rc;
 
-        // PWD=<console cwd>. cwd_path() is still the FAT32 global until
-        // stage 3.4 moves it into the process; run() passes it through.
-        const char* cwd = fat32::cwd_path();
-        char pwdbuf[300];
+        // PWD=<console cwd> (the system cwd; per-process cwd takes over in
+        // 3.5 when the root process inherits it at launch).
+        char pwdbuf[PATH_MAX + 8];
         const char prefix[] = "PWD=";
         copy_bytes((uint8_t*)pwdbuf, (const uint8_t*)prefix, 4);
-        uint32_t n = 4;
-        for (uint32_t i = 0; cwd[i] && n < sizeof(pwdbuf) - 1; i++, n++)
-            pwdbuf[n] = cwd[i];
-        pwdbuf[n] = '\0';
+        sint64_t prc = vfs::cwd_path(pwdbuf + 4, PATH_MAX);
+        if (prc != 0)
+            return (int)prc;
         return ae->push_kstr(true, pwdbuf);
     }
 
@@ -1143,6 +1159,17 @@ namespace process
         child->brk         = current->brk;
         child->mmap_cursor = current->mmap_cursor;
 
+        // POSIX: the child shares the parent's open file descriptions (same
+        // offsets) and inherits its cwd and umask. alloc_process gave the
+        // child the system cwd; replace it with the parent's.
+        filesys::fdtable_fork(&child->fds, &current->fds);
+        child->umask = current->umask;
+        if (child->cwd)
+            vfs::unref(child->cwd);
+        child->cwd = current->cwd;
+        if (child->cwd)
+            vfs::ref(child->cwd);
+
         // The child resumes from the same instruction with rax = 0.
         child->ctx.regs = *regs;
         child->ctx.iret = *iret;
@@ -1226,7 +1253,9 @@ namespace process
         Image img;
         if (rc == 0)
         {
-            sint64_t lr = load_program(path, &ae, &img);
+            sint64_t lr = load_program(path, current->cwd ? current->cwd
+                                                          : vfs::cwd(),
+                                       &ae, &img);
             rc = (lr < 0) ? (int)lr : 0;
         }
         ae.destroy();
@@ -1243,6 +1272,11 @@ namespace process
         paging::destroy_address_space(old);
 
         adopt_image(current, &img, path);
+
+        // execve keeps the fd table except CLOEXEC slots, and keeps cwd and
+        // umask (POSIX). adopt_image reset only the address-space fields.
+        filesys::fdtable_cloexec(&current->fds);
+
         fpu_restore(current->fpu);
         *regs = current->ctx.regs;
         *iret = current->ctx.iret;

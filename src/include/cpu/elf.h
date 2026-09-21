@@ -2,6 +2,7 @@
 #define ELF_H
 
 #include "types.h"
+#include "../fs/vfs.h"
 
 // ELF64 header
 struct Elf64_Ehdr
@@ -90,10 +91,13 @@ namespace elf
     // Check if a buffer starts with a valid ELF64 header.
     bool is_elf(const uint8_t* data, uint32_t size);
 
-    // Load PT_LOAD segments into the current address space.
-    // Pages are allocated from PMM and mapped with permissions from p_flags.
-    // BSS (p_memsz > p_filesz) is zeroed by the page allocator.
-    LoadResult load(const uint8_t* image, uint32_t image_size);
+    // Load PT_LOAD segments of a regular-file vnode into the current address
+    // space, reading each segment's file-backed part by p_offset in chunks:
+    // the file is never copied whole. Pages come from the PMM and are mapped
+    // with permissions from p_flags; BSS (p_memsz > p_filesz) is zeroed by
+    // the page allocator. Returns valid=false with rc<0 on any error;
+    // *out_rc receives the -errno when invalid.
+    LoadResult load_file(vnode* v, uint64_t file_size, sint64_t* out_rc);
 }
 
 #endif // ELF_H
