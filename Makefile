@@ -61,6 +61,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/dev/bcache.o \
 				bin/kernel/fs/vfs.o \
 				bin/kernel/fs/file.o \
+				bin/kernel/fs/devfs.o \
 				bin/kernel/fs/fat32/fat.o \
 				bin/kernel/fs/fat32/dir.o \
 				bin/kernel/fs/fat32/vnode.o \

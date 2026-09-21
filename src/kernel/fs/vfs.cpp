@@ -302,6 +302,9 @@ namespace vfs
         if (!m || !m->active)
             return -EINVAL;
 
+        // Nothing mounted inside this FS may survive it.
+        umount_children(m);
+
         // Flush everything this FS wrote.
         if (m->root->ops->fsync)
             m->root->ops->fsync(m->root);
@@ -344,6 +347,33 @@ namespace vfs
         if (rc == 0)
             rc = bcache::flush(nullptr);
         return rc;
+    }
+
+    sint64_t umount_children(mount* m)
+    {
+        // Passes until nothing changes: a mount can sit on a directory of a
+        // filesystem that is itself mounted deeper.
+        bool changed = true;
+        sint64_t first_err = 0;
+        while (changed)
+        {
+            changed = false;
+            for (uint32_t i = 0; i < MAX_MOUNTS; i++)
+            {
+                if (!mounts[i].active || &mounts[i] == m)
+                    continue;
+                vnode* point = mounts[i].point;
+                if (point && point->mnt == m)
+                {
+                    sint64_t rc = umount(&mounts[i]);
+                    if (rc != 0 && first_err == 0)
+                        first_err = rc;
+                    changed = true;
+                    break;      // restart: indices are stable but be safe
+                }
+            }
+        }
+        return first_err;
     }
 
     mount* root_mount()

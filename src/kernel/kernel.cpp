@@ -14,6 +14,7 @@
 #include "../include/fs/vfs.h"
 #include "../include/fs/file.h"
 #include "../include/fs/fat32fs.h"
+#include "../include/fs/devfs.h"
 #include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
@@ -26,6 +27,7 @@
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
 #include "../include/stdlib/string.h"
+#include "../sdk/include/abi/errno.h"
 
 // Base of the static page tables. The bootloader AllocatePages()es 5 MB here
 // and linker.ld asserts that the kernel image stops short of it.
@@ -231,6 +233,39 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     filesys::init();
 
     automount_root(BootHeader);
+
+    // Mount devfs over /dev. The directory comes from the disk image
+    // (tools/mkimg.py creates it); when it is missing, create it on the
+    // root volume.
+    {
+        vnode* dev_dir = nullptr;
+        sint64_t rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
+        if (rc == -ENOENT)
+        {
+            vnode* root = nullptr;
+            rc = vfs::lookup("/", nullptr, &root, true);
+            if (rc == 0 && root->ops->mkdir)
+            {
+                rc = root->ops->mkdir(root, "dev", 0755);
+                if (rc == 0)
+                    rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
+            }
+            vfs::unref(root);
+        }
+        if (rc == 0 && dev_dir)
+        {
+            rc = vfs::mount_at(dev_dir, "devfs", &devfs::fs, nullptr);
+            if (rc != 0)
+            {
+                uart::printf("boot: devfs mount failed (%d)\n", (int)rc);
+                vfs::unref(dev_dir);
+            }
+            else
+                uart::printf("boot: devfs mounted on /dev\n");
+        }
+        else if (dev_dir)
+            vfs::unref(dev_dir);
+    }
 
     syscall::init();
     process::init();

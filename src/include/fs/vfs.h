@@ -87,6 +87,12 @@ struct vnode_ops
     sint64_t (*fsync)(vnode* v);
     sint64_t (*ioctl)(vnode* v, uint64_t request, uint64_t arg);
 
+    // Readiness for blocking syscalls: true when read would not return
+    // -EAGAIN right now (a tty line is complete, /dev/null is always
+    // ready). null == always ready. The process layer pairs this with
+    // Wait::Key + syscall restart.
+    bool     (*poll_ready)(vnode* v);
+
     // Last reference dropped and the vnode is about to be freed: flush the
     // directory entry (size/time), free clusters if VF_UNLINKED.
     void     (*release)(vnode* v);
@@ -172,6 +178,9 @@ namespace vfs
     sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs,
                       void* arg);
     sint64_t umount(mount* m);
+    // Unmount every FS mounted on a directory belonging to `m` (deepest
+    // first); call before umounting `m` itself.
+    sint64_t umount_children(mount* m);
     mount*   root_mount();
     mount*   mount_count_get(uint32_t i);   // iterate: nullptr past the end
     uint32_t mount_count();

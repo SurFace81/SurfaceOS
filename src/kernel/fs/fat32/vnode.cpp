@@ -56,6 +56,7 @@ static vnode_ops fat_vnode_ops =
     fat_read, fat_write, fat_truncate, fat_readdir,
     fat_getattr, fat_setattr, fat_fsync,
     nullptr,            // ioctl: files have none
+    nullptr,            // poll_ready: regular files are always ready
     fat_release,
 };
 
