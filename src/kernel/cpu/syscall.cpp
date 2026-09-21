@@ -19,6 +19,7 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/mm/heap.h"
+#include "../../include/cpu/sys_fs.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/fs.h"
 #include "../../sdk/include/abi/time.h"
@@ -61,72 +62,6 @@ namespace
         if (r == -2)
             return -ENAMETOOLONG;
         return 0;
-    }
-
-    // -----------------------------------------------------------------------
-    // Console output / input
-    // -----------------------------------------------------------------------
-
-    // write(fd, buf, count) - Linux number 1.
-    // Until the tty/fd layer lands (stage 3.5/3.6), fds 1 and 2 go straight
-    // to the console (screen + serial), byte-exact: length-driven, NULs
-    // included, no C-string interpretation.
-    void sys_write(syscall_regs* regs, iret_frame*)
-    {
-        sint32_t fd = (sint32_t)regs->rdi;
-        uint64_t user_buf = regs->rsi;
-        uint64_t count = regs->rdx;
-
-        if (fd != 1 && fd != 2)
-        {
-            set_errno(regs, EBADF);
-            return;
-        }
-        if (count == 0)
-        {
-            regs->rax = 0;
-            return;
-        }
-        if (count > MAX_WRITE_BYTES)
-        {
-            set_errno(regs, EINVAL);
-            return;
-        }
-        if (!uaccess::readable(user_buf, count))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        // Bounce through kernel memory in page-sized bites: screen/uart must
-        // never see a user pointer (SMAP), and one 64 KiB stack buffer is
-        // not an option.
-        char buf[512];
-        uint64_t done = 0;
-        while (done < count)
-        {
-            uint64_t chunk = count - done;
-            if (chunk > sizeof(buf))
-                chunk = sizeof(buf);
-
-            if (!uaccess::copy_from_user(buf, user_buf + done, chunk))
-            {
-                // Short write is legal; a mid-copy fault still reports what
-                // made it out. uaccess validates up-front, so this is rare.
-                break;
-            }
-
-            screen::write(buf, chunk);
-            uart::write(buf, chunk);     // app output on the serial line too
-            done += chunk;
-        }
-
-        if (done == 0)
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-        regs->rax = (sint64_t)done;
     }
 
     void sys_clear(syscall_regs* regs, iret_frame*)
@@ -396,6 +331,12 @@ namespace
 
 namespace syscall
 {
+    void set_handler(uint32_t nr, syscall_handler_t h)
+    {
+        if (nr < SYSCALL_NR_MAX)
+            handlers[nr] = (syscall_handler)h;
+    }
+
     // Fill the dispatch tables. Called once from kmain before the first
     // session can run.
     void init()
@@ -408,7 +349,6 @@ namespace syscall
         // Linux x86_64 numbers.
         handlers[SYS_EXIT]         = process::sys_exit;
         handlers[SYS_EXIT_GROUP]   = process::sys_exit_group;
-        handlers[SYS_WRITE]        = sys_write;
         handlers[SYS_BRK]          = process::sys_brk;
         handlers[SYS_MMAP]         = process::sys_mmap;
         handlers[SYS_MPROTECT]     = process::sys_mprotect;
@@ -433,6 +373,9 @@ namespace syscall
         xhandlers[SYSX_READ_DIR   - SYSCALLX_BASE] = sys_read_dir;
         xhandlers[SYSX_UPTIME    - SYSCALLX_BASE] = sys_uptime;
         xhandlers[SYSX_TIME      - SYSCALLX_BASE] = sys_time;
+
+        // File-descriptor syscalls (stage 3.6).
+        sys_fs::register_handlers();
     }
 }
 

@@ -840,6 +840,30 @@ namespace process
         return session_active;
     }
 
+    // stdin/stdout/stderr: one /dev/tty opened once and dup'ed onto fds
+    // 0, 1 and 2 of the session's root process (children inherit through
+    // the fd-table fork).
+    static void open_std_fds(Process* p)
+    {
+        vnode* tty_vn = nullptr;
+        if (vfs::lookup("/dev/tty", nullptr, &tty_vn, false) != 0)
+            return;             // no devfs yet: syscalls will fail EBADF
+
+        file* f = filesys::file_open(tty_vn, O_RDWR);   // takes the ref
+        if (!f)
+            return;
+
+        // Three slots sharing one open file description.
+        sint32_t fd = -1;
+        filesys::file_get(f);
+        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 0)
+            return;
+        filesys::file_get(f);
+        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 1)
+            return;
+        filesys::fdtable_alloc(&p->fds, f, false, &fd);   // fd 2
+    }
+
     // Load `path` with the collected argv/envp and allocate a runnable
     // process for it. ppid is left at 0; state is Runnable.
     static Process* launch(const char* path, const ArgEnv* ae)
@@ -858,6 +882,8 @@ namespace process
         p->state = State::Runnable;
         return p;
     }
+
+    // Called by run() after launch(): the root process gets its std fds.
 
     // Build the default environment a console-launched process starts with.
     // 0 or -errno.
@@ -907,6 +933,7 @@ namespace process
             return false;
 
         p->ppid = 0;
+        open_std_fds(p);
 
         root_pid       = p->pid;
         root_status    = 0;
@@ -1016,6 +1043,50 @@ namespace process
     {
         if (kill_requested)
             reschedule(regs, iret);
+    }
+
+    // -----------------------------------------------------------------------
+    // Hooks for sys_fs.cpp (file-descriptor syscalls)
+    // -----------------------------------------------------------------------
+
+    fd_table* cur_fds()
+    {
+        return current ? &current->fds : nullptr;
+    }
+
+    vnode* cur_cwd()
+    {
+        return current ? current->cwd : nullptr;
+    }
+
+    void set_cwd(vnode* v)
+    {
+        if (!current)
+            return;
+        if (current->cwd == v)
+            return;
+        if (current->cwd)
+            vfs::unref(current->cwd);
+        current->cwd = v;       // takes the caller's reference
+    }
+
+    uint32_t cur_umask()
+    {
+        return current ? current->umask : 022;
+    }
+
+    void set_umask(uint32_t m)
+    {
+        if (current)
+            current->umask = m & 0777;
+    }
+
+    void block_on_input(user_regs* regs, iret_frame* iret)
+    {
+        // Rewind RIP over `int 0x80` and mark Wait::Key: on wake the syscall
+        // re-executes with its registers intact. No fd side effect happened
+        // before this point, so the restart is safe.
+        block(Wait::Key, true, regs, iret);
     }
 
     // -----------------------------------------------------------------------

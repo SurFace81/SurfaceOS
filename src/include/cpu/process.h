@@ -6,6 +6,10 @@
 #include "../drivers/keyboard.h"
 #include "../../sdk/include/abi/process.h"
 
+// Opaque handles defined in fs/file.h and fs/vfs.h.
+struct fd_table;
+struct vnode;
+
 // ---------------------------------------------------------------------------
 // User address space layout (inside PML4[USER_PML4_INDEX], 1 GiB)
 // ---------------------------------------------------------------------------
@@ -114,6 +118,20 @@ namespace process
 
     // Last step of every syscall: honours a pending Esc.
     void syscall_return(user_regs* regs, iret_frame* iret);
+
+    // --- Hooks for the file-descriptor syscalls (sys_fs.cpp) ---------------
+    // Valid only while a session runs (syscall context). fd_table and vnode
+    // are declared in fs/file.h and fs/vfs.h; forward-declared here so this
+    // header stays independent.
+    fd_table* cur_fds();
+    vnode*    cur_cwd();                // not referenced: the process owns it
+    void      set_cwd(vnode* v);        // takes one reference
+    uint32_t  cur_umask();
+    void      set_umask(uint32_t m);
+
+    // Block the current process until input may be available, rewinding RIP
+    // over the `int 0x80` so the syscall re-executes on wake (tty reads).
+    void block_on_input(user_regs* regs, iret_frame* iret);
 
     // An IRQ arrived while ring 3 was running (EOI already sent).
     void on_user_interrupt(uint8_t irq, user_regs* regs, iret_frame* iret);
