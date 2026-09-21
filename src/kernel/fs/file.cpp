@@ -5,6 +5,7 @@
 // is a linear scan - at this size it beats any free-list bookkeeping.
 
 #include "../../include/fs/file.h"
+#include "../../include/fs/vfs.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
@@ -65,6 +66,15 @@ namespace filesys
             return;
 
         f->used = false;
+
+        // POSIX close of a file opened for writing: its data must survive a
+        // yanked stick, so the last close flushes through to the device
+        // (dirty vnode entry + FSInfo + bcache + SYNCHRONIZE CACHE).
+        uint32_t acc = f->flags & O_ACCMODE;
+        if ((acc == O_WRONLY || acc == O_RDWR) &&
+            f->vn->ops->fsync)
+            f->vn->ops->fsync(f->vn);
+
         vfs::unref(f->vn);
         f->vn = nullptr;
     }

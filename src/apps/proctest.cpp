@@ -187,7 +187,7 @@ static void test_exec(const char* self)
           waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 7);
 
     char* argv[] = { NULL };
-    check("exec of a missing file fails and returns", execv("NOSUCH.BIN", argv) == -1);
+    check("exec of a missing file fails and returns", execv("NOSUCH", argv) == -1);
     check("still running after the failed exec", getpid() > 0);
 }
 
@@ -220,7 +220,7 @@ int main(int argc, char** argv)
     test_nohang_sleep();
     test_preemption();
     test_fpu();
-    test_exec(argc >= 1 ? argv[0] : "proctest.bin");
+    test_exec(argc >= 1 ? argv[0] : "proctest");
 
     print("\nproctest: ");
     print_i64(passed);

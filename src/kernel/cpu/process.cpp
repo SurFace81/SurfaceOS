@@ -113,7 +113,7 @@ namespace process
     {
         const char* name = path;
         for (const char* p = path; *p; p++)
-            if (*p == '\\' || *p == '/')
+            if (*p == '/')
                 name = p + 1;
 
         uint32_t i = 0;

@@ -3,15 +3,24 @@
 # left behind, run `fstest verify` and confirm everything survived -
 # including the host-side fsck.fat of the volume.
 #
-# Usage: tools/qemu_verify.sh [layout]
+# Usage: tools/qemu_verify.sh [layout] [sector]
 #   Expects test_disk.img to contain a finished fstest run (qemu_exec_test.sh).
 set -u
 cd "$(dirname "$0")/.."
 
 LAYOUT="${1:-gpt}"
+SECTOR="${2:-512}"
 IMG=test_disk.img
 MON=/tmp/qmon_verify
 LOG=/tmp/uart_verify.log
+
+# Same device plumbing as qemu_exec_test.sh: a 4K device must be usb-bot +
+# explicit scsi-hd (usb-storage ignores logical_block_size for its child).
+if [ "$SECTOR" = "512" ]; then
+    USB_DEV="-device usb-storage,drive=usbstick"
+else
+    USB_DEV="-device usb-bot,id=msd -device scsi-hd,bus=msd.0,drive=usbstick,logical_block_size=$SECTOR,physical_block_size=$SECTOR"
+fi
 
 if [ ! -f "$IMG" ]; then
     echo "FAIL: $IMG missing - run qemu_exec_test.sh first"
@@ -27,7 +36,7 @@ qemu-system-x86_64 \
     -device qemu-xhci \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
-    -device usb-storage,drive=usbstick \
+    $USB_DEV \
     -display none -no-reboot -no-shutdown \
     -monitor unix:$MON,server,nowait >/dev/null 2>&1 &
 QEMU_PID=$!

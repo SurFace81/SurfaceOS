@@ -6,10 +6,10 @@
 // Copying between kernel and user memory.
 //
 // Every syscall argument that is a pointer must go through here. Ring 3 got
-// added without it, and until then an app could hand any address to
-// SYS_TIME/SYS_STAT_FILE/SYS_READ_DIR and have the kernel write to it at
-// CPL 0 - the PMM bitmap, the page tables, the kernel's own code. A null
-// check is not a bounds check.
+// added without it, and until then an app could hand any address to the
+// time/stat/readdir syscalls and have the kernel write to it at CPL 0 -
+// the PMM bitmap, the page tables, the kernel's own code. A null check is
+// not a bounds check.
 //
 // Every page is validated (present, PAGE_USER, writable where needed) before
 // a single byte moves, so these helpers never fault and the kernel needs no
