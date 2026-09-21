@@ -46,6 +46,12 @@ namespace bcache
     // sector `lba`. Returns the buffer or nullptr with *out_rc = -errno.
     buf* get(blkdev* dev, uint64_t lba, sint64_t* out_rc);
 
+    // Lock `count` buffers for dev's sectors [lba, lba+count), filling
+    // missing ones with as few device requests as possible (contiguous
+    // misses are read in one blkdev::read). out[] must hold count slots.
+    // Returns 0 and locks every buffer, or -errno with nothing locked.
+    sint64_t get_range(blkdev* dev, uint64_t lba, uint32_t count, buf** out);
+
     // Unlock. dirty=true marks the buffer for writeback.
     void put(buf* b, bool dirty);
 

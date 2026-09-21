@@ -11,6 +11,8 @@
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
+#include "../include/fs/vfs.h"
+#include "../include/fs/fat32fs.h"
 #include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
@@ -151,7 +153,7 @@ namespace
                 continue;
 
             fat32_dir_entry entry;
-            if (fat32::resolve_path_pub("\\KERNEL.BIN", &entry))
+            if (fat32::resolve_path_pub("/KERNEL.BIN", &entry))
             {
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
                 screen::printf("Root: %s\n\r", d->name);
@@ -224,6 +226,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     block::enumerate_usb();
     part::enumerate();
     bcache::init();
+    vfs::init();
 
     automount_root(BootHeader);
 

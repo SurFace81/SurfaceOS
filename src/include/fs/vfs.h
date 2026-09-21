@@ -36,6 +36,7 @@ enum class vtype : uint8_t
 
 struct vnode;
 struct mount;
+struct vfs_fs;
 
 // One readdir step. The FS decodes its own records (LFN assembly for FAT)
 // and reports the plain result plus the cookie to resume from.
@@ -120,6 +121,8 @@ struct mount
     vnode*  root;               // root vnode of the FS (ref held by mount)
     vnode*  point;              // directory mounted over (null: this is /)
     mount*  parent;             // mount that contains `point`
+    vfs_fs* fs;                 // the driver behind it
+    void*   fs_priv;            // driver state (fat_super* for fat32)
     char    devname[16];        // "usb0p1", "devfs", ...
     bool    active;
 };
@@ -129,10 +132,12 @@ struct vfs_fs
 {
     const char* name;           // "fat32", "devfs"
     vnode_ops*  ops;
-    // Create (and reference) the root vnode for a new mount. `arg` is
-    // driver-specific (blkdev* for fat32, unused for devfs).
-    sint64_t (*mount_fs)(void* arg, vnode** out_root);
-    // Flush everything, release all vnodes of this FS. Called by umount.
+    // Create (and reference) the root vnode for a new mount. `m` is the
+    // mount slot being filled - use it as the vnode-cache key namespace.
+    // `arg` is driver-specific (blkdev* for fat32, unused for devfs).
+    sint64_t (*mount_fs)(mount* m, void* arg, vnode** out_root);
+    // Flush everything, release driver state. Called by umount after the
+    // vnode sweep, so no vnode of this FS exists any more.
     sint64_t (*umount_fs)(mount* m);
 };
 
@@ -146,10 +151,19 @@ namespace vfs
     // either way (plus the cache's own reference).
     vnode* get_cached(mount* m, uint64_t key, vtype type, vnode_ops* ops,
                       sint64_t* out_rc);
+
+    // Look up without creating: returns a referenced vnode or nullptr.
+    vnode* find_cached(mount* m, uint64_t key);
+
     void   ref(vnode* v);
     void   unref(vnode* v);          // release at 0 refs, then free/evict
 
-    // Mark metadata dirty; flushed by fsync/umount/sync.
+    // Remove `v` from the cache (its key becomes unreachable) without
+    // freeing it: open references keep it alive until the last unref. Used
+    // after unlink/rename, when the vnode's identity is no longer valid.
+    void   invalidate(vnode* v);
+
+    // Mark metadata dirty; flushed by fsync/umount/sync/eviction.
     void   touch(vnode* v, bool mtime_now);
 
     // --- mounts -------------------------------------------------------------
@@ -182,6 +196,21 @@ namespace vfs
 
     // Flush every mount (sync).
     sint64_t sync_all();
+
+    // --- system cwd ---------------------------------------------------------
+    // One global current directory while the console drives the system
+    // (stage 3.3). Stage 3.4 moves it into the Process struct; the root
+    // process inherits this at launch. Automount sets it to the root vnode.
+    //
+    // cwd():    the vnode, NOT referenced - only valid while nothing can
+    //           switch context (kernel main loop, syscall dispatch).
+    // cwd_ref(): a referenced copy; unref it when done.
+    // set_cwd(v): takes ownership of one reference to v.
+    void     set_cwd(vnode* v);
+    vnode*   cwd();
+    vnode*   cwd_ref();
+    // Absolute path of the cwd into buf (NUL-terminated); 0 or -errno.
+    sint64_t cwd_path(char* buf, uint32_t bufsize);
 
     // Epoch seconds from the RTC (UTC): shared by the FS drivers for times.
     uint64_t now_epoch();

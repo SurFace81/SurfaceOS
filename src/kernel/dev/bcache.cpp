@@ -20,6 +20,12 @@ namespace
     const uint32_t CACHE_MIN_BUFS = 256;    // floor for tiny machines
     const uint32_t CACHE_MAX_BUFS = 2048;   // ceiling: 8 MiB at 4 KiB blocks
 
+    // get_range limits: one call locks at most MAX_RANGE_COUNT buffers; a
+    // contiguous miss run is filled with a scratch kmalloc no bigger than
+    // MAX_RANGE_CHUNK sectors (64 x 4096 = 256 KiB worst case).
+    const uint32_t MAX_RANGE_COUNT = 512;
+    const uint32_t MAX_RANGE_CHUNK = 64;
+
     buf*     buffers    = nullptr;
     uint32_t nbuf       = 0;
     uint32_t block_sz   = 0;
@@ -217,6 +223,152 @@ namespace bcache
 
         if (out_rc) *out_rc = 0;
         return b;
+    }
+
+    // Fill a contiguous run of cache-miss sectors with one device request.
+    // `bufs[]` are already reserved (valid, refcnt==1) but hold stale data;
+    // they cover [lba, lba+run).
+    sint64_t fill_run(blkdev* dev, uint64_t lba, buf** bufs, uint32_t run)
+    {
+        // Read into a scratch buffer then scatter, so we do not need the run
+        // to be physically contiguous in the pool.
+        uint32_t ss = dev->sector_size;
+        uint32_t chunk = run;
+        if (chunk > MAX_RANGE_CHUNK)
+            chunk = MAX_RANGE_CHUNK;
+
+        uint8_t* scratch = (uint8_t*)kmalloc((uint64_t)chunk * ss);
+        if (!scratch)
+            return -ENOMEM;
+
+        uint32_t done = 0;
+        sint64_t rc = 0;
+        while (done < run)
+        {
+            uint32_t n = run - done;
+            if (n > chunk)
+                n = chunk;
+
+            rc = block::read(dev, lba + done, n, scratch);
+            if (rc != 0)
+                break;
+
+            for (uint32_t i = 0; i < n; i++)
+            {
+                buf* b = bufs[done + i];
+                memory::memcpy(b->data, scratch + (uint64_t)i * ss, ss);
+                if (block_sz > ss)
+                    memory::memset(b->data + ss, 0, block_sz - ss);
+            }
+            done += n;
+        }
+
+        kfree(scratch);
+        return rc;
+    }
+
+    sint64_t get_range(blkdev* dev, uint64_t lba, uint32_t count, buf** out)
+    {
+        if (!inited || !dev)
+            return -ENXIO;
+        if (count == 0)
+            return 0;
+        if (count > MAX_RANGE_COUNT)
+            return -EINVAL;
+        if (lba + count > dev->sector_count)
+            return -EINVAL;
+
+        uint8_t* miss = (uint8_t*)kmalloc(count);
+        if (!miss)
+            return -ENOMEM;
+
+        // Phase 1: lock every buffer, remembering which were cache misses.
+        for (uint32_t i = 0; i < count; i++)
+        {
+            miss[i] = 0;
+
+            buf* b = find_buffer(dev, lba + i);
+            if (b)
+            {
+                b->refcnt++;
+                b->last_use = ++clock;
+                out[i] = b;
+                continue;
+            }
+
+            b = pick_victim();
+            if (!b)
+            {
+                for (uint32_t k = 0; k < i; k++)
+                    put(out[k], false);
+                kfree(miss);
+                return -EBUSY;
+            }
+            if (b->valid && b->dirty)
+            {
+                sint64_t rc = writeback(b);
+                if (rc != 0)
+                {
+                    for (uint32_t k = 0; k < i; k++)
+                        put(out[k], false);
+                    kfree(miss);
+                    return rc;
+                }
+            }
+            b->dev      = dev;
+            b->lba      = lba + i;
+            b->valid    = true;
+            b->dirty    = false;
+            b->refcnt   = 1;
+            b->last_use = ++clock;
+            out[i] = b;
+            miss[i] = 1;
+        }
+
+        // Phase 2: fill each contiguous miss run with as few device requests
+        // as the caller's window allows.
+        uint32_t i = 0;
+        sint64_t rc = 0;
+        while (i < count)
+        {
+            if (!miss[i])
+            {
+                i++;
+                continue;
+            }
+            uint32_t run = 1;
+            while (i + run < count && miss[i + run])
+                run++;
+
+            buf* run_bufs[MAX_RANGE_CHUNK];
+            uint32_t off = 0;
+            while (off < run)
+            {
+                uint32_t n = run - off;
+                if (n > MAX_RANGE_CHUNK)
+                    n = MAX_RANGE_CHUNK;
+                for (uint32_t k = 0; k < n; k++)
+                    run_bufs[k] = out[i + off + k];
+
+                rc = fill_run(dev, lba + i + off, run_bufs, n);
+                if (rc != 0)
+                    break;
+                off += n;
+            }
+            if (rc != 0)
+                break;
+            i += run;
+        }
+
+        kfree(miss);
+
+        if (rc != 0)
+        {
+            for (uint32_t k = 0; k < count; k++)
+                put(out[k], false);
+            return rc;
+        }
+        return 0;
     }
 
     void put(buf* b, bool dirty)

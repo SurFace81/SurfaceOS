@@ -23,6 +23,9 @@ namespace
     mount mounts[MAX_MOUNTS];
     uint32_t mount_cnt = 0;
 
+    // System-wide current directory (see vfs.h). Referenced by this module.
+    vnode* system_cwd = nullptr;
+
     // Days from 1970-01-01 (Civil From Days, Howard Hinnant).
     sint64_t days_from_civil(int y, unsigned m, unsigned d)
     {
@@ -142,6 +145,46 @@ namespace vfs
         return v;
     }
 
+    vnode* find_cached(mount* m, uint64_t key)
+    {
+        for (uint32_t i = 0; i < MAX_VNODES; i++)
+        {
+            vnode* v = vnode_pool[i];
+            if (v && v->mnt == m && v->fs_key == key)
+            {
+                v->refcnt++;
+                return v;
+            }
+        }
+        return nullptr;
+    }
+
+    void invalidate(vnode* v)
+    {
+        if (!v)
+            return;
+        for (uint32_t i = 0; i < MAX_VNODES; i++)
+            if (vnode_pool[i] == v)
+            {
+                vnode_pool[i] = nullptr;
+                vnode_count--;
+                // Drop the cache's own reference; the caller's (and any open
+                // fd's) references keep the structure alive until the last
+                // unref, which then frees it.
+                if (v->refcnt)
+                    v->refcnt--;
+                if (v->refcnt == 0)
+                {
+                    if (v->ops->release)
+                        v->ops->release(v);
+                    if (v->fs_priv)
+                        kfree(v->fs_priv);
+                    kfree(v);
+                }
+                return;
+            }
+    }
+
     void ref(vnode* v)
     {
         if (v)
@@ -197,11 +240,6 @@ namespace vfs
         if (mount_cnt >= MAX_MOUNTS)
             return -ENFILE;
 
-        vnode* root = nullptr;
-        sint64_t rc = fs->mount_fs(arg, &root);
-        if (rc != 0)
-            return rc;
-
         mount* m = nullptr;
         for (uint32_t i = 0; i < MAX_MOUNTS; i++)
             if (!mounts[i].active)
@@ -210,22 +248,34 @@ namespace vfs
                 break;
             }
         if (!m)
-        {
-            unref(root);
             return -ENFILE;
-        }
 
-        m->root   = root;
-        m->point  = point_dir;
+        // Fill the slot before mount_fs: the FS driver keys its vnodes by
+        // this mount from the very first one (the root).
+        memory::memset((uint8_t*)m, 0, sizeof(mount));
+        m->point  = point_dir;      // may still be null: the root mount
+        m->fs     = fs;
         m->active = true;
         strncpy(m->devname, devname, sizeof(m->devname) - 1);
+        if (point_dir)
+            ref(point_dir);         // the mount holds a reference
 
-        // The FS root's mnt is the new mount (mount_fs cannot know it).
+        vnode* root = nullptr;
+        sint64_t rc = fs->mount_fs(m, arg, &root);
+        if (rc != 0)
+        {
+            m->active = false;
+            if (point_dir)
+                unref(point_dir);
+            return rc;
+        }
+
+        m->root = root;             // mount holds the root's reference
         root->mnt = m;
         mount_cnt++;
 
-        uart::printf("vfs: %s mounted on %s\n", devname,
-                     point_dir ? "mount point" : "/");
+        uart::printf("vfs: %s mounted%s\n", devname,
+                     point_dir ? "" : " as root");
         return 0;
     }
 
@@ -281,11 +331,19 @@ namespace vfs
         m->root = nullptr;      // its vnode was freed with the pool sweep
         m->point = nullptr;
 
+        // Driver teardown (flush FSInfo, clear the dirty bit, release the
+        // block cache for the device).
+        sint64_t rc = 0;
+        if (m->fs && m->fs->umount_fs)
+            rc = m->fs->umount_fs(m);
+        m->fs = nullptr;
+
         if (point)
             unref(point);
 
-        bcache::flush(nullptr);
-        return 0;
+        if (rc == 0)
+            rc = bcache::flush(nullptr);
+        return rc;
     }
 
     mount* root_mount()
@@ -672,5 +730,44 @@ namespace vfs
         if (rc != 0 && first_err == 0)
             first_err = rc;
         return first_err;
+    }
+
+    // -----------------------------------------------------------------------
+    // system cwd
+    // -----------------------------------------------------------------------
+
+    void set_cwd(vnode* v)
+    {
+        if (system_cwd == v)
+            return;
+        if (system_cwd)
+            unref(system_cwd);
+        system_cwd = v;             // takes the caller's reference
+    }
+
+    vnode* cwd()
+    {
+        return system_cwd;
+    }
+
+    vnode* cwd_ref()
+    {
+        if (system_cwd)
+            ref(system_cwd);
+        return system_cwd;
+    }
+
+    sint64_t cwd_path(char* buf, uint32_t bufsize)
+    {
+        if (!system_cwd)
+        {
+            if (bufsize < 2)
+                return -EINVAL;
+            buf[0] = '/';
+            buf[1] = '\0';
+            return 0;
+        }
+        uint32_t len = 0;
+        return get_path(system_cwd, buf, bufsize, &len);
     }
 }
