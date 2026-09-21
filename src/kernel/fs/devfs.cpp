@@ -188,7 +188,7 @@ namespace
     sint64_t dev_getattr(vnode* v, struct stat* st)
     {
         memory::memset((uint8_t*)st, 0, sizeof(struct stat));
-        st->st_dev = 2;                     // devfs pseudo-device
+        st->st_dev = v->mnt ? v->mnt->dev_id : 0;
         st->st_nlink = 1;
 
         if (v == root_vn)

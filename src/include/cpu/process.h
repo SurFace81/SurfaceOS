@@ -69,13 +69,25 @@ struct cpu_context
 // an IRQ that interrupted user code, or a user-mode fault - by rewriting the
 // trap frame that is about to be popped. Consequences:
 //
-//   * one kernel stack (TSS RSP0) serves every process, because at a switch
-//     point it holds nothing but that frame;
 //   * the drivers (xHCI, FAT32, screen) never see reentrancy;
 //   * a syscall that has to wait (read_key, waitpid) does not sleep inside
 //     the kernel. It rewinds RIP over `int 0x80`, marks the process blocked
 //     and switches away; when the process is woken it simply re-executes the
 //     syscall with its registers intact.
+//
+// Each process nevertheless owns its kernel stack, and TSS RSP0 follows the
+// switch. The restart trick above only works while a syscall has committed
+// no side effect before it waits, which is true of read() on a tty and of
+// wait4() but not of a pipe write or of a signal handler return - those need
+// to keep kernel state across the wait, i.e. to sleep on their own stack.
+// Retrofitting per-process stacks after signals exist would be far more
+// painful than paying for them now, so the stack is already in place; what
+// is still missing is the blocking machinery that would use it.
+//
+// The stack belongs to the process table *slot*, not to the process:
+// terminate() can free a process while executing on that very stack, so the
+// frames go back to the PMM only at session teardown, from the console
+// stack.
 
 namespace process
 {

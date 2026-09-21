@@ -65,6 +65,11 @@ namespace process
 
         cpu_context ctx;            // user state while not running
         uint8_t     fpu[512] __attribute__((aligned(16)));   // FXSAVE area
+        // Kernel stack for traps taken while this process runs (TSS RSP0).
+        // Owned by the table *slot*, not by the process: terminate() can
+        // free a process while running on this very stack, so it is released
+        // only at session teardown, from the console stack.
+        uint64_t    kstack;     // base address, 0 when the slot has none
 
         // POSIX file state: descriptors, cwd (referenced vnode) and umask.
         fd_table    fds;
@@ -85,8 +90,7 @@ namespace process
     static int      root_status     = 0;
     static uint32_t slice_ticks     = 0;
 
-    // Single kernel stack for every trap from ring 3 (TSS RSP0).
-    static uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+    const uint64_t KERNEL_STACK_FRAMES = KERNEL_STACK_SIZE / 4096;
 
     // Clean FPU/SSE state every new program starts from.
     static uint8_t fpu_template[512] __attribute__((aligned(16)));
@@ -98,9 +102,22 @@ namespace process
         return v;
     }
 
-    static inline uint64_t kernel_stack_top()
+    static inline uint64_t kstack_top(const Process* p)
     {
-        return (uint64_t)kernel_stack + KERNEL_STACK_SIZE;
+        return p->kstack + KERNEL_STACK_SIZE;
+    }
+
+    // Hand every live slot's kernel stack back. Only safe once nothing runs
+    // on one of them, i.e. after process_return_to_kernel has put us back on
+    // the console stack.
+    static void free_kernel_stacks()
+    {
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+            if (table[i].kstack)
+            {
+                pmm::free_frames(table[i].kstack, KERNEL_STACK_FRAMES);
+                table[i].kstack = 0;
+            }
     }
 
     static void copy_bytes(uint8_t* dst, const uint8_t* src, uint64_t n)
@@ -130,7 +147,15 @@ namespace process
                 continue;
 
             Process* p = &table[i];
+            uint64_t ks = p->kstack;    // belongs to the slot; survives reuse
             memory::memset((uint8_t*)p, 0x00, sizeof(Process));
+            p->kstack = ks;
+            if (!p->kstack)
+            {
+                p->kstack = pmm::alloc_frames(KERNEL_STACK_FRAMES);
+                if (!p->kstack)
+                    return nullptr;     // slot stays Unused
+            }
             p->pid = next_pid++;
             if (next_pid <= 0)
                 next_pid = 1;
@@ -198,6 +223,10 @@ namespace process
     static void load_context(Process* p, user_regs* regs, iret_frame* iret)
     {
         current = p;
+        // The trap we are about to return from still runs on the outgoing
+        // process's stack - that is fine, it is finished with. What matters
+        // is that the *next* entry from ring 3 lands on p's own stack.
+        tss::set_kernel_stack(kstack_top(p));
         paging::switch_address_space(p->cr3);
         fpu_restore(p->fpu);
         *regs = p->ctx.regs;
@@ -824,9 +853,26 @@ namespace process
     // Session (console entry point)
     // -----------------------------------------------------------------------
 
+    // vfs busy hook: a filesystem is in use while any live process has its
+    // cwd inside it or holds an open fd on it. umount refuses then, because
+    // it frees every vnode of the FS outright.
+    static bool mount_in_use(mount* m)
+    {
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            const Process* p = &table[i];
+            if (p->state == State::Unused)
+                continue;
+            if (p->cwd && p->cwd->mnt == m)
+                return true;
+        }
+        return filesys::any_open_on(m);
+    }
+
     void init()
     {
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
+        vfs::set_busy_hook(mount_in_use);
 
         asm volatile("fninit");
         fpu_save(fpu_template);
@@ -853,15 +899,28 @@ namespace process
         if (!f)
             return;
 
-        // Three slots sharing one open file description.
+        // Three slots sharing one open file description. file_open handed us
+        // one reference; slots 1 and 2 each take another. On any failure the
+        // references taken so far have to go back, or the description and its
+        // vnode are pinned for the lifetime of the kernel.
         sint32_t fd = -1;
         filesys::file_get(f);
         if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 0)
+        {
+            // Either the slot took a reference (fd != 0) or alloc already
+            // gave one back (-EMFILE); either way the one file_open handed
+            // us is still outstanding.
+            filesys::file_put(f);
             return;
+        }
         filesys::file_get(f);
         if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 1)
+        {
+            filesys::file_put(f);
             return;
-        filesys::fdtable_alloc(&p->fds, f, false, &fd);   // fd 2
+        }
+        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0)   // fd 2
+            return;                     // alloc already released it
     }
 
     // Load `path` with the collected argv/envp and allocate a runnable
@@ -956,13 +1015,13 @@ namespace process
         uart::printf("process: session start, pid %u %s entry=%llx\n",
                      (uint32_t)p->pid, p->name, p->ctx.iret.rip);
 
-        tss::set_kernel_stack(kernel_stack_top());
+        tss::set_kernel_stack(kstack_top(p));
 
         current = p;
         paging::switch_address_space(p->cr3);
         fpu_restore(p->fpu);
 
-        cpu_context* frame = (cpu_context*)(kernel_stack_top() - sizeof(cpu_context));
+        cpu_context* frame = (cpu_context*)(kstack_top(p) - sizeof(cpu_context));
         *frame = p->ctx;
         process_enter_user(frame);
 
@@ -980,6 +1039,7 @@ namespace process
         current = nullptr;
         session_active = false;
         tss::set_kernel_stack(0);
+        free_kernel_stacks();   // we are back on the console stack
 
         uart::printf("process: session end, status %u\n", (uint32_t)root_status);
 
@@ -1222,15 +1282,31 @@ namespace process
     // running if anything fails.
     void sys_execve(user_regs* regs, iret_frame* iret)
     {
-        char path[uaccess::MAX_PATH];
-        sint64_t plen = uaccess::strncpy_from_user(path, regs->rdi, sizeof(path));
+        // PATH_MAX does not go on the kernel stack: it is 64 KiB per process
+        // and execve still has load_program and the ELF reader to call
+        // underneath it.
+        char* path = (char*)kmalloc(PATH_MAX);
+        if (!path)
+        {
+            regs->rax = SYSCALL_ERR(ENOMEM);
+            return;
+        }
+        sint64_t plen = uaccess::strncpy_from_user(path, regs->rdi, PATH_MAX);
         if (plen == -1)
         {
+            kfree(path);
             regs->rax = SYSCALL_ERR(EFAULT);
             return;
         }
-        if (plen <= 0)              // empty path
+        if (plen == -2)
         {
+            kfree(path);
+            regs->rax = SYSCALL_ERR(ENAMETOOLONG);
+            return;
+        }
+        if (plen == 0)              // empty path
+        {
+            kfree(path);
             regs->rax = SYSCALL_ERR(ENOENT);
             return;
         }
@@ -1241,6 +1317,7 @@ namespace process
         ArgEnv ae;
         if (!ae.init())
         {
+            kfree(path);
             regs->rax = SYSCALL_ERR(ENOMEM);
             return;
         }
@@ -1299,6 +1376,7 @@ namespace process
 
         if (rc != 0)
         {
+            kfree(path);
             regs->rax = SYSCALL_ERR(-rc);   // the old program keeps running
             return;
         }
@@ -1308,7 +1386,8 @@ namespace process
         paging::switch_address_space(img.cr3);
         paging::destroy_address_space(old);
 
-        adopt_image(current, &img, path);
+        adopt_image(current, &img, path);   // copies the name it needs
+        kfree(path);
 
         // execve keeps the fd table except CLOEXEC slots, and keeps cwd and
         // umask (POSIX). adopt_image reset only the address-space fields.

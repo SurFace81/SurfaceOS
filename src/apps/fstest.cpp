@@ -310,6 +310,129 @@ static void test_offsets()
           syscall(SYS_DUP3, 0, 0, (uint64_t)O_CLOEXEC) == -EINVAL);
 }
 
+// Regressions for the stage-3 cleanup. Each of these was a real defect:
+// F_DUPFD closed whatever sat at minfd, dup2(fd,fd) returned -1, and read()
+// blocked even on an O_NONBLOCK fd.
+static void test_dup_fcntl_regressions()
+{
+    section("regressions: F_DUPFD, dup2(fd,fd), O_NONBLOCK");
+
+    char path[256];
+    strcpy(path, D);
+    strcat(path, "/dupreg.bin");
+
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check("open the probe file", fd >= 3);
+    write(fd, "hello", 5);
+
+    // dup2 with old == new is a POSIX no-op that still returns the fd.
+    check("dup2(fd, fd) returns fd, not -1", dup2(fd, fd) == fd);
+    check("... and fd 0 is not a special case", dup2(0, 0) == 0);
+    check("... and the fd still works after the no-op",
+          lseek(fd, 0, SEEK_SET) == 0);
+
+    // F_DUPFD must find the lowest *free* fd at or above minfd. Park a
+    // sentinel at 20 that points at a *different* file, so that a slot
+    // stealing implementation is caught: fd 20 would survive as an open fd
+    // either way, but it would be pointing at the wrong file.
+    char gpath[256];
+    strcpy(gpath, D);
+    strcat(gpath, "/dupreg.guard");
+    int gsrc = open(gpath, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    write(gsrc, "abc", 3);              // 3 bytes vs the probe's 5
+    int guard = dup2(gsrc, 20);
+    close(gsrc);
+    check("parked a sentinel fd at 20", guard == 20);
+
+    int got = fcntl(fd, F_DUPFD, 20);
+    check("F_DUPFD skipped the occupied slot", got > 20);
+
+    struct stat st;
+    errno = 0;
+    check("F_DUPFD left the sentinel at 20 pointing at its own file",
+          fstat(20, &st) == 0 && st.st_size == 3);
+    check("F_DUPFD result is a working dup of fd",
+          got >= 0 && lseek(got, 0, SEEK_CUR) == lseek(fd, 0, SEEK_CUR));
+
+    // F_DUPFD_CLOEXEC sets the flag on the new fd, not on the old one.
+    int cl = fcntl(fd, F_DUPFD_CLOEXEC, 20);
+    check("F_DUPFD_CLOEXEC returns another free fd", cl > 20 && cl != got);
+    check("... with FD_CLOEXEC set", fcntl(cl, F_GETFD, 0) == FD_CLOEXEC);
+    check("... and the source fd untouched", fcntl(fd, F_GETFD, 0) == 0);
+
+    close(cl);
+    close(got);
+    close(20);
+    close(fd);
+
+    // O_NONBLOCK on the tty: read must report EAGAIN instead of blocking.
+    // (If this regresses, the test hangs rather than fails - the harness
+    // timeout is the backstop.)
+    int tty = open("/dev/tty", O_RDONLY | O_NONBLOCK);
+    check("open /dev/tty O_NONBLOCK", tty >= 3);
+    check("F_GETFL reports O_NONBLOCK",
+          (fcntl(tty, F_GETFL, 0) & O_NONBLOCK) != 0);
+    char c = 0;
+    errno = 0;
+    ssize_t nb = read(tty, &c, 1);
+    check("non-blocking read of an idle tty gives EAGAIN",
+          nb == -1 && errno == EAGAIN);
+
+    // Clearing it through F_SETFL must be visible too.
+    fcntl(tty, F_SETFL, 0);
+    check("F_SETFL cleared O_NONBLOCK",
+          (fcntl(tty, F_GETFL, 0) & O_NONBLOCK) == 0);
+    close(tty);
+}
+
+// rename() on FAT changes a file's cache key (it encodes the directory
+// slot). The vnode has to be re-keyed, not evicted: evicting let a later
+// open of the new path build a second vnode for the same file, with its own
+// stale size.
+static void test_rename_coherency()
+{
+    section("rename keeps one vnode per file");
+
+    char oldp[256], newp[256];
+    strcpy(oldp, D);
+    strcat(oldp, "/coh_old.bin");
+    strcpy(newp, D);
+    strcat(newp, "/coh_new.bin");
+
+    unlink(newp);
+    int a = open(oldp, O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check("open the file to be renamed", a >= 3);
+    write(a, "12345678", 8);
+
+    check("rename with the fd still open", rename(oldp, newp) == 0);
+
+    // Open the new name: this must land on the *same* vnode as `a`.
+    int b = open(newp, O_RDWR);
+    check("open the renamed path", b >= 3);
+
+    struct stat sa, sb;
+    check("both fds agree on the size after the rename",
+          fstat(a, &sa) == 0 && fstat(b, &sb) == 0 && sa.st_size == 8 &&
+          sb.st_size == 8);
+    check("both fds report the same inode",
+          sa.st_ino == sb.st_ino && sa.st_dev == sb.st_dev);
+
+    // Grow through the old fd; the fd opened after the rename must see it.
+    write(a, "9012", 4);
+    check("write through the pre-rename fd is visible to the new fd",
+          fstat(b, &sb) == 0 && sb.st_size == 12);
+
+    // ... and the other way round.
+    char buf[16];
+    ssize_t r = pread(b, buf, 12, 0);
+    check("the renamed file reads back intact",
+          r == 12 && strncmp(buf, "123456789012", 12) == 0);
+
+    close(a);
+    close(b);
+    check("the old name is gone", access(oldp, F_OK) == -1);
+}
+
 // "fstest cloexec": running inside the exec'd child; fd 7 must be closed,
 // fd 8 (no CLOEXEC) must have survived.
 static int cloexec_mode()
@@ -613,6 +736,16 @@ static void test_stat()
           a.st_mtim.tv_sec > 1577836800LL);
 
     check("stat of / is a directory", stat("/", &a) == 0 && S_ISDIR(a.st_mode));
+
+    // st_dev must tell the volumes apart: (st_dev, st_ino) is what "is this
+    // the same file?" is built on, and devfs used to share a constant with
+    // the FAT root.
+    struct stat rootst, devst;
+    check("stat / and /dev both succeed",
+          stat("/", &rootst) == 0 && stat("/dev", &devst) == 0);
+    check("st_dev differs between the root volume and devfs",
+          rootst.st_dev != devst.st_dev);
+    check("st_dev is non-zero on both", rootst.st_dev != 0 && devst.st_dev != 0);
     check("stat of /dev/tty is a chrdev",
           stat("/dev/tty", &a) == 0 && S_ISCHR(a.st_mode));
     check("st_ino is non-zero", a.st_ino != 0);
@@ -943,6 +1076,8 @@ int main(int argc, char** argv)
     test_dev();
     test_rw_vectors();
     test_umask_chmod();
+    test_dup_fcntl_regressions();
+    test_rename_coherency();
 
     // Make everything durable: the harness reboots and runs `fstest verify`.
     sync();

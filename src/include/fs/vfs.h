@@ -130,6 +130,10 @@ struct mount
     vfs_fs* fs;                 // the driver behind it
     void*   fs_priv;            // driver state (fat_super* for fat32)
     char    devname[16];        // "usb0p1", "devfs", ...
+    // Unique per mounted instance, handed out by mount_at. st_dev must
+    // distinguish volumes, or (st_dev, st_ino) stops identifying a file and
+    // "is this the same file?" checks across mounts go wrong.
+    uint32_t dev_id;
     bool    active;
 };
 
@@ -168,6 +172,11 @@ namespace vfs
     // freeing it: open references keep it alive until the last unref. Used
     // after unlink/rename, when the vnode's identity is no longer valid.
     void   invalidate(vnode* v);
+    // Move a cached vnode to a new identity, keeping it cached. rename on a
+    // filesystem whose key encodes the directory slot (FAT) needs this:
+    // evicting instead would let a later open of the new path build a
+    // *second* vnode for the same file, with its own size and offset caches.
+    void   rekey(vnode* v, uint64_t new_key);
 
     // Mark metadata dirty; flushed by fsync/umount/sync/eviction.
     void   touch(vnode* v, bool mtime_now);
@@ -177,10 +186,21 @@ namespace vfs
     // nullptr for the root mount. arg goes to fs->mount_fs.
     sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs,
                       void* arg);
-    sint64_t umount(mount* m);
+    // umount must refuse while a process still has the filesystem open, but
+    // the VFS cannot see fd tables or process cwds from down here, and a
+    // plain refcount test cannot either: drivers legitimately pin their own
+    // vnodes (devfs keeps one per device for the life of the mount). So the
+    // process layer registers a predicate at boot.
+    typedef bool (*busy_hook_t)(mount* m);
+    void set_busy_hook(busy_hook_t hook);
+
+    // -EBUSY while any vnode of the FS is still referenced by an open fd or
+    // a process cwd. `force` skips that check and is for the shutdown path
+    // only, where no process is left to be surprised by the freed vnodes.
+    sint64_t umount(mount* m, bool force = false);
     // Unmount every FS mounted on a directory belonging to `m` (deepest
     // first); call before umounting `m` itself.
-    sint64_t umount_children(mount* m);
+    sint64_t umount_children(mount* m, bool force = false);
     mount*   root_mount();
     mount*   mount_count_get(uint32_t i);   // iterate: nullptr past the end
     uint32_t mount_count();

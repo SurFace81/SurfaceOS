@@ -678,9 +678,10 @@ static sint64_t fat_rename(vnode* old_dir, const char* old_name,
     }
     else
     {
-        // File key includes (parent, slot): the identity changed. Evict the
-        // old vnode from the cache (open fds keep their reference and get
-        // the new record location so writes still land correctly).
+        // File key includes (parent, slot): the identity changed. Re-key the
+        // vnode in place instead of evicting it, so that a later open of the
+        // new path finds this same vnode rather than building a second one
+        // for the same file with its own size and chain-position caches.
         vnode* v = vfs::find_cached(sb->mnt,
                                     file_key(odn->first_cluster, src_slot));
         if (v)
@@ -690,7 +691,7 @@ static sint64_t fat_rename(vnode* old_dir, const char* old_name,
             fn->entry_index = new_slot;
             fn->entry_lba = new_lba;
             fn->entry_off = new_off;
-            vfs::invalidate(v);
+            vfs::rekey(v, file_key(ndn->first_cluster, new_slot));
             vfs::unref(v);
         }
     }
@@ -896,7 +897,7 @@ static sint64_t fat_getattr(vnode* v, struct stat* st)
     fat_super* sb = fn->sb;
 
     memory::memset((uint8_t*)st, 0, sizeof(struct stat));
-    st->st_dev     = 1;
+    st->st_dev     = v->mnt ? v->mnt->dev_id : 0;
     st->st_ino     = v->st_ino;
     st->st_nlink   = 1;
     st->st_mode    = v->mode;

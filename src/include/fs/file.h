@@ -43,6 +43,9 @@ namespace filesys
     // --- open file descriptions ---
     // Takes a reference on `vn`; releases it at the last close.
     file* file_open(vnode* vn, uint32_t flags);
+    // Any open file description still pointing into this mount? umount asks
+    // through the VFS busy hook.
+    bool  any_open_on(const mount* m);
     void  file_get(file* f);
     void  file_put(file* f);
 
@@ -54,8 +57,13 @@ namespace filesys
     // must NOT unref it through the table - the table owns the reference.
     file* fdtable_get(fd_table* t, sint32_t fd, sint64_t* rc);
     sint64_t fdtable_close(fd_table* t, sint32_t fd);
+    // Lowest free slot >= minfd, or -1 when the table is full. F_DUPFD needs
+    // this: fdtable_dup with an explicit newfd *takes* an occupied slot, so
+    // the free one has to be found before asking for the dup.
+    sint32_t fdtable_lowest_free(const fd_table* t, sint32_t minfd);
     // dup: the new slot shares the file (refcnt++). dup2 closes newfd first
     // (silently, POSIX), dup3 adds flags (O_CLOEXEC) and rejects old==new.
+    // On success *out_fd is always set, including dup2's old==new no-op.
     sint64_t fdtable_dup(fd_table* t, sint32_t oldfd, sint32_t newfd,
                          bool cloexec, bool explicit_new, sint32_t* out_fd);
     sint64_t fdtable_getfd(fd_table* t, sint32_t fd);

@@ -126,7 +126,7 @@ namespace
         vfs::set_cwd(nullptr);
         mount* m = vfs::root_mount();
         if (m)
-            vfs::umount(m);
+            vfs::umount(m, true);   // shutdown: tear down regardless of fds
     }
 
     void automount_root(const BOOT_HEADER* hdr)

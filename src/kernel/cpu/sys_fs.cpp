@@ -119,7 +119,19 @@ namespace
     vnode* resolve_dirfd(sint32_t dirfd, syscall_regs* regs)
     {
         if (dirfd == AT_FDCWD)
-            return process::cur_cwd();
+        {
+            vnode* cwd = process::cur_cwd();
+            if (!cwd)
+            {
+                // Booted with no root filesystem: there is nothing to resolve
+                // a relative path against. Say so instead of returning null
+                // with rax untouched (which leaks the syscall number back as
+                // a success value).
+                set(regs, ERR(ENOENT));
+                return nullptr;
+            }
+            return cwd;
+        }
 
         sint64_t rc = 0;
         file* f = filesys::fdtable_get(process::cur_fds(), dirfd, &rc);
@@ -433,10 +445,11 @@ namespace
         }
 
         sint64_t n = do_read(f, nullptr, regs->rsi, regs->rdx);
-        if (n == -EAGAIN)
+        if (n == -EAGAIN && !(f->flags & O_NONBLOCK))
         {
             // Canonical tty read with no line ready: block and restart.
             // (No fd side effect happened, so the replay is clean.)
+            // O_NONBLOCK asked for the opposite: hand EAGAIN back instead.
             process::block_on_input(regs, iret);
             return;
         }
@@ -554,9 +567,16 @@ namespace
             sint64_t n = do_read(f, nullptr, v.iov_base, v.iov_len);
             if (n == -EAGAIN)
             {
-                if (total == 0)
+                // Same rule as read(2): block only when the caller did not
+                // ask for O_NONBLOCK, and only when nothing was read yet.
+                if (total == 0 && !(f->flags & O_NONBLOCK))
                 {
                     process::block_on_input(regs, iret);
+                    return;
+                }
+                if (total == 0)
+                {
+                    set(regs, ERR(EAGAIN));
                     return;
                 }
                 break;
@@ -766,23 +786,19 @@ namespace
                     set(regs, rc);
                     return;
                 }
-                for (sint32_t i = minfd; i < FD_TABLE_SIZE; i++)
+                // fdtable_dup with an explicit target *closes* whatever sits
+                // there, so probing slots with it would silently destroy the
+                // caller's fds. Find the free slot first, then dup into it.
+                sint32_t slot = filesys::fdtable_lowest_free(t, minfd);
+                if (slot < 0)
                 {
-                    sint64_t r2 = filesys::fdtable_dup(t, fd, i,
-                                                       cmd == F_DUPFD_CLOEXEC,
-                                                       true, &newfd);
-                    if (r2 == 0)
-                    {
-                        set(regs, newfd);
-                        return;
-                    }
-                    if (r2 != -EBADF && r2 != -EEXIST)
-                    {
-                        set(regs, r2);
-                        return;
-                    }
+                    set(regs, ERR(EMFILE));
+                    return;
                 }
-                set(regs, ERR(EMFILE));
+                sint64_t r2 = filesys::fdtable_dup(t, fd, slot,
+                                                   cmd == F_DUPFD_CLOEXEC,
+                                                   true, &newfd);
+                set(regs, r2 != 0 ? r2 : newfd);
                 return;
             }
             case F_GETFD:

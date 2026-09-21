@@ -52,6 +52,14 @@ namespace filesys
         return nullptr;
     }
 
+    bool any_open_on(const mount* m)
+    {
+        for (uint32_t i = 0; i < MAX_FILES; i++)
+            if (pool[i].used && pool[i].vn && pool[i].vn->mnt == m)
+                return true;
+        return false;
+    }
+
     void file_get(file* f)
     {
         if (f)
@@ -125,6 +133,16 @@ namespace filesys
         return 0;
     }
 
+    sint32_t fdtable_lowest_free(const fd_table* t, sint32_t minfd)
+    {
+        if (minfd < 0)
+            minfd = 0;
+        for (sint32_t i = minfd; i < FD_TABLE_SIZE; i++)
+            if (!t->slots[i].f)
+                return i;
+        return -1;
+    }
+
     sint64_t fdtable_dup(fd_table* t, sint32_t oldfd, sint32_t newfd,
                          bool cloexec, bool explicit_new, sint32_t* out_fd)
     {
@@ -136,7 +154,15 @@ namespace filesys
             if (newfd < 0 || newfd >= FD_TABLE_SIZE)
                 return -EBADF;
             if (newfd == oldfd)
-                return cloexec ? -EINVAL : oldfd;   // dup2 POSIX: a no-op
+            {
+                // dup3 rejects old == new; dup2 makes it a no-op that still
+                // reports the fd. Report it through *out_fd like every other
+                // success, so callers never have to special-case the rc.
+                if (cloexec)
+                    return -EINVAL;
+                *out_fd = oldfd;
+                return 0;
+            }
         }
         else
         {

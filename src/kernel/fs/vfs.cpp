@@ -25,6 +25,8 @@ namespace
 
     // System-wide current directory (see vfs.h). Referenced by this module.
     vnode* system_cwd = nullptr;
+    uint32_t next_dev_id = 1;       // st_dev source; 0 stays "no device"
+    vfs::busy_hook_t busy_hook = nullptr;
 
     // Days from 1970-01-01 (Civil From Days, Howard Hinnant).
     sint64_t days_from_civil(int y, unsigned m, unsigned d)
@@ -159,6 +161,49 @@ namespace vfs
         return nullptr;
     }
 
+    void set_busy_hook(busy_hook_t hook)
+    {
+        busy_hook = hook;
+    }
+
+    void rekey(vnode* v, uint64_t new_key)
+    {
+        if (!v || v->fs_key == new_key)
+            return;
+
+        bool cached = false;
+        for (uint32_t i = 0; i < MAX_VNODES; i++)
+            if (vnode_pool[i] == v)
+            {
+                cached = true;
+                break;
+            }
+
+        // Anything already cached under the new key is stale by definition
+        // (the caller just moved `v` on top of it). Drop it from the cache,
+        // or lookups of the new name would keep finding the dead vnode.
+        // Note: no VF_UNLINKED here. The caller has already dealt with a
+        // replaced target, including freeing its storage, so marking this
+        // one unlinked would free the same clusters a second time. Leaving
+        // it clear is the conservative direction.
+        if (cached)
+        {
+            for (uint32_t i = 0; i < MAX_VNODES; i++)
+            {
+                vnode* other = vnode_pool[i];
+                if (other && other != v && other->mnt == v->mnt &&
+                    other->fs_key == new_key)
+                {
+                    invalidate(other);
+                    break;
+                }
+            }
+        }
+
+        v->fs_key = new_key;
+        v->st_ino = new_key ? new_key : 1;
+    }
+
     void invalidate(vnode* v)
     {
         if (!v)
@@ -255,6 +300,8 @@ namespace vfs
         memory::memset((uint8_t*)m, 0, sizeof(mount));
         m->point  = point_dir;      // may still be null: the root mount
         m->fs     = fs;
+        m->dev_id = next_dev_id++;  // never reused: a stale st_dev must not
+                                    // start matching a later mount
         m->active = true;
         strncpy(m->devname, devname, sizeof(m->devname) - 1);
         if (point_dir)
@@ -297,13 +344,33 @@ namespace vfs
         return v->mnt;
     }
 
-    sint64_t umount(mount* m)
+    // Is anything still using this filesystem? Counting references does not
+    // answer that: a driver may hold its own (devfs pins a vnode per device
+    // until umount), so a refcount threshold would either report every
+    // devfs umount busy or miss a real open fd on another FS. Ask the layers
+    // that actually own the users instead.
+    static bool fs_busy(mount* m)
+    {
+        if (system_cwd && system_cwd->mnt == m)
+            return true;            // the console is standing in it
+        return busy_hook && busy_hook(m);
+    }
+
+    sint64_t umount(mount* m, bool force)
     {
         if (!m || !m->active)
             return -EINVAL;
 
         // Nothing mounted inside this FS may survive it.
-        umount_children(m);
+        sint64_t crc = umount_children(m, force);
+        if (crc != 0 && !force)
+            return crc;
+
+        // The pool sweep below frees every vnode of this FS outright, so an
+        // open fd pointing into it would be left dangling. Refuse instead.
+        // (force is the shutdown path: by then no process is left running.)
+        if (!force && fs_busy(m))
+            return -EBUSY;
 
         // Flush everything this FS wrote.
         if (m->root->ops->fsync)
@@ -312,7 +379,6 @@ namespace vfs
         // Drop every cached vnode of this FS. Each holds the cache's single
         // reference; release() gives the FS a chance to write back dirty
         // metadata before the structures disappear.
-        // (3.7 will refuse the umount while a process still holds an fd.)
         for (uint32_t i = 0; i < MAX_VNODES; i++)
         {
             vnode* v = vnode_pool[i];
@@ -349,7 +415,7 @@ namespace vfs
         return rc;
     }
 
-    sint64_t umount_children(mount* m)
+    sint64_t umount_children(mount* m, bool force)
     {
         // Passes until nothing changes: a mount can sit on a directory of a
         // filesystem that is itself mounted deeper.
@@ -365,11 +431,17 @@ namespace vfs
                 vnode* point = mounts[i].point;
                 if (point && point->mnt == m)
                 {
-                    sint64_t rc = umount(&mounts[i]);
+                    sint64_t rc = umount(&mounts[i], force);
                     if (rc != 0 && first_err == 0)
                         first_err = rc;
-                    changed = true;
-                    break;      // restart: indices are stable but be safe
+                    // Only a mount that actually went away counts as
+                    // progress: a busy child stays active, and restarting
+                    // the scan on it would spin forever.
+                    if (!mounts[i].active)
+                    {
+                        changed = true;
+                        break;  // restart: indices are stable but be safe
+                    }
                 }
             }
         }

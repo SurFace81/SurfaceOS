@@ -212,11 +212,15 @@ static void cmd_umount(int argc, const char** argv)
         return;
     }
 
+    // namei descends *into* a mount when it walks onto its point, so the
+    // vnode we get back for "/dev" is the mounted FS's root, not the
+    // directory it covers. Match on the root; keep the point comparison as
+    // a fallback for the case where the lookup did not cross (no mount).
     mount* found = nullptr;
     for (uint32_t i = 0; vfs::mount_count_get(i); i++)
     {
         mount* m = vfs::mount_count_get(i);
-        if (m->point == point)
+        if (m->root == point || m->point == point)
         {
             found = m;
             break;
@@ -227,19 +231,32 @@ static void cmd_umount(int argc, const char** argv)
     if (!found)
     {
         screen::printf("\n\rNothing is mounted there");
+        uart::printf("umount: nothing mounted at %s\n", argv[1]);
         return;
     }
     if (!found->point)
     {
         screen::printf("\n\rCannot umount the root filesystem");
+        uart::printf("umount: refused, %s is the root filesystem\n", argv[1]);
         return;
     }
 
     rc = vfs::umount(found);
     if (rc == 0)
+    {
         screen::printf("\n\rUnmounted");
+        uart::printf("umount: ok %s\n", argv[1]);
+    }
+    else if (rc == -EBUSY)
+    {
+        screen::printf("\n\rBusy: something still has it open");
+        uart::printf("umount: busy %s\n", argv[1]);
+    }
     else
+    {
         screen::printf("\n\rUnmount failed (%d)", (int)rc);
+        uart::printf("umount: failed %s rc=%d\n", argv[1], (int)rc);
+    }
 }
 
 static void cmd_sync(int argc, const char** argv)
@@ -912,6 +929,10 @@ static void cmd_meminfo(int argc, const char** argv)
 
     pmm::Stats pstats;
     pmm::get_stats(&pstats);
+    // Mirrored to the serial log: the test harness compares the free-frame
+    // count across sessions to catch a leaked per-process kernel stack.
+    uart::printf("meminfo: frames_free=%u frames_used=%u\n",
+                 (uint32_t)pstats.free_frames, (uint32_t)pstats.used_frames);
     screen::printf("\n\r");
     screen::printf("\n\r PMM frames (4 KB): %u total, %u free, %u used",
         (uint32_t)pstats.total_frames, (uint32_t)pstats.free_frames, (uint32_t)pstats.used_frames);

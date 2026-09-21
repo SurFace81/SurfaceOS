@@ -9,6 +9,8 @@
 #   4. memtest.bin                -> all memory checks pass
 #   5. proctest.bin               -> all process/scheduler checks pass
 #   6. uptime                     -> the console still works afterwards
+#   7. umount /dev busy vs free   -> EBUSY while the cwd is inside it
+#   8. meminfo around a session   -> no leaked frames (per-process kstacks)
 set -u
 
 cd "$(dirname "$0")/.."
@@ -159,7 +161,31 @@ grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -q "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
 wait_session_end 7 30; result $? "fstest exits"
 
-# 8. console still alive
+# 8. umount refuses while the FS is in use, and succeeds once it is not.
+#    Standing in /dev gives the console cwd a reference on the devfs root;
+#    before the stage-3 cleanup umount freed those vnodes anyway.
+type_cmd "cd /dev"; sleep 2
+type_cmd "umount /dev"; sleep 3
+wait_for "umount: busy /dev" 10; result $? "umount refuses a filesystem in use"
+type_cmd "cd /"; sleep 2
+type_cmd "umount /dev"; sleep 3
+wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
+
+# 9. per-process kernel stacks are handed back when a session ends: run a
+#    session between two meminfo samples and compare the free-frame counts.
+type_cmd "meminfo"; sleep 3
+FRAMES_BEFORE=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
+type_cmd "exec hi"
+wait_for "Hello world!" 20
+sleep 1; key ret
+wait_session_end $(( $(sessions_ended) + 1 )) 15
+type_cmd "meminfo"; sleep 3
+FRAMES_AFTER=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
+echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
+[ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
+result $? "a session leaks no physical frames (kernel stacks freed)"
+
+# 10. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -q "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"

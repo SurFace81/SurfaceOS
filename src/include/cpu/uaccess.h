@@ -18,8 +18,8 @@
 // a real scheduler arrives this has to become fault-driven instead.
 namespace uaccess
 {
-    // Longest path / string a syscall will accept from user space.
-    static const uint64_t MAX_PATH = 256;
+    // (No MAX_PATH here: PATH_MAX in fs/vfs.h is the single limit. A second,
+    // smaller one silently rejected paths the VFS would have accepted.)
 
     bool copy_from_user(void* dst, uint64_t user_src, uint64_t len);
     bool copy_to_user(uint64_t user_dst, const void* src, uint64_t len);
