@@ -16,6 +16,7 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/drivers/keyboard.h"
+#include "../../include/drivers/tty.h"
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
@@ -32,7 +33,6 @@ extern "C" void process_return_to_kernel(void);
 #define RFLAGS_USER         0x202       // IF + reserved bit 1
 #define INT80_LENGTH        2           // `int $0x80` is CD 80
 #define TIME_SLICE_TICKS    10          // PIT ticks (~10 ms at 1 kHz)
-#define LINE_CAPACITY       256
 
 // Syscall failure: -errno in rax (Linux convention, see abi/errno.h).
 #define SYSCALL_ERR(e)      ((uint64_t)(sint64_t)-(e))
@@ -71,9 +71,6 @@ namespace process
         vnode*      cwd;
         uint32_t    umask;
 
-        // SYSX_READ_LINE edits across restarts, so its buffer lives here.
-        char        line[LINE_CAPACITY];
-        uint32_t    line_pos;
     };
 
     static Process  table[MAX_PROCESSES];
@@ -170,46 +167,16 @@ namespace process
     }
 
     // -----------------------------------------------------------------------
-    // Keyboard queue (shared by the session) and Esc
+    // Session keyboard input (the line discipline itself lives in tty.cpp)
     // -----------------------------------------------------------------------
 
-    static const uint32_t KEY_BUF_SIZE = 64;
-    static keyboard_event_t key_buf[KEY_BUF_SIZE];
-    static volatile uint32_t key_head = 0;
-    static volatile uint32_t key_tail = 0;
-
-    // Runs in the keyboard IRQ.
+    // Runs in the keyboard IRQ: forwards to the tty ring; Esc sets the
+    // session-kill request acted on at the next ring-3 boundary.
     static void session_key_handler(keyboard_event_t e)
     {
-        // Esc belongs to the kernel while a session runs: it terminates every
-        // process of the session, whatever they are doing - spinning in user
-        // code, blocked in a syscall, or waiting on each other. The request is
-        // acted on at the next return to ring 3 (see reschedule()).
-        if (e.KeyCode == KEY_ESCAPE)
-        {
-            if (e.type == KEY_PRESS)
-                kill_requested = true;
-            return;
-        }
-
-        uint32_t next = (key_head + 1) % KEY_BUF_SIZE;
-        if (next == key_tail)
-            return;     // full, drop
-
-        key_buf[key_head] = e;
-        key_head = next;
-    }
-
-    static bool has_key()
-    {
-        return key_head != key_tail;
-    }
-
-    static keyboard_event_t pop_key()
-    {
-        keyboard_event_t e = key_buf[key_tail];
-        key_tail = (key_tail + 1) % KEY_BUF_SIZE;
-        return e;
+        if (e.KeyCode == KEY_ESCAPE && e.type == KEY_PRESS)
+            kill_requested = true;
+        tty::on_key(e);
     }
 
     // -----------------------------------------------------------------------
@@ -666,7 +633,6 @@ namespace process
         p->brk_start   = img->image_end;
         p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
-        p->line_pos    = 0;
         copy_name(p->name, path);
         initial_context(&p->ctx, img->entry, img->rsp);
         copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
@@ -750,7 +716,7 @@ namespace process
     {
         switch (p->wait)
         {
-            case Wait::Key:   return has_key();
+            case Wait::Key:   return tty::has_input();
             case Wait::Child: return child_event(p);
             case Wait::Sleep: return pit::ticks() >= p->wake_tick;
             default:          return true;
@@ -949,7 +915,7 @@ namespace process
         slice_ticks    = 0;
         last_slot      = (uint32_t)(p - table);
 
-        key_head = key_tail = 0;
+        tty::reset();
         keyboard_callback_t prev_callback = keyboard::get_callback();
         keyboard::set_keyboard_callback(session_key_handler);
 
@@ -1367,16 +1333,20 @@ namespace process
             return;
         }
 
-        if (!has_key())
+        keyboard_event_t e;
+        if (!tty::pop_key(&e))
         {
             block(Wait::Key, true, regs, iret);
             return;
         }
 
-        keyboard_event_t e = pop_key();
         regs->rax = uaccess::copy_to_user(regs->rdi, &e, sizeof(e)) ? 0 : SYSCALL_ERR(EFAULT);
     }
 
+    // SYSX_READ_LINE (legacy): a thin wrapper over the tty canonical read.
+    // Returns the line WITHOUT the trailing newline, NUL-terminated (the
+    // SDK's read_line contract). Blocks via Wait::Key when no line is ready.
+    // Removed in 3.7 when the SDK reads through fd 0.
     void sys_read_line(user_regs* regs, iret_frame* iret)
     {
         uint64_t user_buf = regs->rdi;
@@ -1393,47 +1363,38 @@ namespace process
             return;
         }
 
-        uint32_t limit = (uint32_t)max_len - 1;
-        if (limit > LINE_CAPACITY - 1)
-            limit = LINE_CAPACITY - 1;
-
-        // Consume whatever has been typed; the line survives if we block.
-        while (has_key())
+        char tmp[1024];
+        sint64_t n = tty::read(tmp, sizeof(tmp));
+        if (n == -EAGAIN)
         {
-            keyboard_event_t e = pop_key();
-            if (e.type != KEY_PRESS)
-                continue;
-
-            if (e.KeyCode == KEY_ENTER)
-            {
-                screen::printf("\n");
-                uint32_t len = current->line_pos;
-                current->line[len] = '\0';
-                current->line_pos = 0;
-                regs->rax = uaccess::copy_to_user(user_buf, current->line, len + 1)
-                          ? (uint64_t)len : SYSCALL_ERR(EFAULT);
-                return;
-            }
-
-            if (e.KeyCode == KEY_BACKSPACE)
-            {
-                if (current->line_pos > 0)
-                {
-                    current->line_pos--;
-                    screen::printf("\b \b");
-                }
-                continue;
-            }
-
-            if (e.KeyChar && current->line_pos < limit)
-            {
-                current->line[current->line_pos++] = e.KeyChar;
-                char tmp[2] = { e.KeyChar, 0 };
-                screen::printf("%s", tmp);
-            }
+            block(Wait::Key, true, regs, iret);
+            return;
+        }
+        if (n < 0)
+        {
+            regs->rax = (uint64_t)n;
+            return;
+        }
+        if (n == 0)
+        {
+            // EOF (Ctrl+D on an empty line): deliver an empty line.
+            tmp[0] = '\0';
+            n = 0;
         }
 
-        block(Wait::Key, true, regs, iret);
+        // Strip the trailing newline, clamp to the caller's buffer.
+        if (n > 0 && tmp[n - 1] == '\n')
+            n--;
+        if ((uint64_t)n > max_len - 1)
+            n = (sint64_t)(max_len - 1);
+        tmp[n] = '\0';
+
+        if (!uaccess::copy_to_user(user_buf, tmp, (uint64_t)n + 1))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
+            return;
+        }
+        regs->rax = (uint64_t)n;
     }
 
     // -----------------------------------------------------------------------
