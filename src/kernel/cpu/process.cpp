@@ -1493,60 +1493,6 @@ namespace process
         regs->rax = uaccess::copy_to_user(regs->rdi, &e, sizeof(e)) ? 0 : SYSCALL_ERR(EFAULT);
     }
 
-    // SYSX_READ_LINE (legacy): a thin wrapper over the tty canonical read.
-    // Returns the line WITHOUT the trailing newline, NUL-terminated (the
-    // SDK's read_line contract). Blocks via Wait::Key when no line is ready.
-    // Removed in 3.7 when the SDK reads through fd 0.
-    void sys_read_line(user_regs* regs, iret_frame* iret)
-    {
-        uint64_t user_buf = regs->rdi;
-        uint64_t max_len  = regs->rsi;
-
-        if (max_len == 0 || max_len > 4096)
-        {
-            regs->rax = SYSCALL_ERR(EINVAL);
-            return;
-        }
-        if (!uaccess::writable(user_buf, max_len))
-        {
-            regs->rax = SYSCALL_ERR(EFAULT);
-            return;
-        }
-
-        char tmp[1024];
-        sint64_t n = tty::read(tmp, sizeof(tmp));
-        if (n == -EAGAIN)
-        {
-            block(Wait::Key, true, regs, iret);
-            return;
-        }
-        if (n < 0)
-        {
-            regs->rax = (uint64_t)n;
-            return;
-        }
-        if (n == 0)
-        {
-            // EOF (Ctrl+D on an empty line): deliver an empty line.
-            tmp[0] = '\0';
-            n = 0;
-        }
-
-        // Strip the trailing newline, clamp to the caller's buffer.
-        if (n > 0 && tmp[n - 1] == '\n')
-            n--;
-        if ((uint64_t)n > max_len - 1)
-            n = (sint64_t)(max_len - 1);
-        tmp[n] = '\0';
-
-        if (!uaccess::copy_to_user(user_buf, tmp, (uint64_t)n + 1))
-        {
-            regs->rax = SYSCALL_ERR(EFAULT);
-            return;
-        }
-        regs->rax = (uint64_t)n;
-    }
-
     // -----------------------------------------------------------------------
     // Syscalls: memory
     // -----------------------------------------------------------------------

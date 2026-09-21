@@ -88,6 +88,6 @@
 #define SYSX_CLEAR          0x1002  // ()
 #define SYSX_UPTIME         0x1003  // (uptime_t*)
 #define SYSX_TIME           0x1004  // (datetime_t*)
-#define SYSX_READ_LINE      0x1005  // (buf, max_len) -> length       blocks
+// 0x1005 was SYSX_READ_LINE, removed in stage 4: the SDK reads fd 0.
 
 #endif // ABI_SYSCALL_H

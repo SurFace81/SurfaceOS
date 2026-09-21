@@ -167,7 +167,6 @@ namespace syscall
 
         // SurfaceOS extensions (legacy; replaced by POSIX interfaces later).
         xhandlers[SYSX_READ_KEY  - SYSCALLX_BASE] = process::sys_read_key;
-        xhandlers[SYSX_READ_LINE - SYSCALLX_BASE] = process::sys_read_line;
         xhandlers[SYSX_SET_CURSOR - SYSCALLX_BASE] = sys_set_cursor;
         xhandlers[SYSX_CLEAR     - SYSCALLX_BASE] = sys_clear;
         xhandlers[SYSX_UPTIME    - SYSCALLX_BASE] = sys_uptime;

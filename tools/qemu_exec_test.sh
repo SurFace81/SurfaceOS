@@ -188,6 +188,9 @@ result $? "Ctrl+D ends a canonical read (EOF)"
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec termtest"
 wait_for "termtest: done" 60; result $? "termtest finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "termtest: [0-9]* passed, 0 failed" "$LOG"
+result $? "termtest: no failed checks"
 monitor "screendump /tmp/scr_term.ppm"
 sleep 1; key ret
 wait_session_end $WANT 20; result $? "termtest exits"

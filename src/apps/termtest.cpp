@@ -9,6 +9,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <termios.h>
+#include <abi/termios.h>
 
 // CP437 box drawing, verified to exist in bin/kernel/data/stdfont.fnt.
 #define TL "\xC9"
@@ -85,9 +87,79 @@ static void box(int row, int col, int w, int h, const char* title)
     }
 }
 
+static int passed = 0;
+static int failed = 0;
+
+static void check(const char* name, bool ok)
+{
+    print(ok ? "  [ ok ] " : "  [FAIL] ");
+    print(name);
+    print("\n");
+    if (ok) passed++; else failed++;
+}
+
+// The parts that can be asserted rather than looked at: termios round-trip,
+// raw mode, and a window size that reflects the real viewport.
+static void checks()
+{
+    print("termtest: termios and winsize\n");
+
+    struct termios t0;
+    check("tcgetattr on the tty", tcgetattr(0, &t0) == 0);
+    check("the tty starts canonical with echo",
+          (t0.c_lflag & ICANON) && (t0.c_lflag & ECHO));
+    check("isatty agrees", isatty(0) == 1);
+
+    struct winsize w;
+    check("TIOCGWINSZ succeeds", ioctl(0, TIOCGWINSZ, &w) == 0);
+    check("the window has a plausible size",
+          w.ws_row >= 10 && w.ws_row < 300 && w.ws_col >= 40 && w.ws_col < 500);
+    check("the pixel size matches the cell grid",
+          w.ws_xpixel >= w.ws_col && w.ws_ypixel >= w.ws_row);
+    // 25x80 was the hardcoded answer before the viewport was consulted; a
+    // session runs under a title bar, so it cannot legitimately be exactly
+    // that on this panel.
+    check("the size is not the old hardcoded 25x80",
+          !(w.ws_row == 25 && w.ws_col == 80));
+
+    struct termios raw = t0;
+    cfmakeraw(&raw);
+    check("tcsetattr accepts raw mode", tcsetattr(0, TCSANOW, &raw) == 0);
+
+    struct termios back;
+    check("tcgetattr reads the new settings back", tcgetattr(0, &back) == 0);
+    check("raw mode cleared ICANON, ECHO and ISIG",
+          !(back.c_lflag & ICANON) && !(back.c_lflag & ECHO) &&
+          !(back.c_lflag & ISIG));
+    check("raw mode set VMIN=1 VTIME=0",
+          back.c_cc[VMIN] == 1 && back.c_cc[VTIME] == 0);
+
+    // A non-blocking raw read of an idle tty must come back empty rather
+    // than hang: VMIN 0 with VTIME 0 is a pure poll.
+    struct termios poll_mode = raw;
+    poll_mode.c_cc[VMIN]  = 0;
+    poll_mode.c_cc[VTIME] = 0;
+    tcsetattr(0, TCSANOW, &poll_mode);
+    char c;
+    check("VMIN=0 VTIME=0 polls instead of blocking", read(0, &c, 1) == 0);
+
+    check("tcsetattr restores the original settings",
+          tcsetattr(0, TCSANOW, &t0) == 0);
+    check("... and it reads back canonical again",
+          tcgetattr(0, &back) == 0 && (back.c_lflag & ICANON));
+
+    print("\ntermtest: ");
+    print_i64(passed);
+    print(" passed, ");
+    print_i64(failed);
+    print(" failed\n");
+}
+
 int main(int argc, char** argv)
 {
     (void)argc; (void)argv;
+
+    checks();
 
     esc("\033[2J\033[H");
 

@@ -110,7 +110,6 @@ namespace process
     void sys_exit      (user_regs* regs, iret_frame* iret);
     void sys_exit_group(user_regs* regs, iret_frame* iret);
     void sys_read_key  (user_regs* regs, iret_frame* iret);
-    void sys_read_line (user_regs* regs, iret_frame* iret);
     void sys_brk       (user_regs* regs, iret_frame* iret);
     void sys_getpid    (user_regs* regs, iret_frame* iret);
     void sys_getppid   (user_regs* regs, iret_frame* iret);
