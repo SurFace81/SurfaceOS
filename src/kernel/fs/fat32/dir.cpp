@@ -746,11 +746,16 @@ namespace fatdir
             uint32_t cluster = dir->first_cluster;
             uint32_t slot = 0;
             uint32_t run = 0, run_start = 0;
-            bool end_seen = false;
 
+            // Walk the whole chain. Both 0xE5 and the 0x00 end marker count
+            // as free: a run may legitimately start AT the end marker (the
+            // record written there re-terminates the directory because the
+            // run continues into zeroed space). Breaking at the marker here
+            // would make the retry after grow_dir stop at the same marker
+            // forever.
             for (;;)
             {
-                for (uint32_t sec = 0; sec < sb->sectors_per_cluster && !end_seen; sec++)
+                for (uint32_t sec = 0; sec < sb->sectors_per_cluster; sec++)
                 {
                     uint64_t lba = fat::cluster_lba(sb, cluster) + sec;
                     sint64_t rc = 0;
@@ -765,8 +770,6 @@ namespace fatdir
                         uint8_t first = b->data[i * 32];
                         if (first == FAT_DIR_FREE || first == FAT_DIR_END)
                         {
-                            if (first == FAT_DIR_END)
-                                end_seen = true;
                             if (run == 0)
                                 run_start = slot;
                             run++;
@@ -776,9 +779,6 @@ namespace fatdir
                                 *out_slot = run_start;
                                 return 0;
                             }
-                            // end_seen with an incomplete run: fall through
-                            // to grow_dir, then restart the scan (the run
-                            // may continue into the fresh cluster).
                         }
                         else
                         {
@@ -788,19 +788,19 @@ namespace fatdir
                     bcache::put(b, false);
                 }
 
-                if (end_seen)
-                    break;
-
                 uint32_t next = 0;
                 sint64_t rc = fat::read_entry(sb, cluster, &next);
                 if (rc != 0)
                     return rc;
                 if (next < 2 || next >= FAT_CLUSTER_EOC)
-                    break;                  // chain end without 0x00: grow
+                    break;                  // chain end: grow below
                 cluster = next;
             }
 
-            // No room: grow and retry (bounded by ENOSPC from the allocator).
+            // No room in the chain: grow by one zeroed cluster and retry
+            // (bounded by ENOSPC from the allocator). The run in progress
+            // restarts from the top of the directory: the fresh cluster's
+            // zeros make the old end marker just another free slot.
             sint64_t rc = grow_dir(dir);
             if (rc != 0)
                 return rc;
@@ -910,10 +910,16 @@ namespace fatdir
                 return -EEXIST;
         }
 
-        // LFN slots + the short entry, one contiguous run.
+        // LFN slots + the short entry, one contiguous run. The slot count
+        // is ceil(): floor + 1 only when a partial entry remains, and a run
+        // one slot too long silently overwrote the END marker that used to
+        // follow the previous run - the directory then terminated early and
+        // the next record vanished from every scan.
         uint32_t lfn_slots = 0;
         if (needs_lfn)
-            lfn_slots = (ucount + LFN_CHARS_PER_ENTRY) / LFN_CHARS_PER_ENTRY;
+            lfn_slots = ucount / LFN_CHARS_PER_ENTRY;
+        if (needs_lfn && (ucount % LFN_CHARS_PER_ENTRY) != 0)
+            lfn_slots++;
         if (lfn_slots > MAX_LFN_ENTRIES)
             return -ENAMETOOLONG;
 
@@ -924,9 +930,12 @@ namespace fatdir
 
         uint8_t sum = short_checksum(short_name);
 
-        for (uint32_t s = lfn_slots; s >= 1; s--)
+        // LFN slots on disk are in DESCENDING sequence order: the entry with
+        // the LAST flag (ordinal == lfn_slots) sits first in the run, ordinal
+        // 1 immediately precedes the short entry.
+        for (uint32_t s = 1; s <= lfn_slots; s++)
         {
-            uint32_t slot = run_start + (s - 1);
+            uint32_t slot = run_start + (lfn_slots - s);
 
             fat_lfn_entry l;
             memory::memset((uint8_t*)&l, 0, sizeof(l));

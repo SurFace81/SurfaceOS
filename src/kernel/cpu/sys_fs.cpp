@@ -1202,23 +1202,36 @@ namespace
 
         // Fill the bounce buffer with linux_dirent64 records, then one copy
         // to user space. The file offset doubles as the readdir cookie.
+        // prev_cookie remembers the position BEFORE the last record: when a
+        // record does not fit, the call must end on the previous one, or the
+        // non-fitting record would be skipped forever.
         uint64_t cookie = f->offset;
         uint64_t used = 0;
 
         while (used < BOUNCE_SIZE)
         {
+            uint64_t prev_cookie = cookie;
             dirent_out d;
             bool eof = false;
             rc = f->vn->ops->readdir(f->vn, &cookie, &d, &eof);
             if (rc != 0)
+            {
+                cookie = prev_cookie;
                 break;
+            }
             if (eof)
+            {
+                cookie = prev_cookie;
                 break;
+            }
 
             uint32_t nlen = strlen(d.name);
             uint32_t reclen = (uint32_t)(offsetof_dirent() + nlen + 1 + 7) & ~7u;
             if (used + reclen > BOUNCE_SIZE || used + reclen > count)
-                break;              // does not fit: leave for the next call
+            {
+                cookie = prev_cookie;   // does not fit: leave for the next call
+                break;
+            }
 
             linux_dirent64* de = (linux_dirent64*)(bounce + used);
             de->d_ino = d.ino;

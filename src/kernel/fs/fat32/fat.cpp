@@ -28,7 +28,8 @@ namespace fat
 
     sint64_t read_entry(fat_super* sb, uint32_t cluster, uint32_t* out)
     {
-        if (cluster < 2 || cluster > sb->total_clusters + 1)
+        // Cluster 1 is legal: it holds the volume flags (dirty bit).
+        if (cluster < 1 || cluster > sb->total_clusters + 1)
             return -EINVAL;
 
         uint32_t byte_off  = cluster * 4;
@@ -51,7 +52,7 @@ namespace fat
     // read-modify-write through the cache; the top 4 bits are preserved.
     sint64_t write_entry(fat_super* sb, uint32_t cluster, uint32_t value)
     {
-        if (cluster < 2 || cluster > sb->total_clusters + 1)
+        if (cluster < 1 || cluster > sb->total_clusters + 1)
             return -EINVAL;
 
         uint32_t byte_off  = cluster * 4;

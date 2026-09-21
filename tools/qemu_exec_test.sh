@@ -3,8 +3,8 @@
 # serial log: the kernel mirrors app output (SYS_WRITE) and logs every session
 # start/end with its exit status.
 #
-#   1. hi.bin, Enter              -> normal exit, status 0
-#   2. hi.bin, Esc                -> Esc while blocked in read_line, status 130
+#   1. hi, Enter                  -> normal exit, status 0
+#   2. hi, Esc                    -> Esc while blocked in read(0), status SIGINT
 #   3. proctest.bin spin, Esc     -> Esc while spinning in ring 3, status 130
 #   4. memtest.bin                -> all memory checks pass
 #   5. proctest.bin               -> all process/scheduler checks pass
@@ -16,7 +16,7 @@ IMG=test_disk.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest argtest"
+APPS="hi hello memtest proctest argtest fstest"
 # LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
 LAYOUT=${LAYOUT:-gpt}
 # SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
@@ -109,30 +109,30 @@ wait_for "lsblk: usb0" 10; result $? "lsblk lists usb0"
 type_cmd "sync";   sleep 3
 wait_for "sync: ok" 10; result $? "sync flushes the cache"
 
-type_cmd "cd APPS"; sleep 3
+type_cmd "cd /bin"; sleep 3
 
 # 1. normal exit
-type_cmd "exec hi.bin"
-wait_for "Hello world!" 20; result $? "hi.bin runs"
+type_cmd "exec hi"
+wait_for "Hello world!" 20; result $? "hi runs"
 sleep 1; key ret
-wait_session_end 1 15; result $? "hi.bin exits on Enter"
-[ "$(last_status)" = "0" ]; result $? "hi.bin exit status 0"
+wait_session_end 1 15; result $? "hi exits on Enter"
+[ "$(last_status)" = "0" ]; result $? "hi exit status 0"
 
 # 2. Esc while blocked in a syscall
-type_cmd "exec hi.bin"
+type_cmd "exec hi"
 sleep 4; key esc
 wait_session_end 2 15; result $? "Esc ends an app blocked in read_line"
 [ "$(last_status)" = "2" ]; result $? "blocked app reports SIGINT (2)"
 
 # 3. Esc while spinning in user mode
-type_cmd "exec proctest.bin spin"
+type_cmd "exec proctest spin"
 wait_for "spinning without syscalls" 20; result $? "spinner started"
 sleep 2; key esc
 wait_session_end 3 15; result $? "Esc ends an app spinning in ring 3"
 [ "$(last_status)" = "2" ]; result $? "spinning app reports SIGINT (2)"
 
 # 4. memtest
-type_cmd "exec memtest.bin"
+type_cmd "exec memtest"
 wait_for "memtest: " 240; result $? "memtest finished"
 grep -E "\[FAIL\]|status [0-9-]+, expected" "$LOG" | sed 's/^/      /'
 grep -q "memtest: [0-9]* passed, 0 failed" "$LOG"; result $? "memtest: no failed checks"
@@ -140,19 +140,26 @@ sleep 1; key ret
 wait_session_end 4 20; result $? "memtest exits"
 
 # 5. proctest
-type_cmd "exec proctest.bin"
+type_cmd "exec proctest"
 wait_for "proctest: " 240; result $? "proctest finished"
 grep -q "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no failed checks"
 sleep 1; key ret
 wait_session_end 5 20; result $? "proctest exits"
 
 # 6. argtest (SysV stack: argv/envp/auxv, execve with 1000 args, E2BIG)
-type_cmd "exec argtest.bin"
+type_cmd "exec argtest"
 wait_for "argtest: " 240; result $? "argtest finished"
 grep -q "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
 wait_session_end 6 20; result $? "argtest exits"
 
-# 7. console still alive
+# 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, /dev)
+type_cmd "exec fstest"
+wait_for "fstest: " 600; result $? "fstest finished"
+grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -q "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
+wait_session_end 7 30; result $? "fstest exits"
+
+# 8. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -q "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
@@ -162,7 +169,7 @@ sleep 1
 
 echo
 echo "=== summary lines ==="
-grep -E "^cpu:|^pmm:|memtest: |proctest: |argtest: |session (start|end)|kernel fault|app fault" "$LOG"
+grep -E "^cpu:|^pmm:|memtest: |proctest: |argtest: |fstest: |session (start|end)|kernel fault|app fault" "$LOG"
 echo
 if [ $FAILS -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$FAILS CHECK(S) FAILED"; fi
 exit $FAILS

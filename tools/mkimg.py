@@ -17,11 +17,10 @@ The image is created from scratch:
                mkfs.fat --offset, UEFI-only. This is the default and matches
                how a real USB stick is laid out.
 
-Applications land in /APPS/<UPPERCASE name> (the 8.3 layout the current
-kernel reads; stage 3.7 moves them to /bin/<lowercase> once the console and
-the FAT driver speak LFN). The boot files are /EFI/Boot/BOOTX64.EFI,
-/KERNEL.BIN and /FONT.FNT at the volume root (the UEFI loader and the kernel
-expect them there).
+Applications land in /bin/<lowercase name> without an extension, through
+LFN; the boot files are /EFI/Boot/BOOTX64.EFI, /KERNEL.BIN and /FONT.FNT at
+the volume root (the UEFI loader and the kernel expect them there). The
+test tree /home, /tmp and /test/long directory name/ is created too.
 
 Requires: mkfs.fat, and sfdisk (mbr) / sgdisk (gpt) on PATH; pyfatfs.
 """
@@ -104,7 +103,8 @@ def build_gpt(image, size_mib):
 def populate(image, off_bytes, efi, kernel, font, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
-    for d in ("/EFI", "/EFI/Boot", "/APPS"):
+    for d in ("/EFI", "/EFI/Boot", "/bin", "/dev", "/home", "/tmp",
+              "/test", "/test/long directory name"):
         try:
             fs.makedir(d)
         except Exception:
@@ -120,13 +120,18 @@ def populate(image, off_bytes, efi, kernel, font, apps):
     with open(font, "rb") as f:
         put("/FONT.FNT", f.read())
 
-    # Applications: /APPS/<UPPERCASE basename>, matching the 8.3 FAT layout
-    # the current kernel + console resolve. (Stage 3.7 moves these to
-    # /bin/<lowercase> once LFN paths are wired through the whole stack.)
+    # Applications: /bin/<lowercase basename>, no extension (LFN).
     for app in apps:
-        name = app.rsplit("/", 1)[-1].upper()
+        base = app.rsplit("/", 1)[-1]
+        if base.endswith(".bin"):
+            base = base[:-4]
         with open(app, "rb") as f:
-            put("/APPS/" + name, f.read())
+            put("/bin/" + base.lower(), f.read())
+
+    # A test tree exercising LFN, spaces and nesting (fstest reads these).
+    put("/test/long directory name/file with spaces.txt",
+        b"a file inside a long directory name, with spaces\n")
+    put("/test/hello.txt", b"hello from the test tree\n")
 
     fs.close()
 

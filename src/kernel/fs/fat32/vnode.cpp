@@ -368,12 +368,15 @@ static sint64_t fat_unlink(vnode* dir, const char* name)
 
     // A cached vnode keeps working through open fds: mark it unlinked so
     // the clusters are freed at the last release (POSIX temp-file pattern).
+    // The cache entry itself must go: its key (parent, slot) is about to be
+    // reusable by the next create, which must build a FRESH vnode.
     // Without a cached vnode nobody holds the clusters: free them now.
     vnode* v = vfs::find_cached(sb->mnt, file_key(dn->first_cluster, slot));
     if (v)
     {
         v->flags |= VF_UNLINKED;
-        vfs::unref(v);
+        vfs::invalidate(v);         // cache ref dropped; open fds keep theirs
+        vfs::unref(v);              // find_cached's reference
     }
     else
     {
@@ -476,6 +479,7 @@ static sint64_t fat_rmdir(vnode* dir, const char* name)
         v->flags |= VF_UNLINKED;
         fat_node* vn = (fat_node*)v->fs_priv;
         vn->first_cluster = 0;
+        vfs::invalidate(v);
         vfs::unref(v);
     }
 
@@ -589,6 +593,7 @@ static sint64_t fat_rename(vnode* old_dir, const char* old_name,
                 fat_node* dvn = (fat_node*)dv->fs_priv;
                 dvn->first_cluster = 0;
             }
+            vfs::invalidate(dv);
             vfs::unref(dv);
         }
 
@@ -827,15 +832,46 @@ static sint64_t fat_readdir(vnode* dir, uint64_t* cookie, dirent_out* out,
     fat_node* dn = (fat_node*)dir->fs_priv;
     fat_super* sb = dn->sb;
 
-    // Cookies are physical slot numbers; the getdents64 layer above
-    // synthesizes "." and "..". The "." / ".." records of subdirectories
-    // are skipped here so every directory stream looks the same.
+    // Cookie space: 0 = ".", 1 = "..", then physical slot + 2. The physical
+    // "." / ".." records of subdirectories are skipped so every directory
+    // stream looks identical (getdents64 callers get the specials first).
+    if (*cookie == 0)
+    {
+        out->ino = dir->st_ino;
+        out->type = DT_DIR;
+        out->name[0] = '.';
+        out->name[1] = '\0';
+        *cookie = 1;
+        out->next_cookie = *cookie;
+        *eof = false;
+        return 0;
+    }
+    if (*cookie == 1)
+    {
+        // ".." of the root is the root itself.
+        uint32_t pc = dn->parent_cluster;
+        if (dn->first_cluster == sb->root_cluster)
+            pc = sb->root_cluster;
+        out->ino = ((uint64_t)pc << 32) | ROOT_MARK;
+        out->type = DT_DIR;
+        out->name[0] = '.';
+        out->name[1] = '.';
+        out->name[2] = '\0';
+        *cookie = 2;
+        out->next_cookie = *cookie;
+        *eof = false;
+        return 0;
+    }
+
+    uint64_t slot_cookie = *cookie - 2;
     for (;;)
     {
         fat_dirent rec;
         uint32_t slot = 0;
-        sint64_t rc = fatdir::next_record(dn, *cookie, &rec, &slot,
-                                          cookie, eof);
+        sint64_t rc = fatdir::next_record(dn, slot_cookie, &rec, &slot,
+                                          &slot_cookie, eof);
+        *cookie = slot_cookie + 2;
+        out->next_cookie = *cookie;
         if (rc != 0 || *eof)
             return rc;
 

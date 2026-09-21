@@ -21,7 +21,6 @@
 #include "../include/drivers/screen.h"
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
-#include "../include/drivers/fs/fat32.h"
 #include "../include/mm/memory.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
@@ -109,6 +108,27 @@ namespace
     //    volume is where we booted from in all but the strangest setups.
     // 3. Nothing at all: say so explicitly and run the console rootless;
     //    every fs command then fails cleanly instead of hanging.
+    // Try to mount `d` as the VFS root; on success the system cwd starts at
+    // the new root.
+    bool try_mount_root(blkdev* d)
+    {
+        if (vfs::mount_at(nullptr, d->name, &fat32fs::fs, d) != 0)
+            return false;
+
+        mount* m = vfs::root_mount();
+        vfs::ref(m->root);
+        vfs::set_cwd(m->root);
+        return true;
+    }
+
+    void unmount_root()
+    {
+        vfs::set_cwd(nullptr);
+        mount* m = vfs::root_mount();
+        if (m)
+            vfs::umount(m);
+    }
+
     void automount_root(const BOOT_HEADER* hdr)
     {
         // Pass 1: exact boot-volume match.
@@ -133,13 +153,12 @@ namespace
                     continue;
             }
 
-            if (fat32::mount(d))
+            if (try_mount_root(d))
             {
                 uart::printf("boot: root mounted on %s (boot volume)\n", d->name);
                 screen::printf("Root: %s\n\r", d->name);
                 return;
             }
-            fat32::umount();
         }
 
         if (hdr->BootDevicePathValid)
@@ -152,17 +171,18 @@ namespace
         for (uint32_t i = 0; block::get(i); i++)
         {
             blkdev* d = block::get(i);
-            if (!fat32::mount(d))
+            if (!try_mount_root(d))
                 continue;
 
-            fat32_dir_entry entry;
-            if (fat32::resolve_path_pub("/KERNEL.BIN", &entry))
+            vnode* v = nullptr;
+            if (vfs::lookup("/KERNEL.BIN", nullptr, &v, false) == 0)
             {
+                vfs::unref(v);
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
                 screen::printf("Root: %s\n\r", d->name);
                 return;
             }
-            fat32::umount();
+            unmount_root();
         }
 
         uart::printf("boot: no mountable FAT32 volume found - running without root\n");

@@ -89,9 +89,5 @@
 #define SYSX_UPTIME         0x1003  // (uptime_t*)
 #define SYSX_TIME           0x1004  // (datetime_t*)
 #define SYSX_READ_LINE      0x1005  // (buf, max_len) -> length       blocks
-#define SYSX_WRITE_FILE     0x1006  // (path, data, size)   whole-file, legacy
-#define SYSX_READ_FILE      0x1007  // (path, buf, max_size)
-#define SYSX_STAT_FILE      0x1008  // (path, file_stat_t*)
-#define SYSX_READ_DIR       0x1009  // (path, dir_entry_t*, max_entries)
 
 #endif // ABI_SYSCALL_H

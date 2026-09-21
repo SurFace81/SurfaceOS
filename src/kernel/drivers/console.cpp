@@ -2,7 +2,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/commands.h"
-#include "../../include/drivers/fs/fat32.h"
+#include "../../include/fs/vfs.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 32
@@ -482,7 +482,7 @@ namespace console
         exec(local_line);
 
         // Print the prompt now that the command has finished
-        screen::printf("\n\r%s> ", fat32::cwd_path());
+        { char cwdbuf[PATH_MAX]; if (vfs::cwd_path(cwdbuf, sizeof(cwdbuf)) != 0) { cwdbuf[0] = '/'; cwdbuf[1] = 0; } screen::printf("\n\r%s> ", cwdbuf); }
     }
 
     void init()
@@ -508,7 +508,7 @@ namespace console
         screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: ", VERSION_STRING);
         screen::printf("%u", (uint32_t)(memory::total() / 1048576 + 1));
         screen::printf(" Mb\n\r\tCpu: %s @ %s MHz", cpu_name, freq);
-        screen::printf("\n\r------------------------------------------------\n\n\r%s> ", fat32::cwd_path());
+        { char cwdbuf[PATH_MAX]; if (vfs::cwd_path(cwdbuf, sizeof(cwdbuf)) != 0) { cwdbuf[0] = '/'; cwdbuf[1] = 0; } screen::printf("\n\r------------------------------------------------\n\n\r%s> ", cwdbuf); }
     }
 
 } // namespace console

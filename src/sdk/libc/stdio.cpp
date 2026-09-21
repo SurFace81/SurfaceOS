@@ -1,4 +1,5 @@
 #include "../include/stdio.h"
+#include "../include/unistd.h"
 #include "../include/syscall.h"
 #include "../include/abi/syscall.h"
 #include "../include/abi/time.h"
@@ -11,12 +12,11 @@ static uint32_t str_len(const char* s)
     return n;
 }
 
-// stdout: byte-exact write(1, ...). Not a C-string call: NULs pass through
-// and the length comes from strlen(), so print never stops early inside a
-// buffer that happens to contain zeros.
+// stdout: byte-exact write(1, ...). Not a C-string call: the length comes
+// from strlen(), and NULs inside a buffer pass through.
 void print(const char* str)
 {
-    syscall(SYS_WRITE, 1, (uint64_t)str, str_len(str));
+    write(1, str, str_len(str));
 }
 
 void print_u64(uint64_t value)
@@ -78,42 +78,33 @@ keyboard_event_t read_key()
     return e;
 }
 
+// One canonical tty read of fd 0: returns the line without '\n', NUL-
+// terminated. 0 on EOF (Ctrl+D on an empty line).
 uint32_t read_line(char* buffer, uint32_t max_len)
 {
-    sint64_t r = __syscall_ret(syscall(SYSX_READ_LINE, (uint64_t)buffer, (uint64_t)max_len));
-    return r < 0 ? 0 : (uint32_t)r;
+    if (max_len == 0)
+        return 0;
+
+    ssize_t n = read(0, buffer, max_len - 1);
+    if (n <= 0)
+    {
+        buffer[0] = '\0';
+        return 0;
+    }
+
+    buffer[n] = '\0';
+    if (n > 0 && buffer[n - 1] == '\n')
+    {
+        buffer[n - 1] = '\0';
+        n--;
+    }
+    return (uint32_t)n;
 }
 
 void exit(int code)
 {
     syscall(SYS_EXIT_GROUP, (uint64_t)code);
     while (1) {}
-}
-
-// File I/O (legacy whole-file calls; removed when the SDK moves to fds)
-
-uint32_t write_file(const char* path, const uint8_t* data, uint32_t size)
-{
-    sint64_t r = __syscall_ret(syscall(SYSX_WRITE_FILE, (uint64_t)path, (uint64_t)data, (uint64_t)size));
-    return r < 0 ? (uint32_t)-1 : (uint32_t)r;
-}
-
-uint32_t read_file(const char* path, uint8_t* buffer, uint32_t max_size)
-{
-    sint64_t r = __syscall_ret(syscall(SYSX_READ_FILE, (uint64_t)path, (uint64_t)buffer, (uint64_t)max_size));
-    return r < 0 ? (uint32_t)-1 : (uint32_t)r;
-}
-
-uint32_t stat_file(const char* path, file_stat_t* out)
-{
-    sint64_t r = __syscall_ret(syscall(SYSX_STAT_FILE, (uint64_t)path, (uint64_t)out));
-    return r < 0 ? (uint32_t)-1 : (uint32_t)r;
-}
-
-uint32_t read_dir(const char* path, dir_entry_t* entries, uint32_t max_entries)
-{
-    sint64_t r = __syscall_ret(syscall(SYSX_READ_DIR, (uint64_t)path, (uint64_t)entries, (uint64_t)max_entries));
-    return r < 0 ? (uint32_t)-1 : (uint32_t)r;
 }
 
 // Time

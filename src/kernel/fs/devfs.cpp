@@ -152,7 +152,8 @@ namespace
             out->ino = 1;
             out->type = DT_DIR;
             strncpy(out->name, ".", NAME_MAX);
-            out->next_cookie = 1;
+            *cookie = 1;
+            out->next_cookie = *cookie;
             *eof = false;
             return 0;
         }
@@ -161,7 +162,8 @@ namespace
             out->ino = 1;
             out->type = DT_DIR;
             strncpy(out->name, "..", NAME_MAX);
-            out->next_cookie = 2;
+            *cookie = 2;
+            out->next_cookie = *cookie;
             *eof = false;
             return 0;
         }
@@ -177,7 +179,8 @@ namespace
         out->type = DT_CHR;
         strncpy(out->name, devices[i].name, NAME_MAX);
         out->name[NAME_MAX] = '\0';
-        out->next_cookie = *cookie + 1;
+        *cookie = *cookie + 1;
+        out->next_cookie = *cookie;
         *eof = false;
         return 0;
     }

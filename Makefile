@@ -55,7 +55,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
-				bin/kernel/drivers/fs/fat32.o \
 				bin/kernel/dev/blkdev.o \
 				bin/kernel/dev/part.o \
 				bin/kernel/dev/bcache.o \

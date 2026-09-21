@@ -15,13 +15,11 @@
 #include "../../include/cpu/process.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/screen.h"
-#include "../../include/drivers/fs/fat32.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/mm/heap.h"
 #include "../../include/cpu/sys_fs.h"
 #include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/fs.h"
 #include "../../sdk/include/abi/time.h"
 
 // syscall_entry (interrupts.asm) pushes the GPRs right below the CPU's iret
@@ -74,201 +72,6 @@ namespace
     {
         screen::set_cursor((uint32_t)regs->rdi, (uint32_t)regs->rsi);
         regs->rax = 0;
-    }
-
-    // -----------------------------------------------------------------------
-    // Legacy whole-file calls (removed in 3.7 when the SDK moves to fds)
-    // -----------------------------------------------------------------------
-
-    void sys_write_file(syscall_regs* regs, iret_frame*)
-    {
-        char path[uaccess::MAX_PATH];
-        uint64_t size = regs->rdx;
-
-        int err = fetch_path(regs->rdi, path, sizeof(path));
-        if (err)
-        {
-            set_errno(regs, -err);
-            return;
-        }
-        if (size > MAX_FILE_BYTES)
-        {
-            set_errno(regs, EINVAL);
-            return;
-        }
-        if (!uaccess::readable(regs->rsi, size))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        // Bounce through kernel memory: the FAT32 driver must never see
-        // a user pointer, and under SMAP it could not read one anyway.
-        uint8_t* buf = (uint8_t*)kmalloc(size ? size : 1);
-        if (!buf)
-        {
-            set_errno(regs, ENOMEM);
-            return;
-        }
-
-        if (!uaccess::copy_from_user(buf, regs->rsi, size))
-        {
-            kfree(buf);
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        uint32_t written = fat32::write_file(path, buf, (uint32_t)size);
-        kfree(buf);
-
-        if (written == (uint32_t)-1)
-            set_errno(regs, EIO);
-        else
-            regs->rax = written;
-    }
-
-    void sys_read_file(syscall_regs* regs, iret_frame*)
-    {
-        char path[uaccess::MAX_PATH];
-        uint64_t max_size = regs->rdx;
-
-        int err = fetch_path(regs->rdi, path, sizeof(path));
-        if (err)
-        {
-            set_errno(regs, -err);
-            return;
-        }
-        if (max_size == 0 || max_size > MAX_FILE_BYTES)
-        {
-            set_errno(regs, EINVAL);
-            return;
-        }
-        if (!uaccess::writable(regs->rsi, max_size))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        uint8_t* buf = (uint8_t*)kmalloc(max_size);
-        if (!buf)
-        {
-            set_errno(regs, ENOMEM);
-            return;
-        }
-
-        uint32_t read = fat32::read_file(path, buf, (uint32_t)max_size);
-        if (read == (uint32_t)-1)
-        {
-            kfree(buf);
-            set_errno(regs, EIO);
-            return;
-        }
-
-        if (!uaccess::copy_to_user(regs->rsi, buf, read))
-        {
-            kfree(buf);
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        kfree(buf);
-        regs->rax = read;
-    }
-
-    void sys_stat_file(syscall_regs* regs, iret_frame*)
-    {
-        char path[uaccess::MAX_PATH];
-
-        int err = fetch_path(regs->rdi, path, sizeof(path));
-        if (err)
-        {
-            set_errno(regs, -err);
-            return;
-        }
-        if (!uaccess::writable(regs->rsi, sizeof(file_stat_t)))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        fat32_dir_entry entry;
-        if (!fat32::resolve_path_pub(path, &entry))
-        {
-            set_errno(regs, ENOENT);
-            return;
-        }
-
-        file_stat_t out;
-        out.size        = entry.file_size;
-        out.attr        = entry.attr;
-        out.create_date = entry.create_date;
-        out.create_time = entry.create_time;
-        out.modify_date = entry.write_date;
-        out.modify_time = entry.write_time;
-
-        if (!uaccess::copy_to_user(regs->rsi, &out, sizeof(out)))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-        regs->rax = 0;
-    }
-
-    void sys_read_dir(syscall_regs* regs, iret_frame*)
-    {
-        char path[uaccess::MAX_PATH];
-        uint64_t max_entries = regs->rdx;
-
-        if (max_entries == 0 || max_entries > MAX_DIR_ENTRIES)
-        {
-            set_errno(regs, EINVAL);
-            return;
-        }
-        if (!uaccess::writable(regs->rsi, max_entries * sizeof(dir_entry_t)))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-
-        // An empty path means "current directory"; anything else must be
-        // a readable string.
-        if (regs->rdi == 0)
-            path[0] = '\0';
-        else
-        {
-            int err = fetch_path(regs->rdi, path, sizeof(path));
-            if (err)
-            {
-                set_errno(regs, -err);
-                return;
-            }
-        }
-
-        const uint32_t batch = 32;
-        fat32_dir_entry raw[batch];
-        dir_entry_t out[batch];
-
-        uint32_t want = (uint32_t)max_entries;
-        if (want > batch)
-            want = batch;
-
-        uint32_t count = fat32::ls(path, raw, want);
-
-        for (uint32_t i = 0; i < count; i++)
-        {
-            format_83_name(raw[i].name, out[i].name);
-            out[i].size        = raw[i].file_size;
-            out[i].attr        = raw[i].attr;
-            out[i].modify_date = raw[i].write_date;
-            out[i].modify_time = raw[i].write_time;
-        }
-
-        if (!uaccess::copy_to_user(regs->rsi, out, count * sizeof(dir_entry_t)))
-        {
-            set_errno(regs, EFAULT);
-            return;
-        }
-        regs->rax = count;
     }
 
     // -----------------------------------------------------------------------
@@ -367,10 +170,6 @@ namespace syscall
         xhandlers[SYSX_READ_LINE - SYSCALLX_BASE] = process::sys_read_line;
         xhandlers[SYSX_SET_CURSOR - SYSCALLX_BASE] = sys_set_cursor;
         xhandlers[SYSX_CLEAR     - SYSCALLX_BASE] = sys_clear;
-        xhandlers[SYSX_WRITE_FILE - SYSCALLX_BASE] = sys_write_file;
-        xhandlers[SYSX_READ_FILE  - SYSCALLX_BASE] = sys_read_file;
-        xhandlers[SYSX_STAT_FILE  - SYSCALLX_BASE] = sys_stat_file;
-        xhandlers[SYSX_READ_DIR   - SYSCALLX_BASE] = sys_read_dir;
         xhandlers[SYSX_UPTIME    - SYSCALLX_BASE] = sys_uptime;
         xhandlers[SYSX_TIME      - SYSCALLX_BASE] = sys_time;
 

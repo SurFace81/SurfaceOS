@@ -254,8 +254,8 @@ static void test_uaccess()
           syscall(SYSX_READ_KEY, kernel_image) == -EFAULT);
     check("write(1, kernel string) is refused",
           syscall(SYS_WRITE, 1, kernel_image, 16) == -EFAULT);
-    check("SYS_STAT_FILE with a kernel path is refused",
-          syscall(SYSX_STAT_FILE, kernel_image, pmm_bitmap) == -EFAULT);
+    check("stat with a kernel path is refused",
+          syscall(SYS_STAT, kernel_image, pmm_bitmap) == -EFAULT);
     check("SYS_WAIT4 status into the kernel is refused",
           syscall(SYS_WAIT4, (uint64_t)-1, pmm_bitmap, WNOHANG) == -EFAULT);
     check("unknown syscall returns -ENOSYS",
