@@ -1,5 +1,6 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/term.h"
 #include "../../include/drivers/rtc.h"
 
 static volatile uint64_t tick_count = 0;
@@ -47,12 +48,14 @@ namespace pit
     {
         tick_count++;
 
-        // Cursor blinking - call every tick, screen controls the rate
-        screen::update_cursor();
-
-        // Flush back buffer to VRAM ~45 fps
+        // ~45 fps: rasterise whatever the terminal marked dirty (cursor
+        // blink included) and push the back buffer to VRAM. Nothing else
+        // touches pixels, so this is the only place they change.
         if (tick_count % 22 == 0)
+        {
+            term::render();
             screen::flush();
+        }
     }
 
     void init()

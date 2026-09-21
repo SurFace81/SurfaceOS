@@ -67,6 +67,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/commands.o \
 				bin/kernel/drivers/pit.o \
 				bin/kernel/drivers/tty.o \
+				bin/kernel/drivers/term.o \
 				bin/kernel/drivers/rtc.o \
 				bin/kernel/cpu/syscall.o \
 				bin/kernel/cpu/sys_fs.o \

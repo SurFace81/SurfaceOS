@@ -11,6 +11,8 @@
 #   6. uptime                     -> the console still works afterwards
 #   7. umount /dev busy vs free   -> EBUSY while the cwd is inside it
 #   8. meminfo around a session   -> no leaked frames (per-process kstacks)
+#   9. hi, Ctrl+D                 -> EOF ends a canonical read
+#  10. termtest                   -> CP437 upper half renders
 set -u
 
 cd "$(dirname "$0")/.."
@@ -18,7 +20,7 @@ IMG=test_disk.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest argtest fstest"
+APPS="hi hello memtest proctest argtest fstest termtest"
 # LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
 LAYOUT=${LAYOUT:-gpt}
 # SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
@@ -161,7 +163,27 @@ grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -q "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
 wait_session_end 7 30; result $? "fstest exits"
 
-# 8. umount refuses while the FS is in use, and succeeds once it is not.
+# 8. Ctrl+D on an empty line is EOF. Until the keyboard learned to fold Ctrl,
+#    Ctrl+D arrived as plain 'd' and the canonical read blocked forever.
+type_cmd "exec hi"
+wait_for "Hello world!" 20; result $? "hi runs (Ctrl+D scenario)"
+# Snapshot the count *before* the key: the session can end between the
+# substitution and the wait, and we would then sit waiting for one too many.
+WANT=$(( $(sessions_ended) + 1 ))
+sleep 1; key ctrl-d
+wait_session_end $WANT 15
+result $? "Ctrl+D ends a canonical read (EOF)"
+[ "$(last_status)" = "0" ]; result $? "app reading EOF exits cleanly"
+
+# 9. termtest: the CP437 upper half renders (box drawing, blocks, symbols).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec termtest"
+wait_for "termtest: done" 60; result $? "termtest finished"
+monitor "screendump /tmp/scr_term.ppm"
+sleep 1; key ret
+wait_session_end $WANT 20; result $? "termtest exits"
+
+# 10. umount refuses while the FS is in use, and succeeds once it is not.
 #    Standing in /dev gives the console cwd a reference on the devfs root;
 #    before the stage-3 cleanup umount freed those vnodes anyway.
 type_cmd "cd /dev"; sleep 2
@@ -171,21 +193,22 @@ type_cmd "cd /"; sleep 2
 type_cmd "umount /dev"; sleep 3
 wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
 
-# 9. per-process kernel stacks are handed back when a session ends: run a
+# 11. per-process kernel stacks are handed back when a session ends: run a
 #    session between two meminfo samples and compare the free-frame counts.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec hi"
 wait_for "Hello world!" 20
 sleep 1; key ret
-wait_session_end $(( $(sessions_ended) + 1 )) 15
+wait_session_end $WANT 15; result $? "session between meminfo samples ended"
 type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep "meminfo: frames_free=" "$LOG" | tail -1 | grep -oE 'frames_free=[0-9]+' | cut -d= -f2)
 echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a session leaks no physical frames (kernel stacks freed)"
 
-# 10. console still alive
+# 12. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -q "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"

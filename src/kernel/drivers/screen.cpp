@@ -1,4 +1,5 @@
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/term.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/cpu/paging.h"
@@ -14,9 +15,6 @@ static struct
     uint32_t width;
     uint32_t height;
 
-    uint32_t cursor_x;
-    uint32_t cursor_y;
-
     char* font;
     uint16_t sym_w;
     uint16_t sym_h;
@@ -25,10 +23,6 @@ static struct
     uint32_t text_color;
     uint32_t pixel_format;  // 0 = RGBX, 1 = BGRX (assumed for BitMask/BltOnly)
 
-    bool cursor_visible;
-    bool cursor_drawn;
-    uint32_t cursor_tick;
-
     uint32_t vp_x;      // viewport pixel offset from left
     uint32_t vp_y;      // viewport pixel offset from top
     uint32_t vp_width;  // viewport width in pixels
@@ -36,7 +30,6 @@ static struct
 } scr;
 
 static const uint32_t BBP = 4;
-static bool out_in_progress = false;
 
 static inline uint32_t max_cols()
 {
@@ -75,60 +68,31 @@ static inline void put_px(uint32_t* px, uint32_t c)
     *px = native_color(c);
 }
 
-static void invert_cell(uint32_t col, uint32_t row)
+// The 16 ANSI colours, in the same 0x00RRGGBB form as enum Colors, so both
+// go through native_color() on the way to the panel. Index 7 keeps the grey
+// the console has always used for normal text.
+static const uint32_t palette[16] = {
+    0x00000000, 0x00AA0000, 0x0000AA00, 0x00AA5500,
+    0x000000AA, 0x00AA00AA, 0x0000AAAA, 0x009E9E9E,
+    0x00555555, 0x00FF5555, 0x0055FF55, 0x00FFFF55,
+    0x005555FF, 0x00FF55FF, 0x0055FFFF, 0x00FFFFFF,
+};
+
+// Rasterise one cell: glyph in `ink` on a solid `paper` background.
+// Index the font unsigned: `char` is signed, so every byte >= 0x80 used to
+// index *before* the font. It is a 256-glyph CP437 page, so that silently
+// lost the whole upper half - box drawing included.
+static void draw_glyph(uint8_t chr, uint32_t col, uint32_t row,
+                       uint32_t ink, uint32_t paper)
 {
     uint32_t ox = col * scr.sym_w;
     uint32_t oy = row * scr.sym_h;
+    const unsigned char* glyph = (const unsigned char*)scr.font + chr * scr.sym_h;
 
     for (uint32_t y = 0; y < scr.sym_h; y++)
         for (uint32_t x = 0; x < scr.sym_w; x++)
-        {
-            uint32_t* px = pixel_at(ox + x, oy + y);
-            *px = ~(*px) | 0xFF000000;
-        }
-}
-
-static void cursor_draw()
-{
-    if (scr.cursor_drawn)
-        return;
-    if (scr.cursor_x < max_cols() && scr.cursor_y < max_rows())
-    {
-        invert_cell(scr.cursor_x, scr.cursor_y);
-        scr.cursor_drawn = true;
-    }
-}
-
-static void cursor_undraw()
-{
-    if (!scr.cursor_drawn)
-        return;
-    if (scr.cursor_x < max_cols() && scr.cursor_y < max_rows())
-    {
-        invert_cell(scr.cursor_x, scr.cursor_y);
-        scr.cursor_drawn = false;
-    }
-}
-
-static void draw_char(char chr, uint32_t col, uint32_t row)
-{
-    uint32_t ox = col * scr.sym_w;
-    uint32_t oy = row * scr.sym_h;
-    char* glyph = scr.font + chr * scr.sym_h;
-
-    for (uint32_t y = 0; y < scr.sym_h; y++)
-        for (uint32_t x = 0; x < scr.sym_w; x++)
-        {
-            uint32_t color = (glyph[y] & (0x80 >> x)) ? scr.text_color : 0x00000000;
-            put_px(pixel_at(ox + x, oy + y), color);
-        }
-}
-
-static void erase_rect(uint32_t px, uint32_t py, uint32_t w, uint32_t h)
-{
-    for (uint32_t y = py; y < py + h && y < scr.vp_height; y++)
-        for (uint32_t x = px; x < px + w && x < scr.vp_width; x++)
-            put_px(pixel_at(x, y), 0x00000000);
+            put_px(pixel_at(ox + x, oy + y),
+                   (glyph[y] & (0x80 >> x)) ? ink : paper);
 }
 
 static void utoa(uint64_t v, char* b, uint32_t base)
@@ -150,65 +114,10 @@ static void utoa(uint64_t v, char* b, uint32_t base)
     }
 }
 
-// Raw char output: no cursor management, just draw and advance.
-// All public output functions (putc, write, printf) use this internally.
-static void emit_char(char c)
-{
-    switch (c)
-    {
-        case '\n':
-            scr.cursor_x = 0;
-            if (scr.cursor_y + 1 >= max_rows())
-                screen::scroll_up();
-            else
-                scr.cursor_y++;
-            break;
-
-        case '\b':
-            if (scr.cursor_x > 0)
-                scr.cursor_x--;
-            erase_rect(scr.cursor_x * scr.sym_w, scr.cursor_y * scr.sym_h,
-                       scr.sym_w, scr.sym_h);
-            break;
-
-        case '\t':
-            scr.cursor_x += 4;
-            if (scr.cursor_x >= max_cols())
-            {
-                scr.cursor_x = 0;
-                if (scr.cursor_y + 1 >= max_rows())
-                    screen::scroll_up();
-                else
-                    scr.cursor_y++;
-            }
-            break;
-
-        case '\r':
-            scr.cursor_x = 0;
-            break;
-
-        default:
-            draw_char(c, scr.cursor_x, scr.cursor_y);
-            scr.cursor_x++;
-
-            if (scr.cursor_x >= max_cols())
-            {
-                scr.cursor_x = 0;
-                if (scr.cursor_y + 1 >= max_rows())
-                    screen::scroll_up();
-                else
-                    scr.cursor_y++;
-            }
-            break;
-    }
-}
-
-// Emit a C-string without cursor management
-static void emit_str(const char* s)
-{
-    while (*s)
-        emit_char(*s++);
-}
+// Everything printed goes through the terminal, which owns the cursor,
+// the control characters and (step 2) the escape sequences.
+static inline void emit_char(char c) { term::putc(c); }
+static inline void emit_str(const char* s) { while (*s) term::putc(*s++); }
 
 static struct
 {
@@ -251,17 +160,57 @@ namespace screen
         scr.sym_count = header->FontNumberOfSymbols;
         scr.text_color = Colors::GRAY;
         scr.pixel_format = header->ScreenPixelFormat;
-        scr.cursor_x = 0;
-        scr.cursor_y = 0;
-        scr.cursor_visible = false;
-        scr.cursor_drawn = false;
-        scr.cursor_tick = 0;
         scr.vp_x      = header->ViewportX;
         scr.vp_y      = header->ViewportY;
         scr.vp_width  = header->ViewportWidth;
         scr.vp_height = header->ViewportHeight;
 
+        // The cell grid is sized to the whole panel once; a viewport change
+        // later just selects a smaller rectangle of it (term::resize).
+        if (!term::init(scr.width / scr.sym_w, scr.height / scr.sym_h))
+            while (1) asm volatile("cli; hlt");
+        term::resize(max_cols(), max_rows());
+
         clear();
+    }
+
+    uint32_t cell_w() { return scr.sym_w; }
+    uint32_t cell_h() { return scr.sym_h; }
+
+    void draw_cell(uint32_t col, uint32_t row, uint8_t ch,
+                   uint8_t fg, uint8_t bg, uint8_t attr)
+    {
+        if (col >= max_cols() || row >= max_rows())
+            return;
+
+        uint32_t ink   = palette[fg & 0x0F];
+        uint32_t paper = palette[bg & 0x0F];
+
+        if (attr & TERM_BOLD)
+            ink = palette[(fg & 0x07) | 0x08];      // bold brightens the ink
+        if (attr & TERM_REVERSE)
+        {
+            uint32_t t = ink;
+            ink = paper;
+            paper = t;
+        }
+
+        draw_glyph(ch, col, row, ink, paper);
+    }
+
+    void invert_cell(uint32_t col, uint32_t row)
+    {
+        if (col >= max_cols() || row >= max_rows())
+            return;
+
+        uint32_t ox = col * scr.sym_w;
+        uint32_t oy = row * scr.sym_h;
+        for (uint32_t y = 0; y < scr.sym_h; y++)
+            for (uint32_t x = 0; x < scr.sym_w; x++)
+            {
+                uint32_t* px = pixel_at(ox + x, oy + y);
+                *px = ~(*px) | 0xFF000000;
+            }
     }
 
     uint64_t vram_base() { return (uint64_t)scr.vram; }
@@ -271,17 +220,12 @@ namespace screen
     uint32_t width() { return scr.width; }
     uint32_t height(){ return scr.height; }
 
-    uint32_t cursor_x() { return scr.cursor_x; }
-    uint32_t cursor_y() { return scr.cursor_y; }
+    uint32_t cursor_x() { return term::cursor_x(); }
+    uint32_t cursor_y() { return term::cursor_y(); }
 
     void set_cursor(uint32_t x, uint32_t y)
     {
-        cursor_undraw();
-        scr.cursor_x = x;
-        scr.cursor_y = y;
-        scr.cursor_tick = 0;
-        if (scr.cursor_visible)
-            cursor_draw();
+        term::set_cursor(x, y);
     }
 
     void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
@@ -295,8 +239,8 @@ namespace screen
         scr.vp_y = y;
         scr.vp_width = w;
         scr.vp_height = h;
-        scr.cursor_x = 0;
-        scr.cursor_y = 0;
+        term::resize(max_cols(), max_rows());
+        term::set_cursor(0, 0);
     }
 
     void pop_viewport()
@@ -305,8 +249,8 @@ namespace screen
         scr.vp_y = saved_vp.y;
         scr.vp_width = saved_vp.w;
         scr.vp_height = saved_vp.h;
-        scr.cursor_x = 0;
-        scr.cursor_y = 0;
+        term::resize(max_cols(), max_rows());
+        term::set_cursor(0, 0);
     }
 
     uint32_t title_bar_height()
@@ -343,10 +287,11 @@ namespace screen
         uint32_t text_y = scr.vp_y + (bar_height - scr.sym_h) / 2;
 
         // Draw each character in black on the gray background
-        char* glyph;
+        const unsigned char* glyph;
         for (uint32_t i = 0; i < len; i++)
         {
-            glyph = scr.font + title[i] * scr.sym_h;
+            glyph = (const unsigned char*)scr.font +
+                    (unsigned char)title[i] * scr.sym_h;
             for (uint32_t gy = 0; gy < scr.sym_h; gy++)
                 for (uint32_t gx = 0; gx < scr.sym_w; gx++)
                 {
@@ -365,32 +310,12 @@ namespace screen
     uint32_t vp_w() { return scr.vp_width; }
     uint32_t vp_h() { return scr.vp_height; }
 
-    void show_cursor()
-    {
-        scr.cursor_visible = true;
-        scr.cursor_tick = 0;
-        cursor_draw();
-    }
+    void show_cursor() { term::show_cursor(); }
+    void hide_cursor() { term::hide_cursor(); }
 
-    void hide_cursor()
-    {
-        cursor_undraw();
-        scr.cursor_visible = false;
-    }
-
-    void update_cursor()
-    {
-        if (!scr.cursor_visible || out_in_progress)
-            return;
-
-        uint32_t now = (uint32_t)(pit::uptime_ms());
-        bool should_be_drawn = ((now / 500) % 2) == 0;
-
-        if (should_be_drawn && !scr.cursor_drawn)
-            cursor_draw();
-        else if (!should_be_drawn && scr.cursor_drawn)
-            cursor_undraw();
-    }
+    // Retained so the timer path keeps compiling; blinking is part of
+    // term::render() now, which runs on the same tick as the flush.
+    void update_cursor() {}
 
     void flush()
     {
@@ -411,111 +336,58 @@ namespace screen
 
     void clear()
     {
-        cursor_undraw();
-
+        // Blank the pixels here as well as the grid: the back buffer comes
+        // straight from the PMM at boot, so without this the panel shows
+        // whatever was in those frames until the first render.
         for (uint32_t y = 0; y < scr.vp_height; y++)
             for (uint32_t x = 0; x < scr.vp_width; x++)
                 put_px(pixel_at(x, y), 0x00000000);
 
-        scr.cursor_x = 0;
-        scr.cursor_y = 0;
-        scr.cursor_tick = 0;
-
-        if (scr.cursor_visible)
-            cursor_draw();
+        term::clear();
     }
 
     void scroll_up()
     {
-        cursor_undraw();
-
-        uint32_t line_h = scr.sym_h;
-        uint32_t row_count = max_rows();
-
-        // Shift rows up within viewport
-        for (uint32_t row = 1; row < row_count; row++)
-            for (uint32_t y = 0; y < line_h; y++)
-            {
-                uint32_t* dst = pixel_at(0, (row - 1) * line_h + y);
-                uint32_t* src = pixel_at(0, row * line_h + y);
-                for (uint32_t x = 0; x < scr.vp_width; x++)
-                    dst[x] = src[x];
-            }
-
-        // Clear last row
-        for (uint32_t y = 0; y < line_h; y++)
-            for (uint32_t x = 0; x < scr.vp_width; x++)
-                put_px(pixel_at(x, (row_count - 1) * line_h + y), 0);
-
-        scr.cursor_x = 0;
-        scr.cursor_y = row_count - 1;
-        scr.cursor_tick = 0;
+        term::scroll_up();
     }
 
     void erase_at(uint32_t x, uint32_t y)
     {
-        cursor_undraw();
-        erase_rect(x * scr.sym_w, y * scr.sym_h, scr.sym_w, scr.sym_h);
-        if (scr.cursor_visible)
-            cursor_draw();
+        term::erase_at(x, y);
     }
 
     void set_color(Colors color)
     {
-        cursor_undraw();
-
-        for (uint32_t y = 0; y < scr.vp_height; y++)
-            for (uint32_t x = 0; x < scr.vp_width; x++)
+        // Legacy entry point: pick the closest palette entry and make it the
+        // default ink. It used to repaint every non-black pixel in the
+        // viewport; with a cell grid the colour is simply an attribute.
+        uint32_t c = (uint32_t)color;
+        uint32_t best = TERM_WHITE;
+        uint32_t best_d = 0xFFFFFFFF;
+        for (uint32_t i = 0; i < 16; i++)
+        {
+            int dr = (int)((c >> 16) & 0xFF) - (int)((palette[i] >> 16) & 0xFF);
+            int dg = (int)((c >> 8)  & 0xFF) - (int)((palette[i] >> 8)  & 0xFF);
+            int db = (int)( c        & 0xFF) - (int)( palette[i]        & 0xFF);
+            uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+            if (d < best_d)
             {
-                uint32_t* px = pixel_at(x, y);
-                if (*px != native_color(0x00000000))
-                    put_px(px, (uint32_t)color);
+                best_d = d;
+                best = i;
             }
-        scr.text_color = color;
-
-        if (scr.cursor_visible)
-            cursor_draw();
+        }
+        scr.text_color = c;
+        term::set_fg((uint8_t)best);
     }
 
-    void putc(char c)
-    {
-        out_in_progress = true;
-        cursor_undraw();
-        emit_char(c);
-        scr.cursor_tick = 0;
-        if (scr.cursor_visible)
-            cursor_draw();
-        out_in_progress = false;
-    }
+    void putc(char c) { term::putc(c); }
 
-    void write(const char* s)
-    {
-        out_in_progress = true;
-        cursor_undraw();
-        emit_str(s);
-        scr.cursor_tick = 0;
-        if (scr.cursor_visible)
-            cursor_draw();
-        out_in_progress = false;
-    }
+    void write(const char* s) { emit_str(s); }
 
-    void write(const char* s, uint64_t len)
-    {
-        out_in_progress = true;
-        cursor_undraw();
-        for (uint64_t i = 0; i < len; i++)
-            emit_char(s[i]);
-        scr.cursor_tick = 0;
-        if (scr.cursor_visible)
-            cursor_draw();
-        out_in_progress = false;
-    }
+    void write(const char* s, uint64_t len) { term::feed(s, len); }
 
     void printf(const char* fmt, ...)
     {
-        out_in_progress = true;
-        cursor_undraw();
-
         __builtin_va_list a;
         __builtin_va_start(a, fmt);
 
@@ -591,12 +463,6 @@ namespace screen
             fmt++;
         }
         __builtin_va_end(a);
-
-        scr.cursor_tick = 0;
-        if (scr.cursor_visible)
-            cursor_draw();
-
-        out_in_progress = false;
     }
 
 } // namespace screen

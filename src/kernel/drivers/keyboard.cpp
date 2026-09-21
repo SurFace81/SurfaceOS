@@ -225,7 +225,30 @@ namespace keyboard {
                 c = c - 'A' + 'a';
             }
         }
-        
+
+        // Ctrl folding. Without this Ctrl+D delivered 'd', so the EOF check in
+        // tty::assemble (KeyChar == 0x04) could never fire and Ctrl+letter was
+        // inserted into the line as the bare letter.
+        if (kb_state.ctrl_pressed) {
+            if (c >= 'a' && c <= 'z') {
+                c = c - 'a' + 1;            // ^A..^Z -> 0x01..0x1A
+            } else if (c >= 'A' && c <= 'Z') {
+                c = c - 'A' + 1;
+            } else {
+                switch (c) {
+                    case ' ':  c = 0x00; break;     // ^@ (NUL)
+                    case '@':  c = 0x00; break;
+                    case '[':  c = 0x1B; break;     // ^[ (ESC)
+                    case '\\': c = 0x1C; break;
+                    case ']':  c = 0x1D; break;
+                    case '^':  c = 0x1E; break;
+                    case '_':  c = 0x1F; break;
+                    case '?':  c = 0x7F; break;     // ^? (DEL)
+                    default:   break;               // digits etc: unchanged
+                }
+            }
+        }
+
         return c;
     }
 

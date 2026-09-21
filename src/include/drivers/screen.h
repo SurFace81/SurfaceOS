@@ -60,6 +60,16 @@ namespace screen
     void scroll_up();
     void erase_at(uint32_t x, uint32_t y);
     void set_color(Colors color);
+
+    // --- rasteriser, used by the terminal emulator (see term.h) ----------
+    // One character cell, in cell coordinates relative to the viewport.
+    // fg/bg are ANSI palette indices, attr is TERM_* from term.h.
+    void draw_cell(uint32_t col, uint32_t row, uint8_t ch,
+                   uint8_t fg, uint8_t bg, uint8_t attr);
+    // XOR a cell's pixels; drawing the text cursor, and its own inverse.
+    void invert_cell(uint32_t col, uint32_t row);
+    uint32_t cell_w();
+    uint32_t cell_h();
     
     void flush();
 
