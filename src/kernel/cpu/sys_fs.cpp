@@ -1659,6 +1659,29 @@ namespace
     // ioctl
     // -----------------------------------------------------------------------
 
+    // Requests that carry a pointer need a kernel-side bounce: the FS layer
+    // must never see a user pointer. Before TCSETS there were only two, both
+    // copy-out, and unknown requests fell through with the raw user pointer
+    // - harmless only because devfs answered -ENOTTY to everything else.
+    // Adding a copy-in request without this table would have dereferenced
+    // user memory at CPL 0.
+    struct ioctl_shape
+    {
+        uint64_t request;
+        uint64_t size;
+        bool     to_user;       // copy the buffer back out afterwards
+        bool     from_user;     // fill the buffer from user memory first
+    };
+
+    const ioctl_shape ioctl_shapes[] = {
+        { TCGETS,     sizeof(struct termios), true,  false },
+        { TCSETS,     sizeof(struct termios), false, true  },
+        { TCSETSW,    sizeof(struct termios), false, true  },
+        { TCSETSF,    sizeof(struct termios), false, true  },
+        { TIOCGWINSZ, sizeof(struct winsize), true,  false },
+        { TIOCSWINSZ, sizeof(struct winsize), false, true  },
+    };
+
     void sys_ioctl(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
@@ -1677,40 +1700,58 @@ namespace
         uint64_t request = regs->rsi;
         uint64_t arg = regs->rdx;
 
-        // Requests that pass a pointer need a kernel-side bounce: the FS
-        // layer must never see a user pointer.
-        if (request == TCGETS)
-        {
-            if (!uaccess::writable(arg, sizeof(struct termios)))
+        const ioctl_shape* shape = nullptr;
+        for (uint32_t i = 0; i < sizeof(ioctl_shapes) / sizeof(ioctl_shapes[0]); i++)
+            if (ioctl_shapes[i].request == request)
             {
-                set(regs, ERR(EFAULT));
-                return;
+                shape = &ioctl_shapes[i];
+                break;
             }
-            struct termios t;
-            rc = f->vn->ops->ioctl(f->vn, request, (uint64_t)(uintptr_t)&t);
-            if (rc == 0 && !uaccess::copy_to_user(arg, &t, sizeof(t)))
-                rc = -EFAULT;
-            set(regs, rc);
-            return;
-        }
-        if (request == TIOCGWINSZ)
+
+        if (!shape)
         {
-            if (!uaccess::writable(arg, sizeof(struct winsize)))
-            {
-                set(regs, ERR(EFAULT));
-                return;
-            }
-            struct winsize w;
-            rc = f->vn->ops->ioctl(f->vn, request, (uint64_t)(uintptr_t)&w);
-            if (rc == 0 && !uaccess::copy_to_user(arg, &w, sizeof(w)))
-                rc = -EFAULT;
-            set(regs, rc);
+            // No pointer involved as far as we know: the value goes through
+            // untouched, and a driver that wants a pointer for a request not
+            // listed above has to add it here first.
+            set(regs, f->vn->ops->ioctl(f->vn, request, arg));
             return;
         }
 
-        set(regs, f->vn->ops->ioctl(f->vn, request, arg));
+        if (shape->size > BOUNCE_SIZE)
+        {
+            set(regs, ERR(EINVAL));
+            return;
+        }
+
+        if (shape->from_user && !uaccess::readable(arg, shape->size))
+        {
+            set(regs, ERR(EFAULT));
+            return;
+        }
+        if (shape->to_user && !uaccess::writable(arg, shape->size))
+        {
+            set(regs, ERR(EFAULT));
+            return;
+        }
+
+        if (shape->from_user && !uaccess::copy_from_user(bounce, arg, shape->size))
+        {
+            set(regs, ERR(EFAULT));
+            return;
+        }
+        else if (!shape->from_user)
+        {
+            memory::memset(bounce, 0, shape->size);
+        }
+
+        rc = f->vn->ops->ioctl(f->vn, request, (uint64_t)(uintptr_t)bounce);
+
+        if (rc == 0 && shape->to_user &&
+            !uaccess::copy_to_user(arg, bounce, shape->size))
+            rc = -EFAULT;
+
+        set(regs, rc);
     }
-
 }
 
 namespace sys_fs

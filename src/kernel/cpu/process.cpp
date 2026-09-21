@@ -195,12 +195,12 @@ namespace process
     // Session keyboard input (the line discipline itself lives in tty.cpp)
     // -----------------------------------------------------------------------
 
-    // Runs in the keyboard IRQ: forwards to the tty ring; Esc sets the
-    // session-kill request acted on at the next ring-3 boundary.
+    // Runs in the keyboard IRQ: forwards to the tty ring. The tty decides
+    // what interrupts a session (Ctrl+C, c_cc[VINTR]); Esc used to do it
+    // here, which meant an application could never see Esc or any escape
+    // sequence built on it.
     static void session_key_handler(keyboard_event_t e)
     {
-        if (e.KeyCode == KEY_ESCAPE && e.type == KEY_PRESS)
-            kill_requested = true;
         tty::on_key(e);
     }
 
@@ -745,7 +745,7 @@ namespace process
     {
         switch (p->wait)
         {
-            case Wait::Key:   return tty::has_input();
+            case Wait::Key:   return tty::readable();
             case Wait::Child: return child_event(p);
             case Wait::Sleep: return pit::ticks() >= p->wake_tick;
             default:          return true;
@@ -810,9 +810,9 @@ namespace process
     {
         for (;;)
         {
-            if (kill_requested)
+            if (kill_requested || tty::intr_pressed())
             {
-                screen::printf("\n[terminated with Esc]\n");
+                screen::printf("\n[interrupted]\n");
                 kill_session();
                 end_session();
             }

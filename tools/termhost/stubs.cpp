@@ -8,6 +8,7 @@
 #include "../../src/include/drivers/screen.h"
 #include "../../src/include/drivers/term.h"
 #include "../../src/include/drivers/pit.h"
+#include "../../src/include/drivers/tty.h"
 #include "../../src/include/drivers/uart.h"
 #include "../../src/include/mm/heap.h"
 #include "../../src/include/mm/memory.h"
@@ -46,6 +47,18 @@ namespace pit
 {
     uint64_t uptime_ms() { return fake_ms; }
 }
+
+// The terminal relays the CSI u toggle to the tty; recorded here so the
+// tests can assert that ESC [ > 1 u reached the input side.
+static bool csi_u_state = false;
+
+namespace tty
+{
+    void set_csi_u(bool on) { csi_u_state = on; }
+    bool csi_u()            { return csi_u_state; }
+}
+
+bool host_csi_u() { return csi_u_state; }
 
 namespace uart
 {

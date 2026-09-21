@@ -4,8 +4,8 @@
 # start/end with its exit status.
 #
 #   1. hi, Enter                  -> normal exit, status 0
-#   2. hi, Esc                    -> Esc while blocked in read(0), status SIGINT
-#   3. proctest.bin spin, Esc     -> Esc while spinning in ring 3, status 130
+#   2. hi, Ctrl+C                 -> interrupt while blocked in read(0)
+#   3. proctest.bin spin, Ctrl+C  -> interrupt while spinning in ring 3
 #   4. memtest.bin                -> all memory checks pass
 #   5. proctest.bin               -> all process/scheduler checks pass
 #   6. uptime                     -> the console still works afterwards
@@ -14,6 +14,7 @@
 #   9. hi, Ctrl+D                 -> EOF ends a canonical read
 #  10. termtest                   -> CP437 upper half renders
 #  11. keys                      -> every key reaches the app with its code
+#  12. keys decode               -> raw mode + CSI u: Ctrl+1, Ctrl+Shift+S
 set -u
 
 # termtest writes raw CP437 bytes and escape sequences to the serial log, so
@@ -129,17 +130,18 @@ sleep 1; key ret
 wait_session_end 1 15; result $? "hi exits on Enter"
 [ "$(last_status)" = "0" ]; result $? "hi exit status 0"
 
-# 2. Esc while blocked in a syscall
+# 2. Ctrl+C while blocked in a syscall. Esc used to be the kill key, which
+#    meant no application could ever see Esc or an escape sequence.
 type_cmd "exec hi"
-sleep 4; key esc
-wait_session_end 2 15; result $? "Esc ends an app blocked in read_line"
+sleep 4; key ctrl-c
+wait_session_end 2 15; result $? "Ctrl+C ends an app blocked in read"
 [ "$(last_status)" = "2" ]; result $? "blocked app reports SIGINT (2)"
 
-# 3. Esc while spinning in user mode
+# 3. Ctrl+C while spinning in user mode
 type_cmd "exec proctest spin"
 wait_for "spinning without syscalls" 20; result $? "spinner started"
-sleep 2; key esc
-wait_session_end 3 15; result $? "Esc ends an app spinning in ring 3"
+sleep 2; key ctrl-c
+wait_session_end 3 15; result $? "Ctrl+C ends an app spinning in ring 3"
 [ "$(last_status)" = "2" ]; result $? "spinning app reports SIGINT (2)"
 
 # 4. memtest
@@ -206,7 +208,25 @@ grep -aq "key code=30 char=0x0*1 mods=CTRL" "$LOG"; result $? "Ctrl+A folds to 0
 key esc
 wait_session_end $WANT 20; result $? "keys exits"
 
-# 11. umount refuses while the FS is in use, and succeeds once it is not.
+# 11. keys decode: the same keyboard through raw mode and the SDK decoder.
+#     Ctrl+1 and Ctrl+Shift+S are the point - classic xterm sequences cannot
+#     express either, so they only arrive because CSI u is on. Note Ctrl+C
+#     does not interrupt here: raw mode clears ISIG, so Esc is the way out.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec keys decode"
+wait_for "keys decode: raw mode" 30; result $? "keys decode entered raw mode"
+for k in up f5 ctrl-1 ctrl-shift-s alt-x; do key $k; sleep 1; done
+sleep 2
+grep -aq "dec code=200 mods=0 name=Up"          "$LOG"; result $? "arrows decode in raw mode"
+grep -aq "dec code=63 mods=0 name=F5"           "$LOG"; result $? "function keys decode"
+grep -aq "dec code=49 mods=2 name=Ctrl+1"       "$LOG"; result $? "Ctrl+digit survives (CSI u)"
+grep -aq "dec code=115 mods=3 name=Ctrl+Shift+s" "$LOG"; result $? "Ctrl+Shift+letter survives"
+grep -aq "dec code=120 mods=4 name=Alt+x"       "$LOG"; result $? "Alt+key decodes"
+key esc
+wait_for "keys decode: done" 20; result $? "raw mode restored on exit"
+wait_session_end $WANT 20; result $? "keys decode exits"
+
+# 12. umount refuses while the FS is in use, and succeeds once it is not.
 #    Standing in /dev gives the console cwd a reference on the devfs root;
 #    before the stage-3 cleanup umount freed those vnodes anyway.
 type_cmd "cd /dev"; sleep 2
@@ -216,7 +236,7 @@ type_cmd "cd /"; sleep 2
 type_cmd "umount /dev"; sleep 3
 wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
 
-# 12. per-process kernel stacks are handed back when a session ends: run a
+# 13. per-process kernel stacks are handed back when a session ends: run a
 #    session between two meminfo samples and compare the free-frame counts.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
@@ -231,7 +251,7 @@ echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a session leaks no physical frames (kernel stacks freed)"
 
-# 13. console still alive
+# 14. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"

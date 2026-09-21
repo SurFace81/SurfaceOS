@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <abi/keyboard.h>
+#include <key.h>
 
 static const char* key_name(uint8_t c)
 {
@@ -101,9 +102,48 @@ static void print_mods(uint8_t m)
     if (first) print("-");
 }
 
+// "keys decode": the same keyboard seen through the SDK decoder instead of
+// raw driver events. This is the path an application actually uses - raw
+// mode, escape sequences on the wire, structured keys out the other end.
+static int decode_mode()
+{
+    if (key_raw_mode(1) != 0)
+    {
+        print("keys: cannot enter raw mode\n");
+        return 1;
+    }
+    // Announce *after* the switch: the banner is what a test waits for, and
+    // a key struck before raw mode is on would be eaten by the line editor.
+    print("keys decode: raw mode, Esc quits\n\n");
+
+    char name[40];
+    for (;;)
+    {
+        struct key_event e;
+        if (key_read(&e) != 0)
+            break;
+
+        print("dec code=");
+        print_i64((sint64_t)e.code);
+        print(" mods=");
+        print_i64(e.mods);
+        print(" name=");
+        print(key_name(&e, name, sizeof(name)));
+        print("\n");
+
+        if (e.code == KEY_ESCAPE)
+            break;
+    }
+
+    key_raw_mode(0);
+    print("keys decode: done\n");
+    return 0;
+}
+
 int main(int argc, char** argv)
 {
-    (void)argc; (void)argv;
+    if (argc >= 2 && strcmp(argv[1], "decode") == 0)
+        return decode_mode();
 
     print("keys: press any key, Esc quits\n\n");
 

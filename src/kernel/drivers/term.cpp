@@ -9,6 +9,7 @@
 
 #include "../../include/drivers/term.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/tty.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/mm/heap.h"
@@ -463,7 +464,14 @@ namespace
             case 'h': set_mode(true); break;
             case 'l': set_mode(false); break;
             case 's': save_cursor(); break;
-            case 'u': restore_cursor(); break;
+            case 'u':
+                // ESC [ > 1 u / ESC [ < u toggle full-fidelity key
+                // reporting, which is an input-side setting: the terminal
+                // only relays it. Without a private marker this is SCORC.
+                if (priv == '>')      tty::set_csi_u(param(0, 1) != 0);
+                else if (priv == '<') tty::set_csi_u(false);
+                else                  restore_cursor();
+                break;
             default: break;
         }
     }

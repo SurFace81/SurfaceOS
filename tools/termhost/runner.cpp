@@ -16,6 +16,7 @@ uint8_t cell_bg(uint32_t x, uint32_t y);
 uint8_t cell_attr(uint32_t x, uint32_t y);
 void    feed_str(const char* s);
 void    row_text(uint32_t y, char* out, uint32_t n);
+bool    host_csi_u();
 
 static int passed = 0;
 static int failed = 0;
@@ -360,6 +361,20 @@ static void t_robustness()
     feed_str("\033[1\033[0mhi");
     snapshot();
     check("an escape inside an escape recovers", row_is(0, "hi"));
+
+    // The CSI u toggle is an input-side setting the terminal only relays.
+    reset(20, 3);
+    feed_str("\033[>1u");
+    check("ESC [ > 1 u enables full-fidelity keys", host_csi_u());
+    feed_str("\033[<u");
+    check("ESC [ < u disables them again", !host_csi_u());
+
+    // Without a private marker the same final byte is restore-cursor.
+    reset(20, 3);
+    feed_str("\033[2;5H\0337\033[1;1H\033[uZ");
+    snapshot();
+    check("ESC [ u with no marker is still restore-cursor",
+          cell_ch(4, 1) == 'Z' && !host_csi_u());
 
     // OSC strings are swallowed up to BEL.
     reset(20, 3);

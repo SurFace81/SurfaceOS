@@ -4,6 +4,7 @@
 
 #include "../../include/fs/devfs.h"
 #include "../../include/drivers/tty.h"
+#include "../../include/drivers/screen.h"
 #include "../../include/mm/memory.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/uart.h"
@@ -223,24 +224,47 @@ namespace
         if (id != devfs::DEV_TTY && id != devfs::DEV_CONSOLE)
             return -ENOTTY;
 
-        if (request == TCGETS)
+        // arg is a user pointer: the syscall layer validated it and passes
+        // the kernel-side bounce buffer here. devfs is the one FS whose
+        // ioctl receives a kernel pointer.
+        switch (request)
         {
-            // arg is a user pointer: the syscall layer already validated it
-            // and passes the kernel-side bounce buffer here. devfs is the
-            // one FS where ioctl receives a kernel pointer.
-            tty::fill_termios((struct termios*)arg);
-            return 0;
+            case TCGETS:
+                tty::get_termios((struct termios*)arg);
+                return 0;
+
+            // TCSETSW and TCSETSF wait for output to drain and flush input
+            // respectively. There is no output queue to drain, and set_termios
+            // already drops a half-typed line when the discipline changes, so
+            // all three do the same thing here.
+            case TCSETS:
+            case TCSETSW:
+            case TCSETSF:
+                tty::set_termios((const struct termios*)arg);
+                return 0;
+
+            case TIOCGWINSZ:
+            {
+                struct winsize* w = (struct winsize*)arg;
+                // Viewport-relative, so a session running under the title
+                // bar reports the area it actually has.
+                w->ws_row = (uint16_t)screen::rows();
+                w->ws_col = (uint16_t)screen::cols();
+                // The text area, not the viewport: its width need not be a
+                // whole number of cells.
+                w->ws_xpixel = (uint16_t)(screen::cols() * screen::cell_w());
+                w->ws_ypixel = (uint16_t)(screen::rows() * screen::cell_h());
+                return 0;
+            }
+
+            case TIOCSWINSZ:
+                // Accepted and ignored: the size is the panel's to decide.
+                // A real implementation would raise SIGWINCH (stage 5).
+                return 0;
+
+            default:
+                return -ENOTTY;
         }
-        if (request == TIOCGWINSZ)
-        {
-            struct winsize* w = (struct winsize*)arg;
-            w->ws_row = 25;     // TODO stage 4: real screen::rows()/cols()
-            w->ws_col = 80;
-            w->ws_xpixel = 0;
-            w->ws_ypixel = 0;
-            return 0;
-        }
-        return -ENOTTY;
     }
 
     bool dev_poll_ready(vnode* v)
@@ -250,7 +274,7 @@ namespace
             return true;
         // Ready when a canonical line is complete or the tty has keys to
         // assemble one from (read() consumes and assembles).
-        return tty::has_input() || tty::line_len() > 0;
+        return tty::readable();
     }
 
     sint64_t dev_mount_fs(mount* m, void* arg, vnode** out_root)
