@@ -3,9 +3,10 @@
 
 #include "types.h"
 
-// Linux x86_64 struct termios. Stage 3.5 returns a fixed canonical-mode
-// instance from ioctl(TCGETS) so musl's isatty/tcgetattr work; real mode
-// switching arrives with termios support in stage 4.
+// Linux x86_64 struct termios, shared by the kernel tty and the SDK.
+// ioctl(TCGETS/TCSETS) on /dev/tty carries it verbatim, so the layout and
+// the flag values have to stay exactly Linux's: musl is ported onto them
+// in stage 6 without a translation layer.
 
 struct termios
 {

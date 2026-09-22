@@ -4,6 +4,7 @@
 
 #include "../../include/fs/devfs.h"
 #include "../../include/drivers/tty.h"
+#include "../../include/cpu/process.h"
 #include "../../include/drivers/screen.h"
 #include "../../include/mm/memory.h"
 #include "../../include/stdlib/string.h"
@@ -104,6 +105,14 @@ namespace
             case devfs::DEV_TTY:
             case devfs::DEV_CONSOLE:
             {
+                // A background job reading the terminal would steal the keys
+                // the foreground job is waiting for. POSIX stops it instead.
+                if (!process::in_foreground())
+                {
+                    process::signal_pgrp(process::cur_pgrp(), SIGTTIN);
+                    return -EINTR;
+                }
+
                 sint64_t n = tty::read(buf, len);
                 if (n < 0)
                     return n;                   // -EAGAIN
@@ -258,8 +267,19 @@ namespace
             }
 
             case TIOCSWINSZ:
-                // Accepted and ignored: the size is the panel's to decide.
-                // A real implementation would raise SIGWINCH (stage 5).
+                // The size is the panel's to decide, so the new one is
+                // ignored - but a program that sets it expects the
+                // foreground group to be told, and something that redrew
+                // on SIGWINCH would otherwise never redraw at all.
+                process::signal_pgrp(tty::fg_pgrp(), SIGWINCH);
+                return 0;
+
+            case TIOCGPGRP:
+                *(pid_t*)arg = tty::fg_pgrp();
+                return 0;
+
+            case TIOCSPGRP:
+                tty::set_fg_pgrp(*(const pid_t*)arg);
                 return 0;
 
             default:

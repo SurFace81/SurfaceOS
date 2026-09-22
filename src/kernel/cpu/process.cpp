@@ -6,6 +6,7 @@
 // RWX memory, which a JIT or tcc -run needs.
 
 #include "../../include/cpu/process.h"
+#include "../../include/cpu/signal.h"
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
@@ -43,8 +44,8 @@ namespace process
     // Process table
     // -----------------------------------------------------------------------
 
-    enum class State : uint8_t { Unused, Runnable, Blocked, Zombie };
-    enum class Wait  : uint8_t { None, Key, Child, Sleep };
+    enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
+    enum class Wait  : uint8_t { None, Key, Child, Sleep, Signal };
 
     struct Process
     {
@@ -52,9 +53,27 @@ namespace process
         Wait        wait;
         pid_t       pid;
         pid_t       ppid;           // 0: parent is the console session
+        pid_t       pgid;           // process group, for job control
         pid_t       wait_pid;       // Wait::Child: which child (<= 0: any)
+        uint64_t    wait_opts;      // Wait::Child: WNOHANG/WUNTRACED/...
         uint64_t    wake_tick;      // Wait::Sleep
         int         exit_status;    // valid in Zombie
+
+        // Job control: set when the process is stopped, cleared when the
+        // parent reports it. cont_pending does the same for SIGCONT.
+        int         stop_status;
+        bool        stop_pending;   // a stop the parent has not seen yet
+        bool        cont_pending;   // ditto for a resume
+
+        // Signals. `rewound` says the saved context points at an `int 0x80`
+        // that block() rewound and that has not re-executed yet - which is
+        // exactly when a caught signal has to choose between EINTR and
+        // SA_RESTART. It is cleared the moment the syscall does run again
+        // (syscall_enter), so it can never be stale.
+        sig::signal_state sig;
+        bool        rewound;
+        bool        mask_saved;     // sigsuspend: restore this on sigreturn
+        sigset_t    saved_mask;
 
         char        name[32];
 
@@ -159,6 +178,8 @@ namespace process
             p->pid = next_pid++;
             if (next_pid <= 0)
                 next_pid = 1;
+            p->pgid = p->pid;           // its own group until setpgid says otherwise
+            sig::init(&p->sig);
 
             filesys::fdtable_init(&p->fds);
             p->umask = 022;
@@ -180,12 +201,20 @@ namespace process
         p->pid = 0;
     }
 
+    // A process that still exists and can be signalled. A stopped process
+    // counts: SIGCONT is the whole point of it being there.
+    static inline bool alive(const Process* p)
+    {
+        return p->state == State::Runnable || p->state == State::Blocked ||
+               p->state == State::Stopped;
+    }
+
     static Process* find_live(pid_t pid)
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (p->pid == pid && (p->state == State::Runnable || p->state == State::Blocked))
+            if (p->pid == pid && alive(p))
                 return p;
         }
         return nullptr;
@@ -671,6 +700,10 @@ namespace process
     // Scheduler
     // -----------------------------------------------------------------------
 
+    // Post SIGCHLD to p's parent (defined with the rest of the signal
+    // machinery, below).
+    static void notify_parent(Process* p);
+
     // Terminate `p`: release its memory, reparent its children to the session
     // and leave a zombie for its parent (or nothing, if the parent is the
     // session itself).
@@ -717,6 +750,7 @@ namespace process
             p->state = State::Zombie;
             p->wait = Wait::None;
             p->exit_status = status;
+            notify_parent(p);
         }
 
         if (p == current)
@@ -736,6 +770,11 @@ namespace process
 
             if (q->state == State::Zombie)
                 return true;
+            // A stop or a resume the parent asked to hear about is an event
+            // in its own right, even though the child is still there.
+            if ((q->stop_pending && (p->wait_opts & WUNTRACED)) ||
+                (q->cont_pending && (p->wait_opts & WCONTINUED)))
+                return true;
             has_child = true;
         }
         return !has_child;     // nothing left to wait for: let waitpid fail
@@ -743,12 +782,19 @@ namespace process
 
     static bool wake_ready(Process* p)
     {
+        // A deliverable signal ends any wait: this is what makes a blocking
+        // read interruptible, and what lets a handler run at all while the
+        // process sits in read() or wait().
+        if (sig::next_deliverable(&p->sig))
+            return true;
+
         switch (p->wait)
         {
-            case Wait::Key:   return tty::readable();
-            case Wait::Child: return child_event(p);
-            case Wait::Sleep: return pit::ticks() >= p->wake_tick;
-            default:          return true;
+            case Wait::Key:    return tty::readable();
+            case Wait::Child:  return child_event(p);
+            case Wait::Sleep:  return pit::ticks() >= p->wake_tick;
+            case Wait::Signal: return false;    // pause/sigsuspend: only a signal
+            default:           return true;
         }
     }
 
@@ -774,10 +820,20 @@ namespace process
         return nullptr;
     }
 
-    static bool any_live()
+    // Something that could still be scheduled, as opposed to merely
+    // existing: a session of nothing but stopped processes is stalled.
+    static bool any_runnable()
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
             if (table[i].state == State::Runnable || table[i].state == State::Blocked)
+                return true;
+        return false;
+    }
+
+    static bool any_live()
+    {
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+            if (alive(&table[i]))
                 return true;
         return false;
     }
@@ -798,9 +854,251 @@ namespace process
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (p->state == State::Runnable || p->state == State::Blocked)
+            if (alive(p))
                 terminate(p, signal_status(SIGINT));
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Signals
+    // -----------------------------------------------------------------------
+    //
+    // Delivery happens at the boundary back to ring 3, which is the only
+    // place a user stack and a trap frame are both to hand. Two halves:
+    //
+    //   service_signals()  applies everything that needs no user code -
+    //                      termination, stop, continue, discard - to every
+    //                      process, including ones that are not running;
+    //   deliver_signals()  builds a handler frame for the process that is
+    //                      about to be resumed.
+    //
+    // Returning from a handler does not resume a kernel call: rt_sigreturn
+    // restores the saved context wholesale. That is why signals fit the
+    // existing "rewind RIP and restart" model without the scheduler having
+    // to learn how to sleep on a kernel stack.
+
+    const sigset_t STOP_SIGNALS = SIGMASK(SIGSTOP) | SIGMASK(SIGTSTP) |
+                                  SIGMASK(SIGTTIN) | SIGMASK(SIGTTOU);
+
+    static inline int stop_code(int n) { return 0x7F | ((n & 0xFF) << 8); }
+
+    static void notify_parent(Process* p)
+    {
+        if (p->ppid == 0)
+            return;                     // the session is the parent
+        Process* parent = find_live(p->ppid);
+        if (parent)
+            sig::post(&parent->sig, SIGCHLD);
+    }
+
+    static void post_signal(Process* p, int n)
+    {
+        if (!sig::valid(n) || !alive(p))
+            return;
+
+        // SIGCONT resumes before any question of handlers: a stopped
+        // process cannot run its own handler until it is running again.
+        if (n == SIGCONT)
+        {
+            p->sig.pending &= ~STOP_SIGNALS;
+            if (p->state == State::Stopped)
+            {
+                p->state = State::Runnable;
+                p->wait  = Wait::None;
+                p->cont_pending = true;
+                notify_parent(p);
+            }
+        }
+        else if (sig::default_action(n) == sig::Action::Stop)
+        {
+            p->sig.pending &= ~SIGMASK(SIGCONT);
+        }
+
+        if (sig::discarded(&p->sig, n))
+            return;                     // never pends: nothing would happen
+
+        sig::post(&p->sig, n);
+    }
+
+    // Returns how many processes were signalled (0 means ESRCH).
+    static int signal_group(pid_t pgid, int n)
+    {
+        int count = 0;
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+            if (!alive(p) || p->pgid != pgid)
+                continue;
+            count++;
+            if (n)
+                post_signal(p, n);
+        }
+        return count;
+    }
+
+    // The tty turns ^C, ^\\ and ^Z into a signal for the foreground group.
+    // The conversion happens here rather than in the keyboard IRQ: posting
+    // touches the process table, and the IRQ can land anywhere.
+    static void tty_signals()
+    {
+        if (tty::take_kill())
+            kill_requested = true;
+
+        int n;
+        while ((n = tty::take_signal()) != 0)
+            signal_group(tty::fg_pgrp(), n);
+    }
+
+    static void stop_process(Process* p, int n, user_regs* regs, iret_frame* iret)
+    {
+        if (p == current)
+            save_context(p, regs, iret);
+
+        p->state = State::Stopped;
+        p->wait  = Wait::None;
+        p->stop_status  = stop_code(n);
+        p->stop_pending = true;
+        notify_parent(p);
+    }
+
+    // Apply every pending signal whose action needs no user code. Returns
+    // true when `current` can no longer continue and the caller has to
+    // reschedule.
+    static bool service_signals(user_regs* regs, iret_frame* iret)
+    {
+        bool switch_away = false;
+
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+
+            while (alive(p) && p->sig.pending)
+            {
+                int n = sig::next_deliverable(&p->sig);
+                if (!n)
+                    break;
+
+                // A stopped process acts only on what can kill it; the rest
+                // waits for SIGCONT, which post_signal already handled.
+                if (p->state == State::Stopped && n != SIGKILL)
+                    break;
+
+                if (sig::caught(&p->sig, n))
+                    break;              // needs a user stack: see deliver_signals
+
+                sig::clear(&p->sig, n);
+
+                sig::Action a = (n == SIGKILL) ? sig::Action::Term
+                                               : sig::default_action(n);
+                switch (a)
+                {
+                    case sig::Action::Ign:
+                    case sig::Action::Cont:
+                        break;          // handled when it was posted
+
+                    case sig::Action::Stop:
+                        stop_process(p, n, regs, iret);
+                        switch_away |= (p == current);
+                        break;
+
+                    case sig::Action::Term:
+                    case sig::Action::Core:
+                        switch_away |= (p == current);
+                        terminate(p, signal_status(n));
+                        break;
+                }
+            }
+        }
+        return switch_away;
+    }
+
+    // Build the handler frame on the user stack and point the trap frame at
+    // the handler. False when the stack is unusable.
+    static bool push_signal_frame(Process* p, int n, user_regs* regs,
+                                  iret_frame* iret)
+    {
+        const k_sigaction act = p->sig.act[n];
+        if (!act.restorer)
+            return false;               // the SDK always supplies one
+
+        // EINTR or SA_RESTART. block() rewound RIP over the `int 0x80`, so
+        // the context about to be saved would re-execute the syscall after
+        // the handler returns - which is exactly SA_RESTART. Without it the
+        // interrupted call has to fail instead, so step back over the
+        // rewind and plant the error before the context is captured.
+        if (p->rewound)
+        {
+            if (!(act.flags & SA_RESTART))
+            {
+                iret->rip += INT80_LENGTH;
+                regs->rax = SYSCALL_ERR(EINTR);
+            }
+            p->rewound = false;
+        }
+
+        cpu_context ctx;
+        ctx.regs = *regs;
+        ctx.iret = *iret;
+
+        // sigsuspend installed a temporary mask; the frame carries the one
+        // to go back to, so rt_sigreturn restores it without a second call.
+        sigset_t old = p->mask_saved ? p->saved_mask : p->sig.blocked;
+        p->mask_saved = false;
+
+        uint64_t addr = sig::frame_addr(iret->rsp);
+        sig::frame f;
+        sig::build_frame(&f, &ctx, old, act.restorer);
+
+        if (!uaccess::copy_to_user(addr, &f, sizeof(f)))
+            return false;
+
+        p->sig.blocked |= act.mask;
+        if (!(act.flags & SA_NODEFER))
+            p->sig.blocked |= SIGMASK(n);
+        p->sig.blocked &= ~SIG_UNCATCHABLE;
+
+        if (act.flags & SA_RESETHAND)
+        {
+            p->sig.act[n].handler = SIG_DFL;
+            p->sig.act[n].flags &= ~(uint64_t)SA_RESETHAND;
+        }
+
+        // Enter the handler as if called: rdi is the signal number and the
+        // frame's first word is the return address its `ret` will pop.
+        // Everything else starts at zero rather than carrying the
+        // interrupted values into a function that never declared them.
+        memory::memset((uint8_t*)regs, 0x00, sizeof(user_regs));
+        regs->rdi    = (uint64_t)n;
+        iret->rip    = act.handler;
+        iret->rsp    = addr;
+        iret->cs     = USER_CS;
+        iret->ss     = USER_SS;
+        iret->rflags = RFLAGS_USER;     // DF clear, as the ABI requires
+        return true;
+    }
+
+    // Deliver one caught signal to a process that is about to resume.
+    // Returns true when the process died instead and the caller must
+    // reschedule.
+    static bool deliver_signals(Process* p, user_regs* regs, iret_frame* iret)
+    {
+        int n = sig::next_deliverable(&p->sig);
+        if (!n || !sig::caught(&p->sig, n))
+            return false;
+
+        sig::clear(&p->sig, n);
+
+        if (push_signal_frame(p, n, regs, iret))
+            return false;
+
+        // No usable stack to run the handler on. POSIX kills the process
+        // with SIGSEGV, and it must not be catchable here or delivery would
+        // recurse on the same broken stack.
+        screen::printf("\n[pid %u %s killed: no room for a signal frame]\n",
+                       (uint32_t)p->pid, p->name);
+        uart::printf("process: pid %u signal frame unwritable\n", (uint32_t)p->pid);
+        terminate(p, signal_status(SIGSEGV));
+        return true;
     }
 
     // Choose what runs next and load it into the trap frame. The caller has
@@ -808,14 +1106,19 @@ namespace process
     // to the caller when the session is over.
     static void reschedule(user_regs* regs, iret_frame* iret)
     {
+        bool stall_reported = false;
+
         for (;;)
         {
-            if (kill_requested || tty::intr_pressed())
+            if (kill_requested)
             {
                 screen::printf("\n[interrupted]\n");
                 kill_session();
                 end_session();
             }
+
+            tty_signals();
+            service_signals(regs, iret);
 
             if (!any_live())
                 end_session();
@@ -825,14 +1128,50 @@ namespace process
             {
                 slice_ticks = 0;
                 load_context(next, regs, iret);
+                // The address space is live now, so the frame can be
+                // written. If that fails the process is gone: pick again.
+                if (deliver_signals(next, regs, iret))
+                    continue;
                 return;
             }
 
-            // Everyone is waiting (for a key, a timer, a child). Idle until
-            // an interrupt changes that. Interrupts arriving here come from
-            // ring 0, so they never re-enter the scheduler.
+            if (!stall_reported && !any_runnable())
+            {
+                // Every process is stopped and nothing in the session can
+                // send SIGCONT, because the console is not running while a
+                // session is. Esc is the way out.
+                stall_reported = true;
+                screen::printf("\n[stopped - press Esc to end the session]\n");
+            }
+
+            // Everyone is waiting (for a key, a timer, a child, a signal).
+            // Idle until an interrupt changes that. Interrupts arriving here
+            // come from ring 0, so they never re-enter the scheduler.
             asm volatile("sti; hlt");
         }
+    }
+
+    // Everything that has to happen on the way back to ring 3 when the
+    // scheduler was not otherwise involved.
+    static void return_to_user(user_regs* regs, iret_frame* iret)
+    {
+        tty_signals();
+
+        if (!current)
+        {
+            reschedule(regs, iret);
+            return;
+        }
+
+        if (service_signals(regs, iret) || !current ||
+            current->state != State::Runnable)
+        {
+            reschedule(regs, iret);
+            return;
+        }
+
+        if (deliver_signals(current, regs, iret))
+            reschedule(regs, iret);
     }
 
     // Put the current process to sleep. With `restart`, the syscall is
@@ -842,6 +1181,7 @@ namespace process
     {
         if (restart)
             iret->rip -= INT80_LENGTH;
+        current->rewound = restart;
 
         current->state = State::Blocked;
         current->wait = why;
@@ -1002,6 +1342,9 @@ namespace process
         last_slot      = (uint32_t)(p - table);
 
         tty::reset();
+        // The root process starts in the foreground: ^C goes to its group,
+        // and it is the one allowed to read the keyboard.
+        tty::set_fg_pgrp(p->pgid);
         keyboard_callback_t prev_callback = keyboard::get_callback();
         keyboard::set_keyboard_callback(session_key_handler);
 
@@ -1067,14 +1410,16 @@ namespace process
             return;
         }
 
-        if (irq != IRQ0_TIMER)
+        if (irq == IRQ0_TIMER && ++slice_ticks >= TIME_SLICE_TICKS)
+        {
+            save_context(current, regs, iret);
+            reschedule(regs, iret);
             return;
+        }
 
-        if (++slice_ticks < TIME_SLICE_TICKS)
-            return;
-
-        save_context(current, regs, iret);
-        reschedule(regs, iret);
+        // Not a switch, but still a way back to ring 3: a ^C that arrived
+        // while the process was spinning in user code gets acted on here.
+        return_to_user(regs, iret);
     }
 
     // Map a CPU exception vector to the Linux signal a kernel would raise.
@@ -1092,17 +1437,44 @@ namespace process
 
     void on_user_fault(uint64_t vector, user_regs* regs, iret_frame* iret)
     {
-        screen::printf("\n[pid %u %s terminated: CPU exception %u]\n",
-                       (uint32_t)current->pid, current->name, (uint32_t)vector);
+        int n = vector_to_signal(vector);
 
-        terminate(current, signal_status(vector_to_signal(vector)));
-        reschedule(regs, iret);
+        // A process can only survive its own fault if it asked to: there
+        // has to be a handler, and the signal must not be blocked.
+        // Delivering into a default or blocked disposition would re-run the
+        // faulting instruction and land right back here.
+        if (!sig::caught(&current->sig, n) ||
+            (current->sig.blocked & SIGMASK(n)))
+        {
+            screen::printf("\n[pid %u %s terminated: CPU exception %u]\n",
+                           (uint32_t)current->pid, current->name, (uint32_t)vector);
+
+            terminate(current, signal_status(n));
+            reschedule(regs, iret);
+            return;
+        }
+
+        sig::post(&current->sig, n);
+        return_to_user(regs, iret);
+    }
+
+    // Called at the top of every syscall: the saved context is about to be
+    // superseded by a real execution, so the rewind block() recorded is no
+    // longer outstanding.
+    void syscall_enter()
+    {
+        if (current)
+            current->rewound = false;
     }
 
     void syscall_return(user_regs* regs, iret_frame* iret)
     {
         if (kill_requested)
+        {
             reschedule(regs, iret);
+            return;
+        }
+        return_to_user(regs, iret);
     }
 
     // -----------------------------------------------------------------------
@@ -1139,6 +1511,27 @@ namespace process
     {
         if (current)
             current->umask = m & 0777;
+    }
+
+    // The tty asks before handing input to a reader: a background job that
+    // reads from the terminal gets SIGTTIN instead of stealing the keys the
+    // foreground job is waiting for.
+    bool in_foreground()
+    {
+        if (!current)
+            return true;                // no session: the console owns the tty
+        pid_t fg = tty::fg_pgrp();
+        return fg == 0 || fg == current->pgid;
+    }
+
+    pid_t cur_pgrp()
+    {
+        return current ? current->pgid : 0;
+    }
+
+    int signal_pgrp(pid_t pgid, int sig)
+    {
+        return signal_group(pgid, sig);
     }
 
     void block_on_input(user_regs* regs, iret_frame* iret)
@@ -1252,6 +1645,7 @@ namespace process
 
         copy_bytes((uint8_t*)child->name, (const uint8_t*)current->name, sizeof(child->name));
         child->ppid        = current->pid;
+        child->pgid        = current->pgid;     // same job as its parent
         child->brk_start   = current->brk_start;
         child->brk         = current->brk;
         child->mmap_cursor = current->mmap_cursor;
@@ -1266,6 +1660,12 @@ namespace process
         child->cwd = current->cwd;
         if (child->cwd)
             vfs::ref(child->cwd);
+
+        // Handlers and the blocked mask carry over; pending signals do not
+        // (POSIX: the child starts with an empty pending set).
+        sig::inherit(&child->sig, &current->sig);
+        child->rewound    = false;
+        child->mask_saved = false;
 
         // The child resumes from the same instruction with rax = 0.
         child->ctx.regs = *regs;
@@ -1393,6 +1793,12 @@ namespace process
         // umask (POSIX). adopt_image reset only the address-space fields.
         filesys::fdtable_cloexec(&current->fds);
 
+        // Every handler address belonged to the image that has just been
+        // replaced; ignored signals and the blocked mask survive.
+        sig::reset_on_exec(&current->sig);
+        current->rewound    = false;
+        current->mask_saved = false;
+
         fpu_restore(current->fpu);
         *regs = current->ctx.regs;
         *iret = current->ctx.iret;
@@ -1420,10 +1826,31 @@ namespace process
                 continue;
 
             has_child = true;
-            if (q->state != State::Zombie)
+
+            // A stopped or resumed child is reported without being reaped:
+            // it is still there, and the shell will want to continue it.
+            int  status = 0;
+            bool report = false;
+
+            if (q->state == State::Zombie)
+            {
+                status = q->exit_status;
+                report = true;
+            }
+            else if (q->stop_pending && (options & WUNTRACED))
+            {
+                status = q->stop_status;
+                report = true;
+            }
+            else if (q->cont_pending && (options & WCONTINUED))
+            {
+                status = 0xFFFF;
+                report = true;
+            }
+
+            if (!report)
                 continue;
 
-            int status = q->exit_status;
             if (status_ptr && !uaccess::copy_to_user(status_ptr, &status, sizeof(status)))
             {
                 regs->rax = SYSCALL_ERR(EFAULT);
@@ -1431,7 +1858,13 @@ namespace process
             }
 
             regs->rax = (uint64_t)q->pid;
-            free_process(q);
+            if (q->state == State::Zombie)
+                free_process(q);
+            else
+            {
+                q->stop_pending = false;
+                q->cont_pending = false;
+            }
             return;
         }
 
@@ -1447,29 +1880,304 @@ namespace process
             return;
         }
 
-        current->wait_pid = pid;
+        current->wait_pid  = pid;
+        current->wait_opts = options;
         block(Wait::Child, true, regs, iret);
     }
 
-    void sys_kill(user_regs* regs, iret_frame* iret)
+    // kill(pid, sig) with the POSIX pid conventions. Nothing is delivered
+    // here: the signal is posted, and syscall_return acts on it on the way
+    // back to ring 3 - including when the target is the caller.
+    void sys_kill(user_regs* regs, iret_frame*)
     {
-        Process* target = find_live((pid_t)(sint32_t)regs->rdi);
-        if (!target)
+        pid_t pid = (pid_t)(sint32_t)regs->rdi;
+        int   n   = (int)(sint32_t)regs->rsi;
+
+        // sig 0 delivers nothing and only reports whether the target exists.
+        if (n < 0 || n >= NSIG)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        int count = 0;
+
+        if (pid > 0)
+        {
+            Process* t = find_live(pid);
+            if (t)
+            {
+                count = 1;
+                if (n)
+                    post_signal(t, n);
+            }
+        }
+        else if (pid == 0)
+        {
+            count = signal_group(current->pgid, n);
+        }
+        else if (pid == -1)
+        {
+            // Every process we may signal, which here means the session
+            // apart from the caller.
+            for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+            {
+                Process* p = &table[i];
+                if (!alive(p) || p == current)
+                    continue;
+                count++;
+                if (n)
+                    post_signal(p, n);
+            }
+        }
+        else
+        {
+            count = signal_group(-pid, n);
+        }
+
+        regs->rax = count ? 0 : SYSCALL_ERR(ESRCH);
+    }
+
+    // -----------------------------------------------------------------------
+    // Syscalls: signals
+    // -----------------------------------------------------------------------
+
+    // rt_sigaction(sig, act, oldact, sigsetsize). The structures crossing
+    // the boundary are Linux's k_sigaction, so musl's own sigaction can sit
+    // straight on top of this in stage 6.
+    void sys_rt_sigaction(user_regs* regs, iret_frame*)
+    {
+        int      n       = (int)(sint32_t)regs->rdi;
+        uint64_t act_ptr = regs->rsi;
+        uint64_t old_ptr = regs->rdx;
+        uint64_t setsize = regs->r10;
+
+        if (!sig::valid(n) || n == SIGKILL || n == SIGSTOP ||
+            setsize != SIGSET_BYTES)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        if (old_ptr &&
+            !uaccess::copy_to_user(old_ptr, &current->sig.act[n],
+                                   sizeof(k_sigaction)))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
+            return;
+        }
+
+        if (act_ptr)
+        {
+            k_sigaction ka;
+            if (!uaccess::copy_from_user(&ka, act_ptr, sizeof(ka)))
+            {
+                regs->rax = SYSCALL_ERR(EFAULT);
+                return;
+            }
+
+            // A handler with no trampoline could never return: the frame's
+            // return address is what gets it back into the kernel.
+            if (ka.handler != SIG_DFL && ka.handler != SIG_IGN && !ka.restorer)
+            {
+                regs->rax = SYSCALL_ERR(EINVAL);
+                return;
+            }
+
+            ka.mask &= ~SIG_UNCATCHABLE;
+            current->sig.act[n] = ka;
+
+            // Setting a signal to ignore discards what is already pending;
+            // otherwise it would be delivered the moment it is unignored.
+            if (sig::discarded(&current->sig, n))
+                sig::clear(&current->sig, n);
+        }
+
+        regs->rax = 0;
+    }
+
+    // rt_sigprocmask(how, set, oldset, sigsetsize)
+    void sys_rt_sigprocmask(user_regs* regs, iret_frame*)
+    {
+        int      how     = (int)(sint32_t)regs->rdi;
+        uint64_t set_ptr = regs->rsi;
+        uint64_t old_ptr = regs->rdx;
+        uint64_t setsize = regs->r10;
+
+        if (setsize != SIGSET_BYTES)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+        if (set_ptr && how != SIG_BLOCK && how != SIG_UNBLOCK && how != SIG_SETMASK)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        sigset_t old = current->sig.blocked;
+
+        if (set_ptr)
+        {
+            sigset_t set;
+            if (!uaccess::copy_from_user(&set, set_ptr, sizeof(set)))
+            {
+                regs->rax = SYSCALL_ERR(EFAULT);
+                return;
+            }
+            sig::set_mask(&current->sig, how, set, nullptr);
+        }
+
+        if (old_ptr && !uaccess::copy_to_user(old_ptr, &old, sizeof(old)))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
+            return;
+        }
+
+        regs->rax = 0;
+    }
+
+    // rt_sigpending(set, sigsetsize)
+    void sys_rt_sigpending(user_regs* regs, iret_frame*)
+    {
+        if (regs->rsi != SIGSET_BYTES)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+        sigset_t pend = current->sig.pending;
+        regs->rax = uaccess::copy_to_user(regs->rdi, &pend, sizeof(pend))
+                        ? 0 : SYSCALL_ERR(EFAULT);
+    }
+
+    // Return from a handler: put back the context the frame saved. The only
+    // syscall that does not go through the usual rax convention - it
+    // restores rax along with everything else.
+    void sys_rt_sigreturn(user_regs* regs, iret_frame* iret)
+    {
+        // The handler was entered with rsp at the frame; its `ret` popped
+        // the trampoline address, so the frame starts one word below.
+        uint64_t base = iret->rsp - 8;
+
+        sig::frame f;
+        if (!uaccess::copy_from_user(&f, base, sizeof(f)) || !sig::check_frame(&f))
+        {
+            screen::printf("\n[pid %u %s killed: corrupt signal frame]\n",
+                           (uint32_t)current->pid, current->name);
+            uart::printf("process: pid %u bad sigreturn frame at %llx\n",
+                         (uint32_t)current->pid, base);
+            terminate(current, signal_status(SIGSEGV));
+            reschedule(regs, iret);
+            return;
+        }
+
+        sig::set_mask(&current->sig, SIG_SETMASK, f.old_mask, nullptr);
+
+        *regs = f.ctx.regs;
+        *iret = f.ctx.iret;
+
+        // The frame lives in memory ring 3 can write, so none of it is
+        // trusted: the segments and the flags are the kernel's to set. A
+        // forged rip or rsp is harmless - it faults in ring 3 like any
+        // other bad address.
+        iret->cs     = USER_CS;
+        iret->ss     = USER_SS;
+        iret->rflags = sig::sanitize_rflags(f.ctx.iret.rflags);
+
+        current->rewound    = false;
+        current->mask_saved = false;
+    }
+
+    // pause(): wait for any signal that runs a handler.
+    void sys_pause(user_regs* regs, iret_frame* iret)
+    {
+        regs->rax = SYSCALL_ERR(EINTR);     // the only way pause returns
+        block(Wait::Signal, false, regs, iret);
+    }
+
+    // rt_sigsuspend(mask, sigsetsize): swap the mask, wait, and let the
+    // sigframe put the old one back - that is what makes it atomic.
+    void sys_rt_sigsuspend(user_regs* regs, iret_frame* iret)
+    {
+        if (regs->rsi != SIGSET_BYTES)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        sigset_t mask;
+        if (!uaccess::copy_from_user(&mask, regs->rdi, sizeof(mask)))
+        {
+            regs->rax = SYSCALL_ERR(EFAULT);
+            return;
+        }
+
+        current->saved_mask = current->sig.blocked;
+        current->mask_saved = true;
+        sig::set_mask(&current->sig, SIG_SETMASK, mask, nullptr);
+
+        regs->rax = SYSCALL_ERR(EINTR);
+        block(Wait::Signal, false, regs, iret);
+    }
+
+    // -----------------------------------------------------------------------
+    // Syscalls: process groups and identity
+    // -----------------------------------------------------------------------
+
+    void sys_setpgid(user_regs* regs, iret_frame*)
+    {
+        pid_t pid  = (pid_t)(sint32_t)regs->rdi;
+        pid_t pgid = (pid_t)(sint32_t)regs->rsi;
+
+        if (pid < 0 || pgid < 0)
+        {
+            regs->rax = SYSCALL_ERR(EINVAL);
+            return;
+        }
+
+        Process* t = pid ? find_live(pid) : current;
+        if (!t)
+        {
+            regs->rax = SYSCALL_ERR(ESRCH);
+            return;
+        }
+        // POSIX: only the process itself or its parent may move it.
+        if (t != current && t->ppid != current->pid)
         {
             regs->rax = SYSCALL_ERR(ESRCH);
             return;
         }
 
-        if (target == current)
-        {
-            terminate(current, signal_status(SIGKILL));
-            reschedule(regs, iret);
-            return;
-        }
-
-        terminate(target, signal_status(SIGKILL));
+        t->pgid = pgid ? pgid : t->pid;
         regs->rax = 0;
     }
+
+    void sys_getpgid(user_regs* regs, iret_frame*)
+    {
+        pid_t pid = (pid_t)(sint32_t)regs->rdi;
+        Process* t = pid ? find_live(pid) : current;
+        regs->rax = t ? (uint64_t)t->pgid : SYSCALL_ERR(ESRCH);
+    }
+
+    void sys_getpgrp(user_regs* regs, iret_frame*)
+    {
+        regs->rax = (uint64_t)current->pgid;
+    }
+
+    // There is one session (the console runs one program at a time), so
+    // setsid only detaches the caller into a group of its own.
+    void sys_setsid(user_regs* regs, iret_frame*)
+    {
+        current->pgid = current->pid;
+        regs->rax = (uint64_t)current->pid;
+    }
+
+    // No users yet: everything runs as root. These exist because the first
+    // thing a ported program does is ask, and -ENOSYS makes it give up.
+    void sys_getuid(user_regs* regs, iret_frame*)  { regs->rax = 0; }
+    void sys_getgid(user_regs* regs, iret_frame*)  { regs->rax = 0; }
+    void sys_geteuid(user_regs* regs, iret_frame*) { regs->rax = 0; }
+    void sys_getegid(user_regs* regs, iret_frame*) { regs->rax = 0; }
 
     // -----------------------------------------------------------------------
     // Syscalls: keyboard

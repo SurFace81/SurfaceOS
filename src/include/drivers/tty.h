@@ -4,10 +4,11 @@
 #include "../cpu/types.h"
 #include "../../sdk/include/abi/keyboard.h"
 #include "../../sdk/include/abi/termios.h"
+#include "../../sdk/include/abi/process.h"   // pid_t, signal numbers
 
-// Console terminal (stage 4): the keyboard event ring, termios, the
-// canonical line discipline and the raw-mode key encoder. One tty exists
-// (/dev/tty == /dev/console).
+// Console terminal: the keyboard event ring, termios, the canonical line
+// discipline, the raw-mode key encoder and the foreground process group.
+// One tty exists (/dev/tty == /dev/console).
 //
 // The IRQ-side producer is installed as the keyboard callback while a
 // session runs; the consumer side runs in syscall context. Blocking stays
@@ -30,9 +31,27 @@ namespace tty
     // Producer side (called from the keyboard IRQ).
     void on_key(keyboard_event_t e);
 
-    // The session's interrupt key (Ctrl+C by default) was pressed: the
-    // process layer terminates the session at the next ring-3 boundary.
-    bool intr_pressed();
+    // A key that ISIG turns into a signal (^C, ^backslash, ^Z) was pressed.
+    // Returns the signal number once and then 0, so the process layer can
+    // post it to the foreground group at the next ring-3 boundary. The
+    // conversion deliberately does not happen in the keyboard IRQ: posting
+    // walks the process table, and the IRQ can land anywhere.
+    int take_signal();
+
+    // Ctrl+Alt+Backspace: the console's emergency kill. Reported once, like
+    // take_signal. It exists because every ordinary way out can be refused
+    // by the application - ^C can be caught or have ISIG cleared, and Esc
+    // has belonged to the application since stage 4 - so a program that
+    // catches SIGINT and never exits would otherwise own the machine. It is
+    // deliberately a combination no terminal application asks for, and it
+    // bypasses termios entirely.
+    bool take_kill();
+
+    // The foreground process group: who ^C goes to, and who is allowed to
+    // read the keyboard. 0 means nobody has claimed the terminal, which is
+    // how a session starts and what makes the check permissive by default.
+    pid_t fg_pgrp();
+    void  set_fg_pgrp(pid_t pgid);
 
     // Is there anything to wake a reader for? Accounts for the mode: a
     // canonical reader waits for a complete line, a raw one for VMIN bytes

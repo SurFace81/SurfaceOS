@@ -59,8 +59,31 @@ int      execve(const char* path, char* const argv[], char* const envp[]);
 // has finished yet. -1 if there is nothing to wait for.
 pid_t    waitpid(pid_t pid, int* status, int options);
 
-// Terminate a process of the same session (as if by SIGKILL).
-int      kill(pid_t pid);
+// Send a signal, with the POSIX pid conventions:
+//   pid > 0   that process
+//   pid == 0  every process in the caller's group
+//   pid == -1 every process the caller may signal
+//   pid < -1  every process in group -pid
+// sig 0 delivers nothing and only reports whether the target exists.
+int      kill(pid_t pid, int sig);
+
+// Process groups (job control).
+int      setpgid(pid_t pid, pid_t pgid);
+pid_t    getpgid(pid_t pid);
+pid_t    getpgrp();
+pid_t    setsid();
+
+// Which group owns the terminal on `fd`. A shell moves it to the job it
+// puts in the foreground, so ^C and keyboard input follow.
+pid_t    tcgetpgrp(int fd);
+int      tcsetpgrp(int fd, pid_t pgid);
+
+// No users yet: these are honest constants, not failures, because a
+// program that gets -1 from getuid() tends to give up entirely.
+uid_t    getuid();
+uid_t    geteuid();
+gid_t    getgid();
+gid_t    getegid();
 
 void     yield();
 void     sleep_ms(uint32_t ms);

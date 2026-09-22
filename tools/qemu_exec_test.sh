@@ -15,6 +15,8 @@
 #  10. termtest                   -> CP437 upper half renders
 #  11. keys                      -> every key reaches the app with its code
 #  12. keys decode               -> raw mode + CSI u: Ctrl+1, Ctrl+Shift+S
+#  13. sigtest                   -> signals, masks, EINTR, stop/continue
+#  14. sigtest catch, Ctrl+C     -> a handler survives what used to kill
 set -u
 
 # termtest writes raw CP437 bytes and escape sequences to the serial log, so
@@ -28,7 +30,7 @@ IMG=test_disk.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest argtest fstest termtest keys"
+APPS="hi hello memtest proctest argtest fstest termtest keys sigtest"
 # LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
 LAYOUT=${LAYOUT:-gpt}
 # SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
@@ -253,6 +255,40 @@ result $? "Alt+key decodes"
 key esc
 wait_for "keys decode: done" 20; result $? "raw mode restored on exit"
 wait_session_end $WANT 20; result $? "keys decode exits"
+
+# 11b. sigtest: the signal suite itself.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec sigtest"
+wait_for "sigtest: " 300; result $? "sigtest finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "sigtest: [0-9]* passed, 0 failed" "$LOG"; result $? "sigtest: no failed checks"
+wait_session_end $WANT 30; result $? "sigtest exits"
+
+# 11c. The point of the whole stage: ^C and ^Z reach a handler instead of
+#      killing the session, and the app decides what to do about them.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec sigtest catch"
+wait_for "press ^C" 30; result $? "sigtest catch started"
+sleep 1; key ctrl-c
+wait_for "caught 2" 15; result $? "Ctrl+C is delivered as SIGINT, not a kill"
+sleep 1; key ctrl-z
+wait_for "caught 20" 15; result $? "Ctrl+Z is delivered as SIGTSTP"
+# The session is still alive: the app is the one that ends it.
+type_cmd "q"
+wait_for "sigtest: done" 20; result $? "the app survived both signals"
+wait_session_end $WANT 20; result $? "sigtest catch exits"
+
+# 11d. A caught signal must also reach a process that never makes a syscall:
+#      delivery has to happen on the timer path, not only on syscall return.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "exec sigtest spin"
+wait_for "spinning" 30; result $? "sigtest spin started"
+sleep 2; key ctrl-c
+wait_for "caught 2" 20; result $? "^C reaches a handler from ring-3 spin"
+# Nothing the application honours can end it now: it catches SIGINT and
+# never makes a syscall. Ctrl+Alt+Backspace is the console's own way out.
+sleep 1; key ctrl-alt-backspace
+wait_session_end $WANT 20; result $? "Ctrl+Alt+Backspace kills a runaway app"
 
 # 12. umount refuses while the FS is in use, and succeeds once it is not.
 #    Standing in /dev gives the console cwd a reference on the devfs root;

@@ -2,6 +2,7 @@
 #define PROCESS_H
 
 #include "types.h"
+#include "context.h"
 #include "paging.h"
 #include "../drivers/keyboard.h"
 #include "../../sdk/include/abi/process.h"
@@ -37,29 +38,6 @@ struct vnode;
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
 
-// General purpose registers in the order SAVE_REGS pushes them (interrupts.asm):
-// rax is pushed first, so it sits at the highest address.
-struct user_regs
-{
-    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
-    uint64_t rbp;
-    uint64_t rdi, rsi, rdx, rcx, rbx, rax;
-};
-
-// What the CPU pushes when it enters the kernel from ring 3.
-struct iret_frame
-{
-    uint64_t rip, cs, rflags, rsp, ss;
-};
-
-// A complete user-mode CPU state. Laid out exactly like the stack after
-// SAVE_REGS in syscall_entry, so process_enter_user can pop it directly.
-struct cpu_context
-{
-    user_regs  regs;
-    iret_frame iret;
-};
-
 // ---------------------------------------------------------------------------
 // Scheduling model
 // ---------------------------------------------------------------------------
@@ -76,13 +54,17 @@ struct cpu_context
 //     syscall with its registers intact.
 //
 // Each process nevertheless owns its kernel stack, and TSS RSP0 follows the
-// switch. The restart trick above only works while a syscall has committed
-// no side effect before it waits, which is true of read() on a tty and of
-// wait4() but not of a pipe write or of a signal handler return - those need
-// to keep kernel state across the wait, i.e. to sleep on their own stack.
-// Retrofitting per-process stacks after signals exist would be far more
-// painful than paying for them now, so the stack is already in place; what
-// is still missing is the blocking machinery that would use it.
+// switch. The restart trick only works while a syscall has committed no
+// side effect before it waits, which is true of read() on a tty and of
+// wait4() but not of, say, a pipe write - that would need to keep kernel
+// state across the wait, i.e. to sleep on its own stack.
+//
+// Signals turned out not to need that. A handler runs in ring 3 like any
+// other code, and rt_sigreturn restores the saved context wholesale rather
+// than resuming a kernel call, so delivery is just a rewrite of the trap
+// frame at the same boundary (see the signal section of process.cpp). What
+// a rewound syscall gains is a choice: restart as before with SA_RESTART,
+// or step back over the rewind and fail with EINTR.
 //
 // The stack belongs to the process table *slot*, not to the process:
 // terminate() can free a process while executing on that very stack, so the
@@ -123,12 +105,45 @@ namespace process
     void sys_munmap    (user_regs* regs, iret_frame* iret);
     void sys_mprotect  (user_regs* regs, iret_frame* iret);
 
+    // Signals.
+    void sys_rt_sigaction  (user_regs* regs, iret_frame* iret);
+    void sys_rt_sigprocmask(user_regs* regs, iret_frame* iret);
+    void sys_rt_sigpending (user_regs* regs, iret_frame* iret);
+    void sys_rt_sigreturn  (user_regs* regs, iret_frame* iret);
+    void sys_rt_sigsuspend (user_regs* regs, iret_frame* iret);
+    void sys_pause         (user_regs* regs, iret_frame* iret);
+
+    // Process groups (job control) and identity.
+    void sys_setpgid   (user_regs* regs, iret_frame* iret);
+    void sys_getpgid   (user_regs* regs, iret_frame* iret);
+    void sys_getpgrp   (user_regs* regs, iret_frame* iret);
+    void sys_setsid    (user_regs* regs, iret_frame* iret);
+    void sys_getuid    (user_regs* regs, iret_frame* iret);
+    void sys_getgid    (user_regs* regs, iret_frame* iret);
+    void sys_geteuid   (user_regs* regs, iret_frame* iret);
+    void sys_getegid   (user_regs* regs, iret_frame* iret);
+
     // Status encoding for terminate(): Linux wait(2) format.
     inline int exit_code_status(int code) { return (code & 0xFF) << 8; }
     inline int signal_status(int sig)     { return sig & 0x7F; }
 
-    // Last step of every syscall: honours a pending Esc.
+    // First step of every syscall: the saved context is about to be
+    // superseded, so a rewind recorded by a blocking call is no longer
+    // outstanding (see `rewound` in process.cpp).
+    void syscall_enter();
+
+    // Last step of every syscall: honours a pending Esc, applies signals
+    // and may switch to another process.
     void syscall_return(user_regs* regs, iret_frame* iret);
+
+    // Is the caller in the terminal's foreground group? The tty read path
+    // asks before handing input to a background job.
+    bool  in_foreground();
+    pid_t cur_pgrp();
+
+    // Post a signal to every process of a group, as the tty does for ^C.
+    // Returns the number of processes signalled.
+    int  signal_pgrp(pid_t pgid, int sig);
 
     // --- Hooks for the file-descriptor syscalls (sys_fs.cpp) ---------------
     // Valid only while a session runs (syscall context). fd_table and vnode

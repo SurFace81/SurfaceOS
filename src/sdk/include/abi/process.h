@@ -2,6 +2,7 @@
 #define ABI_PROCESS_H
 
 #include "types.h"
+#include "signal.h"     // signal numbers: a wait status names one
 
 // Shared between the kernel and the SDK.
 
@@ -9,17 +10,16 @@ typedef sint32_t pid_t;
 
 // wait4 options
 #define WNOHANG             1
+#define WUNTRACED           2   // also report children stopped by a signal
+#define WCONTINUED          8   // also report children resumed by SIGCONT
 
 // ---------------------------------------------------------------------------
 // Exit status encoding: exactly Linux wait(2).
 //
 //   normal exit(code)    -> (code & 0xff) << 8           (WIFEXITED)
 //   terminated by signal -> signal number in the low 7 bits (WIFSIGNALED)
-//
-// Signals do not exist yet (stage 4+); the kernel encodes the killing event
-// as a signal number so WEXITSTATUS/WTERMSIG in musl work from day one:
-//   Esc session kill -> SIGINT, kill() -> SIGKILL,
-//   #PF/#GP -> SIGSEGV, #UD -> SIGILL, #DE -> SIGFPE.
+//   stopped by a signal  -> 0x7f | (signal << 8)         (WIFSTOPPED)
+//   resumed by SIGCONT   -> 0xffff                       (WIFCONTINUED)
 // ---------------------------------------------------------------------------
 #define WEXITSTATUS(status) (((status) >> 8) & 0xFF)
 #define WIFEXITED(status)   (((status) & 0x7F) == 0)
@@ -27,22 +27,9 @@ typedef sint32_t pid_t;
 #define WIFSIGNALED(status) (((sint8_t)((((status) & 0x7F) + 1) >> 1)) > 0)
 #define WIFSTOPPED(status)  (((status) & 0xFF) == 0x7F)
 #define WSTOPSIG(status)    (((status) >> 8) & 0xFF)
+#define WIFCONTINUED(status) ((status) == 0xFFFF)
 
-// Signal numbers (Linux).
-#define SIGHUP      1
-#define SIGINT      2
-#define SIGQUIT     3
-#define SIGILL      4
-#define SIGTRAP     5
-#define SIGABRT     6
-#define SIGBUS      7
-#define SIGFPE      8
-#define SIGKILL     9
-#define SIGSEGV     11
-#define SIGPIPE     13
-#define SIGALRM     14
-#define SIGTERM     15
-#define SIGCHLD     17
+// Signal numbers live in abi/signal.h, included above.
 
 // mmap / mprotect protection bits
 #define PROT_NONE           0

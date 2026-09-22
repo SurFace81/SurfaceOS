@@ -12,12 +12,21 @@ namespace
 {
     const uint32_t RING_SIZE   = 128;       // raw events (press + release)
     const uint32_t LINE_MAX    = 1024;      // canonical line buffer
-    const uint32_t PEND_MAX    = 32;        // one encoded key, worst case
+    const uint32_t ENC_MAX     = 32;        // one encoded key, worst case
+    const uint32_t RAWQ_SIZE   = 256;       // encoded bytes awaiting a reader
 
     keyboard_event_t ring[RING_SIZE];
     volatile uint32_t head = 0;
     volatile uint32_t tail = 0;
-    volatile bool intr_flag = false;
+
+    // Set by the keyboard IRQ, consumed in syscall context. The flush that
+    // ISIG implies happens there too: emptying the line buffer from an
+    // interrupt could land in the middle of a read assembling it.
+    volatile int  pending_sig = 0;
+    volatile bool flush_pending = false;
+    volatile bool kill_flag = false;
+
+    pid_t fg = 0;                       // foreground process group
 
     // Line under construction. Survives read-syscall restarts (the wake
     // model re-executes the syscall; consumed keys are gone from the ring,
@@ -28,10 +37,20 @@ namespace
     bool     line_ready = false;    // terminated by Enter: may be served
     bool     line_eof   = false;    // terminated by the EOF key on an empty line
 
-    // Raw mode: bytes encoded from one key that a short read left over.
-    uint8_t  pend[PEND_MAX];
-    uint32_t pend_len = 0;
-    uint32_t pend_pos = 0;
+    // Raw mode: scratch for encoding one key, then a byte queue the reader
+    // drains. The queue is the only place encoded bytes live - a short read
+    // (fewer than VMIN) simply leaves them in it, so nothing is ever copied
+    // out and pushed back.
+    uint8_t  enc[ENC_MAX];
+    uint32_t enc_len = 0;
+
+    uint8_t  rawq[RAWQ_SIZE];
+    uint32_t rq_head = 0;               // write index
+    uint32_t rq_tail = 0;               // read index
+    // A read found bytes but fewer than VMIN: it is waiting for more input,
+    // not for the bytes it already has. Without this, readable() would keep
+    // reporting the held bytes and the reader would spin.
+    bool     raw_short = false;
 
     // VTIME deadline for the current raw read, 0 when none is running.
     uint64_t read_deadline = 0;
@@ -45,9 +64,9 @@ namespace
         t->c_iflag = ICRNL | IXON;
         t->c_oflag = OPOST | ONLCR;
         t->c_cflag = CS8 | CREAD;
-        t->c_lflag = ISIG | ICANON | ECHO | ECHOE | IEXTEN;
+        t->c_lflag = ISIG | ICANON | ECHO | ECHOE | ECHOCTL | IEXTEN;
         t->c_line = 0;
-        t->c_cc[VINTR]  = 3;        // ^C: ends the session (stage 5: SIGINT)
+        t->c_cc[VINTR]  = 3;        // ^C: SIGINT to the foreground group
         t->c_cc[VQUIT]  = 28;       // ^backslash
         t->c_cc[VERASE] = 8;        // backspace
         t->c_cc[VKILL]  = 21;       // ^U
@@ -72,6 +91,32 @@ namespace
         screen::write(s, n);
         // Echo goes to the screen only: the serial log already gets every
         // byte the app writes, typing it twice would garble uart.log.
+    }
+
+    // Echo input the way a terminal does: with ECHOCTL a control character
+    // shows as ^X rather than being executed. Without it, echoing the bytes
+    // an arrow key encodes to would feed a real CSI sequence back to the
+    // screen and move the cursor instead of showing anything.
+    void echo_input(const uint8_t* b, uint32_t n)
+    {
+        if (!echoing())
+            return;
+
+        bool ctl = (cur.c_lflag & ECHOCTL) != 0;
+        for (uint32_t i = 0; i < n; i++)
+        {
+            uint8_t c = b[i];
+            if (ctl && c != '\n' && c != '\t' && c != '\r' &&
+                (c < 0x20 || c == 0x7F))
+            {
+                char out[2] = { '^', (char)(c == 0x7F ? '?' : c + 0x40) };
+                screen::write(out, 2);
+            }
+            else
+            {
+                screen::write((const char*)&c, 1);
+            }
+        }
     }
 
     bool ring_pop(keyboard_event_t* out)
@@ -176,10 +221,34 @@ namespace
 
     // --- raw-mode encoding -------------------------------------------------
 
+    inline uint32_t rq_count()
+    {
+        return (rq_head - rq_tail) & (RAWQ_SIZE - 1);
+    }
+
+    inline bool rq_push(uint8_t b)
+    {
+        uint32_t next = (rq_head + 1) & (RAWQ_SIZE - 1);
+        if (next == rq_tail)
+            return false;               // full: drop
+        rawq[rq_head] = b;
+        rq_head = next;
+        return true;
+    }
+
+    inline uint8_t rq_pop()
+    {
+        uint8_t b = rawq[rq_tail];
+        rq_tail = (rq_tail + 1) & (RAWQ_SIZE - 1);
+        return b;
+    }
+
+    inline void rq_clear() { rq_head = rq_tail = 0; }
+
     void emit_byte(uint8_t b)
     {
-        if (pend_len < PEND_MAX)
-            pend[pend_len++] = b;
+        if (enc_len < ENC_MAX)
+            enc[enc_len++] = b;
     }
 
     void emit_num(uint32_t v)
@@ -221,8 +290,7 @@ namespace
     // Returns false when the key has no byte representation at all.
     bool encode(const keyboard_event_t& e)
     {
-        pend_len = 0;
-        pend_pos = 0;
+        enc_len = 0;
 
         switch (e.KeyCode)
         {
@@ -308,28 +376,26 @@ namespace
         return true;
     }
 
-    // Fill `pend` from the ring until it holds something, or the ring runs
-    // out. Returns true when bytes are available.
-    bool fill_pending()
+    // Drain the event ring into the byte queue, stopping when the queue has
+    // no room for another worst-case key.
+    void fill_raw()
     {
-        while (pend_pos >= pend_len)
+        while (rq_count() + ENC_MAX < RAWQ_SIZE - 1)
         {
             keyboard_event_t e;
             if (!ring_pop(&e))
-                return false;
+                return;
             if (e.type != KEY_PRESS)
                 continue;
-            if (encode(e) && pend_len)
-            {
-                if (echoing())
-                    screen::write((const char*)pend, pend_len);
-                return true;
-            }
-        }
-        return true;
-    }
+            if (!encode(e) || !enc_len)
+                continue;
 
-    uint32_t pending_bytes() { return pend_len - pend_pos; }
+            for (uint32_t i = 0; i < enc_len; i++)
+                rq_push(enc[i]);
+            echo_input(enc, enc_len);
+            raw_short = false;          // new input: a short read may proceed
+        }
+    }
 }
 
 namespace tty
@@ -338,13 +404,17 @@ namespace tty
     {
         head = 0;
         tail = 0;
-        intr_flag = false;
+        pending_sig = 0;
+        flush_pending = false;
+        kill_flag = false;
+        fg = 0;
         line_len_ = 0;
         line_cur = 0;
         line_ready = false;
         line_eof = false;
-        pend_len = 0;
-        pend_pos = 0;
+        enc_len = 0;
+        rq_clear();
+        raw_short = false;
         read_deadline = 0;
         csi_u_mode = false;
         default_termios(&cur);
@@ -352,15 +422,35 @@ namespace tty
 
     void on_key(keyboard_event_t e)
     {
-        // The interrupt key belongs to the kernel while a session runs: it
-        // ends the session (acted on at the next ring-3 boundary). Esc used
-        // to do this, which made it impossible for an application to ever
-        // see Esc or any escape sequence.
-        if (e.type == KEY_PRESS && (cur.c_lflag & ISIG) &&
-            e.KeyChar != 0 && (uint8_t)e.KeyChar == cur.c_cc[VINTR])
+        // The emergency kill comes first: it has to work when the
+        // application has cleared ISIG, caught every signal it can, and is
+        // no longer reading anything.
+        if (e.type == KEY_PRESS && e.Control && e.Alt &&
+            e.KeyCode == KEY_BACKSPACE)
         {
-            intr_flag = true;
+            kill_flag = true;
             return;
+        }
+
+        // ISIG keys never reach the application: they become signals for
+        // the foreground group. Esc used to end the session here, which
+        // made it impossible for an application to see Esc or any escape
+        // sequence built on it.
+        if (e.type == KEY_PRESS && (cur.c_lflag & ISIG) && e.KeyChar != 0)
+        {
+            uint8_t ch = (uint8_t)e.KeyChar;
+            int s = 0;
+            if      (ch == cur.c_cc[VINTR]) s = SIGINT;
+            else if (ch == cur.c_cc[VQUIT]) s = SIGQUIT;
+            else if (ch == cur.c_cc[VSUSP]) s = SIGTSTP;
+
+            if (s)
+            {
+                pending_sig = s;
+                if (!(cur.c_lflag & NOFLSH))
+                    flush_pending = true;
+                return;
+            }
         }
 
         uint32_t next = (head + 1) % RING_SIZE;
@@ -371,10 +461,38 @@ namespace tty
         head = next;
     }
 
-    bool intr_pressed()
+    bool take_kill()
     {
-        return intr_flag;
+        if (!kill_flag)
+            return false;
+        kill_flag = false;
+        return true;
     }
+
+    int take_signal()
+    {
+        int s = pending_sig;
+        if (!s)
+            return 0;
+        pending_sig = 0;
+
+        if (flush_pending)
+        {
+            flush_pending = false;
+            // POSIX: unless NOFLSH, an ISIG key discards everything typed
+            // but not yet read.
+            tail = head;
+            rq_clear();
+            raw_short  = false;
+            line_len_  = 0;
+            line_cur   = 0;
+            line_ready = false;
+        }
+        return s;
+    }
+
+    pid_t fg_pgrp()              { return fg; }
+    void  set_fg_pgrp(pid_t pgid) { fg = pgid; }
 
     bool pop_key(keyboard_event_t* out)
     {
@@ -388,8 +506,10 @@ namespace tty
             // A complete line already, or keys that might finish one.
             return line_ready || line_eof || !ring_empty();
         }
-        if (pending_bytes() || !ring_empty())
-            return true;
+        if (!ring_empty())
+            return true;                // new keys: a read can make progress
+        if (rq_count() && !raw_short)
+            return true;                // queued bytes a read would take
         if (read_deadline && pit::uptime_ms() >= read_deadline)
             return true;
         return false;
@@ -412,8 +532,9 @@ namespace tty
             line_len_ = 0;
             line_cur = 0;
             line_ready = false;
-            pend_len = 0;
-            pend_pos = 0;
+            enc_len = 0;
+            rq_clear();
+            raw_short = false;
         }
         read_deadline = 0;
     }
@@ -516,36 +637,44 @@ namespace tty
         return (sint64_t)count;
     }
 
-    static sint64_t read_raw(void* dst, uint64_t n)
+    // Hand over `want` queued bytes. Nothing leaves the queue on any path
+    // that returns -EAGAIN, so a restarted syscall sees exactly what this
+    // one saw.
+    static sint64_t drain(void* dst, uint64_t want)
     {
         uint8_t* out = (uint8_t*)dst;
-        uint64_t got = 0;
+        for (uint64_t i = 0; i < want; i++)
+            out[i] = rq_pop();
 
-        while (got < n)
-        {
-            if (!fill_pending() && pend_pos >= pend_len)
-                break;
-            if (pend_pos >= pend_len)
-                break;
-            out[got++] = pend[pend_pos++];
-        }
+        read_deadline = 0;
+        raw_short = false;
+        return (sint64_t)want;
+    }
+
+    static sint64_t read_raw(void* dst, uint64_t n)
+    {
+        fill_raw();
+
+        uint64_t avail = rq_count();
+        uint64_t want  = avail < n ? avail : n;
 
         uint8_t vmin  = cur.c_cc[VMIN];
         uint8_t vtime = cur.c_cc[VTIME];
 
-        // Enough to satisfy the request.
-        if (got > 0 && got >= vmin)
-        {
-            read_deadline = 0;
-            return (sint64_t)got;
-        }
+        // Linux returns as soon as min(n, VMIN) bytes are there: asking for
+        // fewer bytes than VMIN must not block forever.
+        uint64_t need = vmin < n ? (uint64_t)vmin : n;
 
-        // VMIN 0 with VTIME 0 is a pure poll: report what there is, even
-        // nothing, without waiting.
-        if (vmin == 0 && vtime == 0)
+        if (vmin == 0)
         {
-            read_deadline = 0;
-            return (sint64_t)got;
+            // VMIN 0 with VTIME 0 is a pure poll: report what there is,
+            // even nothing. With VTIME it waits for the first byte only.
+            if (vtime == 0 || want > 0)
+                return drain(dst, want);
+        }
+        else if (want > 0 && avail >= need)
+        {
+            return drain(dst, want);
         }
 
         if (vtime)
@@ -558,19 +687,10 @@ namespace tty
             if (read_deadline == 0)
                 read_deadline = now + (uint64_t)vtime * 100;
             else if (now >= read_deadline)
-            {
-                read_deadline = 0;
-                return (sint64_t)got;       // may legitimately be 0
-            }
+                return drain(dst, want);    // may legitimately be 0
         }
 
-        if (got)
-        {
-            // Some bytes but fewer than VMIN: keep them for the restart.
-            // (pend has already been drained into `out`, so push back.)
-            for (uint64_t i = got; i-- > 0; )
-                pend[--pend_pos] = out[i];
-        }
+        raw_short = (want > 0);
         return -EAGAIN;
     }
 

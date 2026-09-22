@@ -206,6 +206,32 @@ static void t_sgr()
     feed_str("\033[31m\033[mX");
     snapshot();
     check("bare ESC[m is a reset", cell_fg(0, 0) == TERM_DEFAULT_FG);
+
+    // 38/48 carry their own parameters. Read as ordinary SGR codes, the
+    // trailing zeros of "38;2;255;0;0" are SGR 0 and reset everything.
+    reset(20, 3);
+    feed_str("\033[1;38;2;255;0;0mX");
+    snapshot();
+    check("truecolor SGR 38;2 keeps bold and picks a colour",
+          (cell_attr(0, 0) & TERM_BOLD) && cell_fg(0, 0) == TERM_RED + 8);
+
+    reset(20, 3);
+    feed_str("\033[48;2;0;0;255;1mX");
+    snapshot();
+    check("parameters after 38/48 resume normally",
+          cell_bg(0, 0) == TERM_BLUE + 8 && (cell_attr(0, 0) & TERM_BOLD));
+
+    reset(20, 3);
+    feed_str("\033[38;5;46;7mX");
+    snapshot();
+    check("256-colour SGR 38;5 folds onto the 16",
+          cell_fg(0, 0) == TERM_GREEN + 8 && (cell_attr(0, 0) & TERM_REVERSE));
+
+    reset(20, 3);
+    feed_str("\033[38mX");
+    snapshot();
+    check("truncated 38 does not reset the attributes",
+          cell_fg(0, 0) == TERM_DEFAULT_FG);
 }
 
 static void t_lines()
@@ -313,6 +339,23 @@ static void t_alt_screen()
     check("leaving restores the main screen", row_is(0, "main"));
 }
 
+static void t_private_r()
+{
+    section("private CSI r is not DECSTBM");
+
+    // ESC [ ? 1049 r restores saved DEC modes. Routed to DECSTBM it would
+    // set a scroll region of rows 1049..end, i.e. reset it, and home the
+    // cursor - silently breaking every full-screen application that uses it.
+    reset(20, 5);
+    feed_str("\033[2;4r");              // region rows 2-4
+    feed_str("\033[?1049r");            // must be ignored
+    feed_str("\033[4;1HX\n");          // at the region bottom: scrolls it
+    feed_str("Y");
+    snapshot();
+    check("ESC [ ? Ps r leaves the scroll region alone",
+          row_is(2, "X") && row_is(3, "Y") && row_is(4, ""));
+}
+
 static void t_robustness()
 {
     section("split, malformed and hostile sequences");
@@ -415,6 +458,7 @@ int main()
     t_scroll();
     t_save_restore();
     t_alt_screen();
+    t_private_r();
     t_robustness();
 
     printf("\nterm: %d passed, %d failed\n", passed, failed);

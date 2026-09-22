@@ -165,6 +165,24 @@ namespace syscall
         handlers[SYS_WAIT4]        = process::sys_wait4;
         handlers[SYS_KILL]         = process::sys_kill;
 
+        // Signals (stage 5).
+        handlers[SYS_RT_SIGACTION]   = process::sys_rt_sigaction;
+        handlers[SYS_RT_SIGPROCMASK] = process::sys_rt_sigprocmask;
+        handlers[SYS_RT_SIGPENDING]  = process::sys_rt_sigpending;
+        handlers[SYS_RT_SIGRETURN]   = process::sys_rt_sigreturn;
+        handlers[SYS_RT_SIGSUSPEND]  = process::sys_rt_sigsuspend;
+        handlers[SYS_PAUSE]          = process::sys_pause;
+
+        // Process groups and identity.
+        handlers[SYS_SETPGID]      = process::sys_setpgid;
+        handlers[SYS_GETPGID]      = process::sys_getpgid;
+        handlers[SYS_GETPGRP]      = process::sys_getpgrp;
+        handlers[SYS_SETSID]       = process::sys_setsid;
+        handlers[SYS_GETUID]       = process::sys_getuid;
+        handlers[SYS_GETGID]       = process::sys_getgid;
+        handlers[SYS_GETEUID]      = process::sys_geteuid;
+        handlers[SYS_GETEGID]      = process::sys_getegid;
+
         // SurfaceOS extensions (legacy; replaced by POSIX interfaces later).
         xhandlers[SYSX_READ_KEY  - SYSCALLX_BASE] = process::sys_read_key;
         xhandlers[SYSX_SET_CURSOR - SYSCALLX_BASE] = sys_set_cursor;
@@ -181,6 +199,8 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
 {
     iret_frame* iret = (iret_frame*)(regs + 1);
     uint64_t nr = regs->rax;
+
+    process::syscall_enter();
 
     syscall_handler h = nullptr;
     if (nr < SYSCALL_NR_MAX)

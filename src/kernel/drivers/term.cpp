@@ -253,6 +253,51 @@ namespace
         s_bot = bot - 1;
     }
 
+    // A cell holds 4 bits of colour, so the extended forms are folded onto
+    // the 16 we have. What matters is that their parameters are *consumed*:
+    // left in the loop, the trailing components of "38;2;255;0;0" would be
+    // read as SGR 0 and reset everything the sequence was setting.
+    uint8_t rgb_to_16(uint32_t r, uint32_t g, uint32_t b)
+    {
+        uint8_t idx = (uint8_t)((r >= 96 ? 1 : 0) | (g >= 96 ? 2 : 0) | (b >= 96 ? 4 : 0));
+        uint32_t mx = r > g ? (r > b ? r : b) : (g > b ? g : b);
+        if (mx >= 192)
+            idx |= 8;
+        return idx;
+    }
+
+    uint8_t c256_to_16(uint32_t n)
+    {
+        if (n < 16)
+            return (uint8_t)n;
+        if (n >= 232)                       // 24-step greyscale ramp
+        {
+            uint32_t v = (n - 232) * 10 + 8;
+            return rgb_to_16(v, v, v);
+        }
+        uint32_t c = n - 16;                // 6x6x6 colour cube
+        return rgb_to_16(((c / 36) % 6) * 51, ((c / 6) % 6) * 51, (c % 6) * 51);
+    }
+
+    // 38/48: `5;N` (256 colours) or `2;R;G;B` (truecolor). Returns how many
+    // parameters after the 38/48 were consumed.
+    uint32_t extended_colour(uint32_t i, uint8_t* out)
+    {
+        if (i + 1 >= nparams)
+            return 0;
+        if (params[i + 1] == 5 && i + 2 < nparams)
+        {
+            *out = c256_to_16(params[i + 2]);
+            return 2;
+        }
+        if (params[i + 1] == 2 && i + 4 < nparams)
+        {
+            *out = rgb_to_16(params[i + 2], params[i + 3], params[i + 4]);
+            return 4;
+        }
+        return 1;                           // malformed: swallow the selector
+    }
+
     void do_sgr()
     {
         if (nparams == 0 || !param_seen)
@@ -278,6 +323,8 @@ namespace
             else if (p == 49)            bg = TERM_DEFAULT_BG;
             else if (p >= 90 && p <= 97) fg = (uint8_t)(p - 90 + 8);
             else if (p >= 100 && p <= 107) bg = (uint8_t)(p - 100 + 8);
+            else if (p == 38)            i += extended_colour(i, &fg);
+            else if (p == 48)            i += extended_colour(i, &bg);
         }
     }
 
@@ -458,7 +505,10 @@ namespace
             case 'X': blank_cells(cx, cy, param(0, 1)); break;
             case 'S': region_up(param(0, 1)); break;
             case 'T': region_down(param(0, 1)); break;
-            case 'r': set_scroll_region(param(0, 1), nparams > 1 ? params[1] : 0);
+            // DECSTBM. The private form (ESC [ ? Ps r, DECRSTR) restores
+            // saved modes and must not be mistaken for a scroll region.
+            case 'r': if (priv) break;
+                      set_scroll_region(param(0, 1), nparams > 1 ? params[1] : 0);
                       cx = 0; cy = s_top; break;
             case 'm': do_sgr(); break;
             case 'h': set_mode(true); break;

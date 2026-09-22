@@ -24,6 +24,9 @@
 #define SYS_MPROTECT        10
 #define SYS_MUNMAP          11
 #define SYS_BRK             12
+#define SYS_RT_SIGACTION    13
+#define SYS_RT_SIGPROCMASK  14
+#define SYS_RT_SIGRETURN    15
 #define SYS_IOCTL           16
 #define SYS_PREAD64         17
 #define SYS_PWRITE64        18
@@ -33,6 +36,7 @@
 #define SYS_SCHED_YIELD     24
 #define SYS_DUP             32
 #define SYS_DUP2            33
+#define SYS_PAUSE           34
 #define SYS_NANOSLEEP       35
 #define SYS_GETPID          39
 #define SYS_FORK            57
@@ -59,7 +63,17 @@
 #define SYS_CHOWN           92
 #define SYS_FCHOWN          93
 #define SYS_UMASK           95
+#define SYS_GETUID          102
+#define SYS_GETGID          104
+#define SYS_GETEUID         107
+#define SYS_GETEGID         108
+#define SYS_SETPGID         109
 #define SYS_GETPPID         110
+#define SYS_GETPGRP         111
+#define SYS_SETSID          112
+#define SYS_GETPGID         121
+#define SYS_RT_SIGPENDING   127
+#define SYS_RT_SIGSUSPEND   130
 #define SYS_SYNC            162
 #define SYS_GETDENTS64      217
 #define SYS_EXIT_GROUP      231
@@ -75,6 +89,7 @@
 #define SYS_RENAMEAT2       316
 
 // Reserved for stage 6 (musl); the dispatcher returns -ENOSYS until then.
+#define SYS_RT_SIGALTSTACK  131
 #define SYS_ARCH_PRCTL      158
 #define SYS_SET_TID_ADDRESS 218
 #define SYS_CLOCK_GETTIME   228

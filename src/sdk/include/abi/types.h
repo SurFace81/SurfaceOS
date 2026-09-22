@@ -16,6 +16,8 @@ typedef uint64_t            uintptr_t;
 // POSIX-shaped scalar types (Linux x86_64 widths).
 typedef sint64_t            off_t;
 typedef uint32_t            mode_t;
+typedef uint32_t            uid_t;
+typedef uint32_t            gid_t;
 typedef sint32_t            pid_t_abi;      // pid_t itself lives in abi/process.h
 typedef uint64_t            dev_t;
 typedef uint64_t            ino_t;

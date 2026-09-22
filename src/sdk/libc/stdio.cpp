@@ -1,6 +1,7 @@
 #include "../include/stdio.h"
 #include "../include/unistd.h"
 #include "../include/syscall.h"
+#include "../include/errno.h"
 #include "../include/abi/syscall.h"
 #include "../include/abi/time.h"
 
@@ -85,7 +86,13 @@ uint32_t read_line(char* buffer, uint32_t max_len)
     if (max_len == 0)
         return 0;
 
-    ssize_t n = read(0, buffer, max_len - 1);
+    // A handler installed with sigaction() and no SA_RESTART makes read()
+    // fail with EINTR; the line is still being typed, so try again.
+    ssize_t n;
+    do {
+        n = read(0, buffer, max_len - 1);
+    } while (n < 0 && errno == EINTR);
+
     if (n <= 0)
     {
         buffer[0] = '\0';

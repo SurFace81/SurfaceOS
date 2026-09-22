@@ -138,12 +138,12 @@ static void test_preemption()
     sleep_ms(100);
     check("parent keeps running next to a busy-looping child", now_ms() - t0 >= 90);
 
-    check("kill(spinner)", kill(spinner) == 0);
+    check("kill(spinner, SIGKILL)", kill(spinner, SIGKILL) == 0);
     int status = -1;
     check("killed child reports SIGKILL",
           waitpid(spinner, &status, 0) == spinner &&
           WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
-    check("kill of a dead pid fails", kill(spinner) == -1);
+    check("kill of a dead pid fails", kill(spinner, SIGKILL) == -1);
 }
 
 static void test_fpu()

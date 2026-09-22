@@ -1680,6 +1680,8 @@ namespace
         { TCSETSF,    sizeof(struct termios), false, true  },
         { TIOCGWINSZ, sizeof(struct winsize), true,  false },
         { TIOCSWINSZ, sizeof(struct winsize), false, true  },
+        { TIOCGPGRP,  sizeof(pid_t),          true,  false },
+        { TIOCSPGRP,  sizeof(pid_t),          false, true  },
     };
 
     void sys_ioctl(syscall_regs* regs, iret_frame*)
