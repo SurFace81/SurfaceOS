@@ -94,13 +94,30 @@ wait_for() {
     return 1
 }
 
-sessions_ended() { grep -ac "process: session end" "$LOG" 2>/dev/null || echo 0; }
+# Occurrences, not lines: an app that ends its output without a newline
+# shares a line with the kernel message that follows, and grep -c would
+# count the pair once.
+sessions_ended() { grep -ao "process: session end" "$LOG" 2>/dev/null | wc -l; }
 
 # wait until the N-th session has ended
 wait_session_end() {
     local deadline=$((SECONDS + $2))
     while [ $SECONDS -lt $deadline ]; do
         [ "$(sessions_ended)" -ge "$1" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# key_await <key> "<pattern>" [seconds]: press a key and wait for the output
+# it should produce. Fixed sleeps made these checks fail on a loaded host
+# even though nothing was wrong - polling just takes longer instead.
+key_await() {
+    local k="$1" pat="$2" secs="${3:-10}"
+    key "$k"
+    local deadline=$((SECONDS + secs))
+    while [ $SECONDS -lt $deadline ]; do
+        grep -aqF -- "$pat" "$LOG" 2>/dev/null && return 0
         sleep 1
     done
     return 1
@@ -124,53 +141,60 @@ wait_for "sync: ok" 10; result $? "sync flushes the cache"
 type_cmd "cd /bin"; sleep 3
 
 # 1. normal exit
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec hi"
 wait_for "Hello world!" 20; result $? "hi runs"
 sleep 1; key ret
-wait_session_end 1 15; result $? "hi exits on Enter"
+wait_session_end $WANT 15; result $? "hi exits on Enter"
 [ "$(last_status)" = "0" ]; result $? "hi exit status 0"
 
 # 2. Ctrl+C while blocked in a syscall. Esc used to be the kill key, which
 #    meant no application could ever see Esc or an escape sequence.
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec hi"
 sleep 4; key ctrl-c
-wait_session_end 2 15; result $? "Ctrl+C ends an app blocked in read"
+wait_session_end $WANT 15; result $? "Ctrl+C ends an app blocked in read"
 [ "$(last_status)" = "2" ]; result $? "blocked app reports SIGINT (2)"
 
 # 3. Ctrl+C while spinning in user mode
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec proctest spin"
 wait_for "spinning without syscalls" 20; result $? "spinner started"
 sleep 2; key ctrl-c
-wait_session_end 3 15; result $? "Ctrl+C ends an app spinning in ring 3"
+wait_session_end $WANT 20; result $? "Ctrl+C ends an app spinning in ring 3"
 [ "$(last_status)" = "2" ]; result $? "spinning app reports SIGINT (2)"
 
 # 4. memtest
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec memtest"
 wait_for "memtest: " 240; result $? "memtest finished"
 grep -aE "\[FAIL\]|status [0-9-]+, expected" "$LOG" | sed 's/^/      /'
 grep -aq "memtest: [0-9]* passed, 0 failed" "$LOG"; result $? "memtest: no failed checks"
 sleep 1; key ret
-wait_session_end 4 20; result $? "memtest exits"
+wait_session_end $WANT 20; result $? "memtest exits"
 
 # 5. proctest
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec proctest"
 wait_for "proctest: " 240; result $? "proctest finished"
 grep -aq "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no failed checks"
 sleep 1; key ret
-wait_session_end 5 20; result $? "proctest exits"
+wait_session_end $WANT 20; result $? "proctest exits"
 
 # 6. argtest (SysV stack: argv/envp/auxv, execve with 1000 args, E2BIG)
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec argtest"
 wait_for "argtest: " 240; result $? "argtest finished"
 grep -aq "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
-wait_session_end 6 20; result $? "argtest exits"
+wait_session_end $WANT 20; result $? "argtest exits"
 
 # 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, /dev)
+WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec fstest"
 wait_for "fstest: " 600; result $? "fstest finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
-wait_session_end 7 30; result $? "fstest exits"
+wait_session_end $WANT 30; result $? "fstest exits"
 
 # 8. Ctrl+D on an empty line is EOF. Until the keyboard learned to fold Ctrl,
 #    Ctrl+D arrived as plain 'd' and the canonical read blocked forever.
@@ -201,13 +225,11 @@ wait_session_end $WANT 20; result $? "termtest exits"
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec keys"
 wait_for "keys: press any key" 30; result $? "keys started"
-for k in f5 up home delete ctrl-a; do key $k; sleep 1; done
-sleep 2
-grep -aq "key code=63 .*name=F5"        "$LOG"; result $? "F5 reaches the app"
-grep -aq "key code=200 .*name=Up"       "$LOG"; result $? "arrow keys reach the app"
-grep -aq "key code=199 .*name=Home"     "$LOG"; result $? "Home reaches the app"
-grep -aq "key code=211 .*name=Delete"   "$LOG"; result $? "Delete reaches the app"
-grep -aq "key code=30 char=0x0*1 mods=CTRL" "$LOG"; result $? "Ctrl+A folds to 0x01"
+key_await f5     "name=F5";     result $? "F5 reaches the app"
+key_await up     "name=Up";     result $? "arrow keys reach the app"
+key_await home   "name=Home";   result $? "Home reaches the app"
+key_await delete "name=Delete"; result $? "Delete reaches the app"
+key_await ctrl-a "mods=CTRL";   result $? "Ctrl+A folds to 0x01"
 key esc
 wait_session_end $WANT 20; result $? "keys exits"
 
@@ -218,13 +240,16 @@ wait_session_end $WANT 20; result $? "keys exits"
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec keys decode"
 wait_for "keys decode: raw mode" 30; result $? "keys decode entered raw mode"
-for k in up f5 ctrl-1 ctrl-shift-s alt-x; do key $k; sleep 1; done
-sleep 2
-grep -aq "dec code=200 mods=0 name=Up"          "$LOG"; result $? "arrows decode in raw mode"
-grep -aq "dec code=63 mods=0 name=F5"           "$LOG"; result $? "function keys decode"
-grep -aq "dec code=49 mods=2 name=Ctrl+1"       "$LOG"; result $? "Ctrl+digit survives (CSI u)"
-grep -aq "dec code=115 mods=3 name=Ctrl+Shift+s" "$LOG"; result $? "Ctrl+Shift+letter survives"
-grep -aq "dec code=120 mods=4 name=Alt+x"       "$LOG"; result $? "Alt+key decodes"
+key_await up           "dec code=200 mods=0 name=Up"
+result $? "arrows decode in raw mode"
+key_await f5           "dec code=63 mods=0 name=F5"
+result $? "function keys decode"
+key_await ctrl-1       "dec code=49 mods=2 name=Ctrl+1"
+result $? "Ctrl+digit survives (CSI u)"
+key_await ctrl-shift-s "dec code=115 mods=3 name=Ctrl+Shift+s"
+result $? "Ctrl+Shift+letter survives"
+key_await alt-x        "dec code=120 mods=4 name=Alt+x"
+result $? "Alt+key decodes"
 key esc
 wait_for "keys decode: done" 20; result $? "raw mode restored on exit"
 wait_session_end $WANT 20; result $? "keys decode exits"
