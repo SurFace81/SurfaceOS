@@ -130,7 +130,7 @@ namespace screen
     void init(BOOT_HEADER* header)
     {
         // Back buffer: normal RAM from the PMM, reachable through the
-        // identity map. Sized to the panel, so a 4K display no longer
+        // direct map. Sized to the panel, so a 4K display no longer
         // overruns whatever happened to follow a hardcoded address.
         uint64_t fb_size = header->FrameBufferSize;
         uint64_t frames  = (fb_size + FRAME_SIZE - 1) / FRAME_SIZE;
@@ -144,17 +144,17 @@ namespace screen
         }
 
         // VRAM: mapped write-combining in the kernel device window. It used
-        // to be mapped by overwriting the identity map at virt 0x8000000,
+        // to be mapped by overwriting the old identity map at virt 0x8000000,
         // which silently aliased the RAM at physical 0x8000000 - invisible
         // under `qemu -m 128M`, memory corruption on anything bigger.
-        scr.buffer = (uint8_t*)back;
+        scr.buffer = (uint8_t*)phys_to_virt(back);
         scr.vram   = (uint8_t*)paging::map_framebuffer(
                          (uint64_t)header->FrameBufferAddress, fb_size);
         scr.buffer_size = fb_size;
         scr.pixels_per_scanline = header->ScreenPixelsPerScanLine;
         scr.width = header->ScreenWidth;
         scr.height = header->ScreenHeight;
-        scr.font = (char*)header->StandartFontBuffer;
+        scr.font = (char*)phys_to_virt((uint64_t)header->StandartFontBuffer);
         scr.sym_w = header->FontSymbolSizeX;
         scr.sym_h = header->FontSymbolSizeY;
         scr.sym_count = header->FontNumberOfSymbols;

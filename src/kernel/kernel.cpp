@@ -28,10 +28,6 @@
 #include "../include/stdlib/string.h"
 #include "../sdk/include/abi/errno.h"
 
-// Base of the static page tables. The bootloader AllocatePages()es 5 MB here
-// and linker.ld asserts that the kernel image stops short of it.
-#define PAGE_TABLE_BASE 0x300000
-
 namespace
 {
     // Does `disk` carry the signature the UEFI boot loader reported for the
@@ -207,23 +203,28 @@ namespace
     }
 }
 
-extern "C" void kmain(BOOT_HEADER* BootHeader)
+extern "C" void kmain(uint64_t boot_header_phys)
 {
-    // kentry.asm has already zeroed .bss and switched to the kernel stack.
-    //
+    // kentry.asm has already zeroed .bss, switched to the kernel stack and
+    // moved us to the higher half. Its boot tables direct-map the first
+    // 1 GiB, which is where the loader put the boot header.
+    BOOT_HEADER* BootHeader = (BOOT_HEADER*)phys_to_virt(boot_header_phys);
+
     // Init order is load-bearing:
     //   features before paging  - PAGE_NX is a reserved bit until EFER.NXE
     //                             is set, and PAGE_CACHE_WC means nothing
     //                             until the PAT is programmed.
     //   paging  before pmm      - the PMM refuses to manage memory the
-    //                             identity map does not cover.
+    //                             direct map does not cover.
     //   uart    before pmm      - so the memory report is actually visible.
     //   pmm     before screen   - the back buffer is a PMM allocation now.
     cpu::init_features();
 
     gdt::init();
     tss::init();
-    paging::init((uint64_t*)PAGE_TABLE_BASE, BootHeader);
+    // The bootloader AllocatePages()es 5 MB at PAGE_TABLES_PHYS and
+    // linker.ld asserts that the kernel image stops short of it.
+    paging::init(PAGE_TABLES_PHYS, BootHeader);
 
     idt::init();
     irq::init();

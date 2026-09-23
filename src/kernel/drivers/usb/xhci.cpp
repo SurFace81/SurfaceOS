@@ -93,10 +93,10 @@ static uintptr_t xhci_virt_to_phys(void* vaddr)
 {
     // Kept as a separate step from the walk below so a bad translation is
     // reported once, here, instead of turning into a silent DMA to nowhere.
-    // DMA buffers come from kmalloc, i.e. the identity-mapped kernel heap,
-    // so this is really just an identity translation - but walk the tables
-    // rather than assume it, so a future non-identity heap cannot hand the
-    // controller a bogus bus address silently.
+    // DMA buffers come from kmalloc, i.e. the kernel heap in the direct map,
+    // where virt_to_phys() would do - but walk the tables rather than assume
+    // it, so a buffer anywhere else (a kernel-image static, a future vmalloc
+    // area) cannot hand the controller a bogus bus address silently.
     uintptr_t phys = (uintptr_t)paging::virtual_to_phys((uint64_t)vaddr);
     if (phys == 0)
         uart::printf("xhci: virt %llx has no physical mapping\n", (uint64_t)vaddr);

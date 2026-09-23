@@ -171,8 +171,8 @@ static void test_mmap()
 
     check("length 0 is refused", mmap(NULL, 0, PROT_READ) == MAP_FAILED);
     check("unknown prot bits are refused", mmap(NULL, PAGE, 0x80) == MAP_FAILED);
-    check("munmap of a misaligned address is refused", munmap((void*)0x40010000001ULL, PAGE) != 0);
-    check("munmap outside the mmap region is refused", munmap((void*)0x40000100000ULL, PAGE) != 0);
+    check("munmap of a misaligned address is refused", munmap((void*)0x10000001ULL, PAGE) != 0);
+    check("munmap outside the mmap region is refused", munmap((void*)0x400000ULL, PAGE) != 0);
 }
 
 static void test_jit()
@@ -196,7 +196,7 @@ static void test_jit()
     check("mprotect of an unmapped range is refused",
           mprotect((void*)((uint64_t)code + 64 * PAGE), PAGE, PROT_READ) != 0);
     check("mprotect of an unmapped page is refused",
-          mprotect((void*)0x40030001000ULL, PAGE, PROT_READ | PROT_WRITE) != 0);
+          mprotect((void*)0x30001000ULL, PAGE, PROT_READ | PROT_WRITE) != 0);
 
     munmap(code, PAGE);
 
@@ -241,10 +241,11 @@ static void test_uaccess()
     section("syscall pointer validation");
 
     // Addresses owned by the kernel: its image, the PMM bitmap, the page
-    // tables. Before uaccess existed each of these calls wrote there at CPL 0.
-    const uint64_t kernel_image  = 0x200000;
-    const uint64_t pmm_bitmap    = 0x3000000;
-    const uint64_t page_tables   = 0x300000;
+    // tables (the last two through the direct map). Before uaccess existed
+    // each of these calls wrote there at CPL 0.
+    const uint64_t kernel_image  = 0xFFFFFFFF80200000ULL;
+    const uint64_t pmm_bitmap    = 0xFFFF888003000000ULL;
+    const uint64_t page_tables   = 0xFFFF888000300000ULL;
 
     check("SYS_TIME into the PMM bitmap is refused",
           syscall(SYSX_TIME, pmm_bitmap) == -EFAULT);
@@ -322,7 +323,7 @@ static int fault_prot_none()
 
 static int fault_kernel_read()
 {
-    volatile uint8_t v = ((uint8_t*)0x200000)[0];
+    volatile uint8_t v = ((uint8_t*)0xFFFFFFFF80200000ULL)[0];
     return v;
 }
 

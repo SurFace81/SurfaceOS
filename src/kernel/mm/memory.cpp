@@ -11,7 +11,7 @@ namespace memory
     void init(uint64_t total_memory)
     {
         total_memory_size = total_memory;
-        heap::init((void*)HEAP_START, HEAP_SIZE);
+        heap::init(phys_to_virt(HEAP_START), HEAP_SIZE);
     }
 
     uint64_t total(void)

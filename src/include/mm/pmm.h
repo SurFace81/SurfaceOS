@@ -7,8 +7,9 @@
 // Physical frame size managed by PMM.
 #define FRAME_SIZE          0x1000ULL
 
-// Fixed low-memory regions the PMM must never hand out. They mirror the
-// layout documented in src/kernel/linker.ld:
+// Fixed low-memory regions the PMM must never hand out (physical addresses;
+// the kernel reaches them through phys_to_virt). They mirror the layout
+// documented in src/kernel/linker.ld:
 //
 //   0x000000..0x800000   boot data, font, kernel image + .bss, static page
 //                        tables. Covered wholesale by PMM_LOW_RESERVE_END.

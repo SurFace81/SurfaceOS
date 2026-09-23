@@ -20,6 +20,7 @@
 #define CR0_NW              (1ULL << 29)
 #define CR0_CD              (1ULL << 30)
 
+#define CR4_PGE             (1ULL << 7)
 #define CR4_OSFXSR          (1ULL << 9)
 #define CR4_OSXMMEXCPT      (1ULL << 10)
 #define CR4_SMEP            (1ULL << 20)
@@ -58,6 +59,7 @@ namespace
     bool nx_ok   = false;
     bool smep_ok = false;
     bool pat_ok  = false;
+    bool pge_ok  = false;
 
     // Reprogram IA32_PAT so that index 7 (PAT=1, PCD=1, PWT=1) means
     // write-combining. Indices 0..6 keep their power-on meaning, so every
@@ -138,6 +140,16 @@ namespace cpu
             pat_ok = true;
         }
 
+        // Global pages (CPUID.01H:EDX[13]). The kernel half is marked
+        // PAGE_GLOBAL, so its TLB entries survive every process switch.
+        // Only the final tables carry the bit; kentry's boot tables do not,
+        // so nothing global is cached before paging::init() replaces them.
+        if (d & (1U << 13))
+        {
+            write_cr4(read_cr4() | CR4_PGE);
+            pge_ok = true;
+        }
+
         // SMEP (CPUID.07H:0:EBX[7]) and SMAP (bit 20)
         cpuid_count(0, 0, &a, &b, &c, &d);
         if (a >= 7)
@@ -168,9 +180,9 @@ namespace cpu
     // first page table is built, which is long before the serial port works.
     void log_features()
     {
-        uart::printf("cpu: nx=%u smep=%u smap=%u pat=%u\n",
+        uart::printf("cpu: nx=%u smep=%u smap=%u pat=%u pge=%u\n",
                      (uint32_t)nx_ok, (uint32_t)smep_ok,
-                     (uint32_t)smap_enabled, (uint32_t)pat_ok);
+                     (uint32_t)smap_enabled, (uint32_t)pat_ok, (uint32_t)pge_ok);
     }
 
     bool has_nx()   { return nx_ok; }

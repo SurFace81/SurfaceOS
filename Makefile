@@ -10,7 +10,7 @@ GPP			= x86_64-elf-g++
 AR			= x86_64-elf-ar
 CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
-			  -mgeneral-regs-only \
+			  -mgeneral-regs-only -mcmodel=kernel -fno-pic \
 			  -I./src/kernel
 LD			= x86_64-elf-ld
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
@@ -81,7 +81,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 
 # SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
-SDK_FLAGS   = -c -m64 -mcmodel=large -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
+SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
 SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
 SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))

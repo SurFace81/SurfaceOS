@@ -88,7 +88,7 @@ namespace process
         // Owned by the table *slot*, not by the process: terminate() can
         // free a process while running on this very stack, so it is released
         // only at session teardown, from the console stack.
-        uint64_t    kstack;     // base address, 0 when the slot has none
+        uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
 
         // POSIX file state: descriptors, cwd (referenced vnode) and umask.
         fd_table    fds;
@@ -134,7 +134,7 @@ namespace process
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
             if (table[i].kstack)
             {
-                pmm::free_frames(table[i].kstack, KERNEL_STACK_FRAMES);
+                pmm::free_frames(virt_to_phys((void*)table[i].kstack), KERNEL_STACK_FRAMES);
                 table[i].kstack = 0;
             }
     }
@@ -171,9 +171,10 @@ namespace process
             p->kstack = ks;
             if (!p->kstack)
             {
-                p->kstack = pmm::alloc_frames(KERNEL_STACK_FRAMES);
-                if (!p->kstack)
+                uint64_t frames = pmm::alloc_frames(KERNEL_STACK_FRAMES);
+                if (!frames)
                     return nullptr;     // slot stays Unused
+                p->kstack = (uint64_t)phys_to_virt(frames);
             }
             p->pid = next_pid++;
             if (next_pid <= 0)
@@ -446,7 +447,7 @@ namespace process
             if (!frame)
                 return false;
 
-            memory::memset((uint8_t*)frame, 0x00, PAGE_SIZE_4K);
+            memory::memset((uint8_t*)phys_to_virt(frame), 0x00, PAGE_SIZE_4K);
             if (!paging::map_user_page(vaddr + off, frame, flags))
             {
                 pmm::free_frame(frame);
@@ -457,7 +458,7 @@ namespace process
     }
 
     // Write kernel data into a user page of the active address space through
-    // the identity map (the pages may be read-only to the app).
+    // the direct map (the pages may be read-only to the app).
     static void poke_user(uint64_t vaddr, const uint8_t* src, uint64_t len)
     {
         while (len)
@@ -468,7 +469,7 @@ namespace process
             if (chunk > len)
                 chunk = len;
 
-            copy_bytes((uint8_t*)(phys + off), src, chunk);
+            copy_bytes((uint8_t*)phys_to_virt(phys + off), src, chunk);
             vaddr += chunk;
             src   += chunk;
             len   -= chunk;
@@ -536,7 +537,7 @@ namespace process
     //   high ->  USER_STACK_TOP
     //
     // Everything is staged in a kernel buffer and then copied through the
-    // identity map, so the stack can stay mapped as it is. Returns the
+    // direct map, so the stack can stay mapped as it is. Returns the
     // future rsp in *out_rsp, or a negative errno.
     static sint64_t build_initial_stack(const ArgEnv* ae, const elf::LoadResult* lr,
                                         uint64_t* out_rsp)
@@ -2289,7 +2290,7 @@ namespace process
                 bool ok = frame != 0;
                 if (ok)
                 {
-                    memory::memset((uint8_t*)frame, 0x00, PAGE_SIZE_4K);
+                    memory::memset((uint8_t*)phys_to_virt(frame), 0x00, PAGE_SIZE_4K);
                     ok = paging::map_user_page(page, frame, PAGE_WRITE | PAGE_NX);
                     if (!ok)
                         pmm::free_frame(frame);
@@ -2350,7 +2351,7 @@ namespace process
 
             if (ok)
             {
-                memory::memset((uint8_t*)frame, 0x00, PAGE_SIZE_4K);
+                memory::memset((uint8_t*)phys_to_virt(frame), 0x00, PAGE_SIZE_4K);
                 ok = paging::map_user_page(v, frame, flags) &&
                      paging::set_user_page_flags(v, flags);   // drops USER for PROT_NONE
                 if (!ok && !paging::page_frame(v))

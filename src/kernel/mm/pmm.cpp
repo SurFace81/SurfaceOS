@@ -4,10 +4,13 @@
 // the regions the boot chain uses but that the map reports as free.
 //
 // Two invariants matter:
-//   * A frame is only ever handed out if it is below paging::identity_limit().
+//   * A frame is only ever handed out if it is below paging::direct_map_limit().
 //     The kernel reaches every frame it allocates (page tables, heap, DMA
-//     buffers, the screen back buffer) through the identity map, so an
-//     allocation the identity map does not cover is unusable memory.
+//     buffers, the screen back buffer) through the direct map, so an
+//     allocation the direct map does not cover is unusable memory.
+//
+// Everything here is physical: alloc/free take and return frame addresses.
+// Callers that want to touch a frame go through phys_to_virt().
 //   * Allocation starts from a rolling cursor, not from frame 0. The linear
 //     rescan cost nothing at 128 MB in QEMU and turned into millions of
 //     wasted iterations per call on a machine with real RAM.
@@ -18,15 +21,15 @@
 #include "../../include/cpu/paging.h"
 #include "../../include/drivers/uart.h"
 
-// Provided by linker.ld; end of the kernel image + .bss.
-extern "C" uint8_t __kernel_end[];
+// Provided by linker.ld; physical end of the kernel image + .bss.
+extern "C" uint8_t __kernel_phys_end[];
 
 #define PMM_HEAP_START          0x2000000ULL
 #define PMM_HEAP_SIZE           (9 * 1024 * 1024)
 
 namespace pmm
 {
-    static uint8_t* bitmap = (uint8_t*)PMM_BITMAP_ADDR;
+    static uint8_t* bitmap = nullptr;   // PMM_BITMAP_ADDR via the direct map
 
     static uint64_t bitmap_frames = (PMM_BITMAP_SIZE * 8);  // frames the bitmap can track
     static uint64_t total_frames = 0;
@@ -83,13 +86,15 @@ namespace pmm
     void init(BOOT_HEADER* boot_header)
     {
         // Everything starts as used
+        bitmap = (uint8_t*)phys_to_virt(PMM_BITMAP_ADDR);
         memory::memset(bitmap, 0xFF, PMM_BITMAP_SIZE);
         used_frames = bitmap_frames;
         total_frames = 0;
         max_phys = 0;
 
         // Free regions reported by the bootloader (type 0)
-        MEMORY_MAP_ENTRY* map = (MEMORY_MAP_ENTRY*)boot_header->MemoryMapAddress;
+        MEMORY_MAP_ENTRY* map =
+            (MEMORY_MAP_ENTRY*)phys_to_virt((uint64_t)boot_header->MemoryMapAddress);
         uint64_t entries = boot_header->MemoryMapEntriesNumber;
         uint32_t entry_size = boot_header->MemoryMapEntrySize;
 
@@ -109,11 +114,11 @@ namespace pmm
                 mark_free(f);
         }
 
-        // Never manage memory the kernel cannot address through the identity
+        // Never manage memory the kernel cannot address through the direct
         // map, and never more than the bitmap can describe.
-        uint64_t id_limit = paging::identity_limit();
-        if (max_phys > id_limit)
-            max_phys = id_limit;
+        uint64_t dm_limit = paging::direct_map_limit();
+        if (max_phys > dm_limit)
+            max_phys = dm_limit;
         if (max_phys > bitmap_frames * FRAME_SIZE)
             max_phys = bitmap_frames * FRAME_SIZE;
 
@@ -129,8 +134,8 @@ namespace pmm
         // The blanket 0..PMM_LOW_RESERVE_END reserve is supposed to cover the
         // kernel image, but say so explicitly so a kernel that outgrows it
         // fails loudly rather than getting its own .bss handed out as a frame.
-        uint64_t kernel_end = (uint64_t)__kernel_end;
-        reserve(0x200000, kernel_end);
+        uint64_t kernel_end = (uint64_t)__kernel_phys_end;
+        reserve(KERNEL_PHYS_BASE, kernel_end);
         if (kernel_end > PMM_LOW_RESERVE_END)
             uart::printf("pmm: WARNING kernel image ends at %llx, past the low reserve\n",
                          kernel_end);

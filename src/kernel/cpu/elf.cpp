@@ -64,7 +64,7 @@ namespace elf
         if (!frame)
             return false;
 
-        memory::memset((uint8_t*)frame, 0x00, PAGE_SIZE_4K);
+        memory::memset((uint8_t*)phys_to_virt(frame), 0x00, PAGE_SIZE_4K);
 
         if (!paging::map_user_page(vaddr, frame, flags))
         {
@@ -237,9 +237,9 @@ namespace elf
                     *out_rc = rd < 0 ? (sint64_t)rd : -EIO;
                     goto fail;
                 }
-                // Written through the identity map, i.e. as supervisor memory:
+                // Written through the direct map, i.e. as supervisor memory:
                 // deliberately not a uaccess copy.
-                memory::memcpy((uint8_t*)dst_phys, chunk, copy_len);
+                memory::memcpy((uint8_t*)phys_to_virt(dst_phys), chunk, copy_len);
             }
 
             if (seg_end > image_end)
@@ -253,7 +253,7 @@ namespace elf
         }
 
         // The entry point has to be inside something we actually mapped.
-        if (ehdr->e_entry < USER_BASE || ehdr->e_entry >= image_end)
+        if (ehdr->e_entry < USER_MIN || ehdr->e_entry >= image_end)
         {
             *out_rc = -ENOEXEC;
             goto fail;
