@@ -1057,9 +1057,9 @@ namespace
 
         fat::load_fsinfo(sb);
 
-        // Warn on a dirty volume (FAT[1] bit 27); fsck is out of scope.
+        // Warn on a dirty volume (FAT[1] bit 27 clear); fsck is out of scope.
         uint32_t fat1 = 0;
-        if (fat::read_entry(sb, 1, &fat1) == 0 && (fat1 & FAT_VOL_DIRTY))
+        if (fat::read_entry(sb, 1, &fat1) == 0 && !(fat1 & FAT_VOL_CLEAN))
         {
             uart::printf("fat32: %s: volume is dirty (unclean unmount)\n",
                          dev->name);

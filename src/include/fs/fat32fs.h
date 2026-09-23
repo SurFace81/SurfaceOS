@@ -112,8 +112,10 @@ struct fat_fsinfo
 #define FAT_NT_BASE_LOWER   0x08
 #define FAT_NT_EXT_LOWER    0x10
 
-// Volume dirty flag: FAT entry 1, bit 27.
-#define FAT_VOL_DIRTY       0x08000000
+// Volume state: FAT entry 1, bit 27 (ClnShutBitMask). Set means the volume
+// was unmounted cleanly; clear means it is mounted or was not unmounted.
+// Formatters write FAT[1] = 0x0FFFFFFF, i.e. clean.
+#define FAT_VOL_CLEAN       0x08000000
 
 // ---------------------------------------------------------------------------
 
