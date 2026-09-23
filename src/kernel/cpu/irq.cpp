@@ -1,5 +1,6 @@
 #include "../../include/cpu/irq.h"
 #include "../../include/cpu/syscall.h"
+#include "../../include/cpu/process.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
 
@@ -89,8 +90,10 @@ namespace irq {
         idt::set_entry(46, (uint64_t)irq14, IDT_FLAG_INTERRUPT_GATE);
         idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
 
-        // Syscall interrupt
-        idt::set_entry(0x80, (uint64_t)syscall_entry, 0xEF);    // Trap gate
+        // Syscall gate. DPL=3 so ring 3 may execute `int 0x80`; a trap gate
+        // rather than an interrupt gate so interrupts stay enabled while a
+        // syscall runs and the blocking ones (SYS_READ_KEY) can be woken.
+        idt::set_entry(0x80, (uint64_t)syscall_entry, IDT_FLAG_TRAP_GATE_USER);
         
         mask_all();
 
@@ -167,6 +170,13 @@ void irq_handler(struct interrupt_frame *frame) {
     if (irq_handlers[irq_line] != 0) {
         irq_handlers[irq_line]();
     }
-    
+
     irq::pic_send_eoi(irq_line);
+
+    // Interrupted user code: this is a return-to-ring-3 point, where the
+    // scheduler may preempt the process or act on Esc. The EOI is already
+    // out, so switching away (or abandoning the frame) is safe.
+    if ((frame->cs & 3) == 3)
+        process::on_user_interrupt(irq_line, (user_regs*)frame,
+                                   (iret_frame*)&frame->rip);
 }

@@ -478,9 +478,20 @@ struct usb_csw {
 #define SCSI_READ_CAPACITY_10   0x25
 #define SCSI_READ_10            0x28
 #define SCSI_WRITE_10           0x2A
+#define SCSI_SYNCHRONIZE_CACHE  0x35
 
 // Max USB3 ports we track
 #define XHCI_MAX_USB3_PORTS 32
+
+// A mobile chipset can expose a PCH xHCI and a separate USB4/Thunderbolt one.
+#define MAX_XHCI_CONTROLLERS 8
+
+// Port bring-up timing. 20 ms is the spec's settle time after setting PP;
+// the scan window covers USB3 link training plus a USB2 device's debounce.
+#define XHCI_PORT_POWER_SETTLE_MS   20
+#define XHCI_PORT_SCAN_TIMEOUT_MS   1000
+#define XHCI_PORT_POLL_INTERVAL_MS  10
+#define XHCI_PORT_DEBOUNCE_MS       100
 
 // Public API structures
 
@@ -522,15 +533,32 @@ struct usb_block_device {
 // Public API
 namespace usb {
     bool       init();
+    uint32_t   get_context_entry_size();
+    uint8_t    get_port_count();
+    uint32_t   get_port_status(uint8_t port);
+    bool       port_is_usb3(uint8_t port);
+    uint8_t    get_controller_count();
+    void       get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn);
     uint8_t    get_device_count();
     usb_status get_device_info(uint8_t index, usb_device_info* out);
     uint8_t    get_block_device_count();
     usb_status get_block_device_info(uint8_t index, usb_block_device* out);
+    // Single-request limits: count <= USB_MAX_XFER_SECTORS, lba+count within
+    // the device. Larger transfers are split by the block layer above.
     usb_status read_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, void* buffer);
     usb_status write_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, const void* buffer);
+    // SYNCHRONIZE CACHE: force the device's write cache to stable storage.
+    usb_status flush_cache(uint8_t dev_index);
 
     const char* get_usb_class_name(uint8_t cls);
     const char* get_usb_speed_str(uint8_t speed);
 }
+
+// Largest single SCSI READ(10)/WRITE(10) this driver will issue, in sectors.
+// READ(10) carries a uint16 count; the per-device DMA bounce buffer is sized
+// MAX sectors * sector_size, so the block layer must split larger requests.
+// 128 covers a 64 KiB FAT32 cluster at 512 B sectors (a single cluster read
+// must not be split by the FS layer), i.e. 512 KiB of DMA buffer per device.
+#define USB_MAX_XFER_SECTORS 128
 
 #endif // XHCI_H

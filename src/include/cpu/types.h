@@ -13,7 +13,9 @@ typedef          short          sint16_t;
 typedef unsigned char           uint8_t;
 typedef          char           sint8_t;
 
+#ifndef NULL
 #define NULL (void*)0
+#endif
 
 #if defined(__x86_64__) || defined(_M_X64)  // x86_64
     typedef uint64_t uintptr_t;

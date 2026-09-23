@@ -64,9 +64,15 @@ namespace uart
         }
         else
         {
-            uint64_t page_base = bar.base & ~(0x200000ULL - 1);
-            paging::allocate_pages(page_base, page_base, 1);
-            mmio_base = (volatile uint8_t*)bar.base;
+            // Mapped uncacheable in the kernel window. The identity map is
+            // write-back, and a write-back mapping of device registers only
+            // works by accident, when the firmware MTRRs happen to mark the
+            // range UC and win the combining rule.
+            uint64_t virt = paging::map_mmio_region(bar.base, 0x1000);
+            if (!virt)
+                return false;
+
+            mmio_base = (volatile uint8_t*)virt;
             reg_stride = 4;
             backend = PCI_MMIO;
         }
@@ -98,8 +104,26 @@ namespace uart
         return 0;
     }
 
+    // Everything written to the serial line is also kept in a small ring, so
+    // a machine with no serial port - every laptop - can still show the boot
+    // log with `dmesg`. The ring is filled even before init(), and even when
+    // there is no UART at all: that is exactly the case it exists for.
+    static char log_ring[UART_LOG_SIZE];
+    static uint32_t log_head = 0;      // next write position
+    static bool log_wrapped = false;
+
+    static void log_char(char c)
+    {
+        log_ring[log_head] = c;
+        log_head = (log_head + 1) % UART_LOG_SIZE;
+        if (log_head == 0)
+            log_wrapped = true;
+    }
+
     static void send_char(char c)
     {
+        log_char(c);
+
         if (!initialized)
             return;
         while (!(reg_read(LSR) & 0x20))
@@ -194,8 +218,6 @@ namespace uart
 
     void printf(const char* fmt, ...)
     {
-        if (!initialized)
-            return;
         __builtin_va_list args;
         __builtin_va_start(args, fmt);
 
@@ -243,6 +265,32 @@ namespace uart
             fmt++;
         }
         __builtin_va_end(args);
+    }
+
+    // Copy the log out oldest-first; returns how many bytes landed in `out`.
+    uint32_t log_read(char* out, uint32_t max)
+    {
+        if (!max)
+            return 0;
+
+        uint32_t total = log_wrapped ? UART_LOG_SIZE : log_head;
+        uint32_t start = log_wrapped ? log_head : 0;
+
+        if (total > max)
+        {
+            start = (start + (total - max)) % UART_LOG_SIZE;
+            total = max;
+        }
+
+        for (uint32_t i = 0; i < total; i++)
+            out[i] = log_ring[(start + i) % UART_LOG_SIZE];
+        return total;
+    }
+
+    void write(const char* s, uint64_t len)
+    {
+        for (uint64_t i = 0; i < len; i++)
+            send_char(s[i]);
     }
 
 } // namespace uart

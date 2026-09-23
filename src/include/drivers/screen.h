@@ -4,6 +4,12 @@
 #include "../cpu/types.h"
 #include "../boot/boot.h"
 
+// The back buffer used to live at a fixed 0x600000. That is one full frame
+// of pixels: ~15 MB on a 2K panel and ~33 MB at 4K, where it ran straight
+// into the kernel heap at 0x2000000. It is now allocated from the PMM in
+// screen::init(), so its size follows the panel instead of the other way
+// round.
+
 enum Colors
 {
     BLUE = 0x000000FF,
@@ -13,7 +19,7 @@ enum Colors
     MAGENTA = 0x00FF00FF,
     YELLOW = 0x00FFFF00,
     WHITE = 0x00FFFFFF,
-    GRAY = 0x9E9E9EA8,
+    GRAY = 0x009E9E9E,
     LIGHT_BLUE = 0x0000AFFF,
     LIGHT_GREEN = 0x0000FFAA,
     LIGHT_AQUA = 0x00FFAAAA,
@@ -46,6 +52,7 @@ namespace screen
     // Output
     void putc(char c);
     void write(const char* s);
+    void write(const char* s, uint64_t len);   // raw bytes, NUL included
     void printf(const char* fmt, ...);
 
     // Screen operations
@@ -53,12 +60,26 @@ namespace screen
     void scroll_up();
     void erase_at(uint32_t x, uint32_t y);
     void set_color(Colors color);
+
+    // --- rasteriser, used by the terminal emulator (see term.h) ----------
+    // One character cell, in cell coordinates relative to the viewport.
+    // fg/bg are ANSI palette indices, attr is TERM_* from term.h.
+    void draw_cell(uint32_t col, uint32_t row, uint8_t ch,
+                   uint8_t fg, uint8_t bg, uint8_t attr);
+    // XOR a cell's pixels; drawing the text cursor, and its own inverse.
+    void invert_cell(uint32_t col, uint32_t row);
+    uint32_t cell_w();
+    uint32_t cell_h();
     
     void flush();
+
+    // Virtual address the framebuffer is mapped at (kernel device window).
+    uint64_t vram_base();
 
     void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
     void pop_viewport();
     void draw_title_bar(const char* title);
+    uint32_t title_bar_height();  // px, ~2.5% of screen height
 
     uint32_t vp_x();
     uint32_t vp_y();

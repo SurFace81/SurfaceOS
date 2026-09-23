@@ -1,9 +1,34 @@
 #include "../../../include/drivers/usb/xhci.h"
+#include "../../../include/drivers/pit.h"
 
 // Utility functions
 
+// Every timeout in this driver is expressed in milliseconds and ends up
+// here. It used to be a fixed count of `pause` instructions, which is not a
+// unit of time: the same "500 ms" timeout was a fraction of a second on a
+// 3 GHz laptop and many seconds under QEMU's interpreter. Enumeration that
+// worked in one place would time out in the other.
+//
+// Now it waits on the PIT. That needs interrupts enabled, which is why
+// console::poll() no longer runs commands under cli.
 static void delay_ms(uint32_t ms)
 {
+    if (ms == 0)
+        return;
+
+    uint32_t hz = pit::real_frequency();
+    if (hz)
+    {
+        uint64_t target = pit::ticks() + ((uint64_t)ms * hz + 999) / 1000;
+
+        // Bounded so a stopped timer degrades into a spin rather than a hang.
+        uint64_t guard = (uint64_t)ms * 20000000ULL + 1000000ULL;
+        while (pit::ticks() < target && guard--)
+            asm volatile("pause");
+        return;
+    }
+
+    // Timer not up yet (very early init): fall back to a crude spin.
     for (uint32_t i = 0; i < ms; i++)
         for (volatile uint32_t j = 0; j < 100000; j++)
             asm volatile("pause");
@@ -66,7 +91,16 @@ static void free_xhci_memory(void* ptr)
 
 static uintptr_t xhci_virt_to_phys(void* vaddr)
 {
-    return paging::get_phys_addr((uint64_t)vaddr);
+    // Kept as a separate step from the walk below so a bad translation is
+    // reported once, here, instead of turning into a silent DMA to nowhere.
+    // DMA buffers come from kmalloc, i.e. the identity-mapped kernel heap,
+    // so this is really just an identity translation - but walk the tables
+    // rather than assume it, so a future non-identity heap cannot hand the
+    // controller a bogus bus address silently.
+    uintptr_t phys = (uintptr_t)paging::virtual_to_phys((uint64_t)vaddr);
+    if (phys == 0)
+        uart::printf("xhci: virt %llx has no physical mapping\n", (uint64_t)vaddr);
+    return phys;
 }
 
 static uintptr_t xhci_map_mmio(uint64_t bar_addr, uint64_t bar_size)
@@ -275,7 +309,14 @@ static uintptr_t xhc_base = 0;
 static uint8_t max_device_slots;
 static uint8_t max_interrupters_val;
 static uint8_t max_ports;
-static uint8_t max_scratchpad_bufs;
+static uint16_t max_scratchpad_bufs;   // HCSPARAMS2 spreads this over 10 bits
+
+// Size of one entry in a slot/endpoint context array. The structures in
+// xhci.h describe the 32-byte layout; a controller that sets HCCPARAMS1.CSZ
+// spaces the very same fields 64 bytes apart, so every context entry has to
+// be addressed by this stride rather than by C array indexing. QEMU reports
+// CSZ = 0, which is why hardcoding 32 survived until real hardware.
+static uint32_t ctx_entry_size = 32;
 static uint32_t xecp_offset;
 
 static uint64_t* dcbaa = nullptr;
@@ -293,6 +334,14 @@ static uint8_t mass_storage_count = 0;
 static uint32_t msd_block_size[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_last_lba[MAX_MASS_STORAGE_DEVS];
 static bool msd_capacity_cached[MAX_MASS_STORAGE_DEVS];
+
+// One reusable DMA bounce buffer per device, sized
+// USB_MAX_XFER_SECTORS * sector_size. Allocating per request made every
+// FAT sector read a kmalloc + a DMA-capable carve-out; on real USB sticks
+// that dominated small-transfer latency.
+static uint8_t* msd_dma_buf[MAX_MASS_STORAGE_DEVS];
+static uintptr_t msd_dma_phys[MAX_MASS_STORAGE_DEVS];
+static uint32_t msd_dma_size[MAX_MASS_STORAGE_DEVS];
 
 // BOT shared buffers
 static usb_cbw* shared_cbw = nullptr;
@@ -464,6 +513,36 @@ static void process_events()
     acknowledge_irq(0);
 }
 
+// Everything the controller tells us about its own state. Printed when a
+// command never completes: a command that goes out but produces no event
+// means the controller is not reading our rings (or not writing events),
+// which is a DMA problem, not a protocol one - and USBSTS says which.
+static void dump_controller_state(const char* why)
+{
+    uint32_t usbsts = op_regs->usbsts;
+
+    uart::printf("xhci: %s: usbcmd=%x usbsts=%x%s%s%s%s%s%s\n",
+                 why, op_regs->usbcmd, usbsts,
+                 (usbsts & XHCI_USBSTS_HCH) ? " halted" : "",
+                 (usbsts & XHCI_USBSTS_HSE) ? " host-system-error" : "",
+                 (usbsts & XHCI_USBSTS_HCE) ? " host-controller-error" : "",
+                 (usbsts & XHCI_USBSTS_SRE) ? " save-restore-error" : "",
+                 (usbsts & XHCI_USBSTS_EINT) ? " event-int" : "",
+                 (usbsts & XHCI_USBSTS_CNR) ? " not-ready" : "");
+
+    uint64_t crcr = read_mmio64(&op_regs->crcr);
+    uart::printf("xhci:   crcr=%llx%s dcbaap=%llx cmdring=%llx evtring=%llx\n",
+                 crcr, (crcr & (1 << 3)) ? " running" : " stopped",
+                 read_mmio64(&op_regs->dcbaap),
+                 (uint64_t)cmd_ring.phys_base, (uint64_t)evt_ring.phys_base);
+
+    volatile xhci_interrupter_regs* ir = evt_ring.interrupter;
+    uart::printf("xhci:   erstba=%llx erdp=%llx deq=%u cycle=%u evt[0].ctl=%x\n",
+                 read_mmio64(&ir->erstba), read_mmio64(&ir->erdp),
+                 (uint32_t)evt_ring.dequeue_ptr, (uint32_t)evt_ring.cycle_bit,
+                 evt_ring.trbs[evt_ring.dequeue_ptr].control);
+}
+
 // Send command and wait for completion
 static xhci_cmd_completion_trb_t* send_command(xhci_trb_t* cmd_trb, uint32_t timeout_ms)
 {
@@ -492,6 +571,7 @@ static xhci_cmd_completion_trb_t* send_command(xhci_trb_t* cmd_trb, uint32_t tim
     }
 
     uart::printf("xhci: command timeout after %u ms\n", timeout_ms);
+    dump_controller_state("cmd timeout");
     return nullptr;
 }
 
@@ -872,25 +952,29 @@ static bool scsi_inquiry(usb_mass_storage_dev* msd)
     return true;
 }
 
+// Wait for the device to accept commands. Real sticks need noticeably longer
+// after reset than QEMU's emulated one, so the deadline is wall-clock (PIT),
+// not a fixed retry count: poll TEST UNIT READY for up to 5 s.
 static bool scsi_test_unit_ready(usb_mass_storage_dev* msd)
 {
     uint8_t cmd[6];
     memory::memset(cmd, 0, 6);
     cmd[0] = SCSI_TEST_UNIT_READY;
 
-    sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-    if (result != 0)
+    const uint32_t TIMEOUT_MS = 5000;
+    const uint32_t POLL_MS    = 100;
+
+    for (uint32_t waited = 0; waited <= TIMEOUT_MS; waited += POLL_MS)
     {
-        for (int i = 0; i < 5; i++)
-        {
-            delay_ms(500);
-            result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-            if (result == 0)
-                break;
-        }
-        if (result != 0) return false;
+        sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+        if (result == 0)
+            return true;
+        if (waited == TIMEOUT_MS)
+            break;
+        delay_ms(POLL_MS);
     }
-    return true;
+    uart::printf("scsi: TEST UNIT READY timed out\n");
+    return false;
 }
 
 static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba, uint32_t* out_block_size)
@@ -915,14 +999,12 @@ static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba
     *out_block_size =
         ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | (uint32_t)data[7];
 
-    uint64_t total_bytes = ((uint64_t)*out_last_lba + 1) * (uint64_t)*out_block_size;
-
     free_xhci_memory(data);
     return true;
 }
 
 static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                         uintptr_t buffer_phys)
+                         uintptr_t buffer_phys, uint32_t block_size)
 {
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
@@ -934,13 +1016,16 @@ static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t secto
     cmd[7] = (uint8_t)(sector_count >> 8);
     cmd[8] = (uint8_t)(sector_count);
 
-    uint32_t byte_count = (uint32_t)sector_count * 512;
+    // The transfer length the CDB/CBW advertise must match the real sector
+    // size: it used to be hardcoded *512, which silently transferred 1/8 of
+    // the data on a 4096-byte-sector device.
+    uint32_t byte_count = (uint32_t)sector_count * block_size;
     sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_IN);
     return result == 0;
 }
 
 static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                          uintptr_t buffer_phys)
+                          uintptr_t buffer_phys, uint32_t block_size)
 {
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
@@ -952,9 +1037,36 @@ static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sect
     cmd[7] = (uint8_t)(sector_count >> 8);
     cmd[8] = (uint8_t)(sector_count);
 
-    uint32_t byte_count = (uint32_t)sector_count * 512;
+    uint32_t byte_count = (uint32_t)sector_count * block_size;
     sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_OUT);
     return result == 0;
+}
+
+static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
+{
+    uint8_t cmd[10];
+    memory::memset(cmd, 0, 10);
+    cmd[0] = SCSI_SYNCHRONIZE_CACHE;    // whole LBA range, no data phase
+    sint32_t result = bot_scsi_command(msd, cmd, 10, nullptr, 0, 0, USB_CBW_FLAG_OUT);
+    return result == 0;
+}
+
+// Allocate (once) the reusable per-device DMA bounce buffer.
+static bool ensure_dma_buffer(uint8_t dev_index)
+{
+    if (msd_dma_buf[dev_index])
+        return true;
+
+    uint32_t bs = msd_block_size[dev_index];
+    uint32_t size = (uint32_t)USB_MAX_XFER_SECTORS * bs;
+    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 4096);
+    if (!buf)
+        return false;
+
+    msd_dma_buf[dev_index]  = buf;
+    msd_dma_phys[dev_index] = xhci_virt_to_phys(buf);
+    msd_dma_size[dev_index] = size;
+    return true;
 }
 
 // Controller initialization helpers
@@ -968,6 +1080,7 @@ static void parse_cap_regs()
     max_ports = XHCI_MAX_PORTS(cap_regs);
     max_scratchpad_bufs = XHCI_MAX_SCRATCHPAD_BUFFERS(cap_regs);
     xecp_offset = XHCI_XECP(cap_regs) * sizeof(uint32_t);
+    ctx_entry_size = XHCI_CSZ(cap_regs) ? 64 : 32;
 
     op_regs = (volatile xhci_op_regs*)(xhc_base + cap_regs->caplength);
     runtime_regs = (volatile xhci_runtime_regs*)(xhc_base + cap_regs->rtsoff);
@@ -1093,6 +1206,22 @@ static bool reset_controller()
     return true;
 }
 
+// PAGESIZE is a bitmap: bit n set means the controller works in pages of
+// 2^(n+12) bytes. Everything in the wild reports 4 KiB, but the scratchpad
+// buffers have to match whatever this says, so read it rather than assume.
+static uint32_t controller_page_size()
+{
+    uint32_t bits = op_regs->pagesize & 0xFFFF;
+    for (uint32_t n = 0; n < 16; n++)
+    {
+        if (bits & (1u << n))
+            return 1u << (n + 12);
+    }
+
+    uart::printf("xhci: pagesize register is empty (%x), assuming 4 KiB\n", bits);
+    return 4096;
+}
+
 static void setup_dcbaa()
 {
     size_t dcbaa_size = sizeof(uint64_t) * (max_device_slots + 1);
@@ -1100,17 +1229,28 @@ static void setup_dcbaa()
     dcbaa_virt = (uint64_t*)kmalloc(sizeof(uint64_t) * (max_device_slots + 1));
     memory::memset((uint8_t*)dcbaa_virt, 0, sizeof(uint64_t) * (max_device_slots + 1));
 
+    // Scratchpad buffers are the controller's own workspace, and it starts
+    // using them the moment it runs - a wrong pointer here breaks everything
+    // downstream with no error to show for it. QEMU asks for none, so this
+    // path first runs on hardware; Alder Lake's PCH asks for 34.
     if (max_scratchpad_bufs > 0)
     {
-        uint64_t* sp_array = (uint64_t*)alloc_xhci_memory(max_scratchpad_bufs * sizeof(uint64_t), XHCI_DCBAA_ALIGNMENT,
-                                                          XHCI_DCBAA_BOUNDARY);
+        // Their size and alignment is the page size the *controller* uses,
+        // which is its own register, not the CPU's 4 KiB.
+        uint32_t page_size = controller_page_size();
+
+        uint64_t* sp_array = (uint64_t*)alloc_xhci_memory(max_scratchpad_bufs * sizeof(uint64_t),
+                                                          XHCI_DCBAA_ALIGNMENT, page_size);
         for (uint32_t i = 0; i < max_scratchpad_bufs; i++)
         {
-            void* sp_page = alloc_xhci_memory(4096, XHCI_SCRATCHPAD_BUF_ALIGNMENT, XHCI_SCRATCHPAD_BUF_BOUNDARY);
+            void* sp_page = alloc_xhci_memory(page_size, page_size, page_size);
             sp_array[i] = xhci_virt_to_phys(sp_page);
         }
         dcbaa[0] = xhci_virt_to_phys(sp_array);
         dcbaa_virt[0] = (uint64_t)sp_array;
+
+        uart::printf("xhci: %u scratchpad buffer(s) of %u bytes, array at %llx\n",
+                     (uint32_t)max_scratchpad_bufs, page_size, (uint64_t)dcbaa[0]);
     }
 
     write_mmio64(&op_regs->dcbaap, xhci_virt_to_phys(dcbaa));
@@ -1168,23 +1308,111 @@ static void write_portsc(xhci_portsc reg, uint8_t port)
     *(volatile uint32_t*)addr = reg.raw;
 }
 
+// Read-modify-write of PORTSC, minus the bits that a plain write-back would
+// destroy: PED disables the port when a 1 is written to it, and the change
+// bits (CSC/PEC/WRC/OCC/PRC/PLC/CEC) are write-1-to-clear, so carrying the
+// value just read back into the register silently acknowledges events we
+// have not handled. Only the callers that mean to clear a change bit use
+// write_portsc() directly.
+static void write_portsc_preserving(xhci_portsc reg, uint8_t port)
+{
+    reg.ped = 0;
+    reg.csc = 0;
+    reg.pec = 0;
+    reg.wrc = 0;
+    reg.occ = 0;
+    reg.prc = 0;
+    reg.plc = 0;
+    reg.cec = 0;
+    write_portsc(reg, port);
+}
+
+// After a host controller reset, a controller with Port Power Control brings
+// its ports up unpowered, and an unpowered port reports CCS = 0 no matter
+// what is plugged into it. QEMU's xHCI leaves PP set, so a port scan that
+// only looks at CCS works there and finds nothing at all on hardware - down
+// to a laptop's internal webcam and Bluetooth.
+static void power_on_all_ports()
+{
+    if (!XHCI_PPC(cap_regs))
+        return;
+
+    bool powered_any = false;
+    for (uint8_t i = 0; i < max_ports; i++)
+    {
+        xhci_portsc portsc = read_portsc(i);
+        if (portsc.pp)
+            continue;
+
+        portsc.pp = 1;
+        write_portsc_preserving(portsc, i);
+        powered_any = true;
+    }
+
+    if (!powered_any)
+        return;
+
+    delay_ms(XHCI_PORT_POWER_SETTLE_MS);
+
+    for (uint8_t i = 0; i < max_ports; i++)
+    {
+        if (read_portsc(i).pp == 0)
+            uart::printf("xhci: port %u failed to power on\n", (uint32_t)i);
+    }
+}
+
+// Wait for the ports to report what is attached. A USB3 link trains and a
+// USB2 device debounces over tens to hundreds of milliseconds after power is
+// applied; sampling CCS once, right after the controller starts, races that
+// on every real machine.
+static uint8_t wait_for_port_connections()
+{
+    uint32_t waited = 0;
+    uint8_t connected = 0;
+
+    while (waited < XHCI_PORT_SCAN_TIMEOUT_MS)
+    {
+        connected = 0;
+        for (uint8_t i = 0; i < max_ports; i++)
+        {
+            if (read_portsc(i).ccs)
+                connected++;
+        }
+
+        if (connected > 0)
+            break;
+
+        delay_ms(XHCI_PORT_POLL_INTERVAL_MS);
+        waited += XHCI_PORT_POLL_INTERVAL_MS;
+    }
+
+    // Let the slower ports catch up with the first one that answered, so a
+    // single pass over the port list sees all of them.
+    delay_ms(XHCI_PORT_DEBOUNCE_MS);
+
+    connected = 0;
+    for (uint8_t i = 0; i < max_ports; i++)
+    {
+        if (read_portsc(i).ccs)
+            connected++;
+    }
+
+    uart::printf("xhci: %u port(s) connected after %u ms\n",
+                 (uint32_t)connected, waited + XHCI_PORT_DEBOUNCE_MS);
+    return connected;
+}
+
 static bool reset_port(uint8_t port_num)
 {
     xhci_portsc portsc = read_portsc(port_num);
     bool usb3 = is_usb3_port(port_num);
 
-    // Power on if needed
+    // Power came on in power_on_all_ports() before the scan; a port that is
+    // still unpowered here is broken, not merely idle.
     if (portsc.pp == 0)
     {
-        portsc.pp = 1;
-        write_portsc(portsc, port_num);
-        delay_ms(20);
-        portsc = read_portsc(port_num);
-        if (portsc.pp == 0)
-        {
-            uart::printf("xhci: port %u failed to power on\n", (uint32_t)port_num);
-            return false;
-        }
+        uart::printf("xhci: port %u is not powered\n", (uint32_t)port_num);
+        return false;
     }
 
     // Clear change bits
@@ -1193,8 +1421,10 @@ static bool reset_port(uint8_t port_num)
     portsc.prc = 1;
     write_portsc(portsc, port_num);
 
-    // Initiate reset
+    // Initiate reset. PED stays out of the written value: writing a 1 there
+    // disables the port, and firmware may well have left it enabled.
     portsc = read_portsc(port_num);
+    portsc.ped = 0;
     if (usb3)
         portsc.wpr = 1;
     else
@@ -1253,9 +1483,38 @@ static uint8_t enable_device_slot()
     return cc->slot_id;
 }
 
+// A device context is 32 entries (slot + EP0 + 30 endpoints); an input
+// context prepends the input control context, so 33.
+#define XHCI_DEVICE_CTX_ENTRIES 32
+#define XHCI_INPUT_CTX_ENTRIES  33
+
+static xhci_input_control_context* input_control_ctx(void* input_ctx)
+{
+    return (xhci_input_control_context*)input_ctx;
+}
+
+// The device context embedded in an input context starts one entry in, so a
+// Device Context Index addresses entry 1 + dci there and entry dci in a
+// device context proper. DCI 1 is the control endpoint.
+static xhci_slot_context* input_slot_ctx(void* input_ctx)
+{
+    return (xhci_slot_context*)((uint8_t*)input_ctx + ctx_entry_size);
+}
+
+static xhci_endpoint_context* input_ep_ctx(void* input_ctx, uint8_t dci)
+{
+    return (xhci_endpoint_context*)((uint8_t*)input_ctx + ctx_entry_size * (1 + dci));
+}
+
+static xhci_slot_context* device_slot_ctx(void* device_ctx)
+{
+    return (xhci_slot_context*)device_ctx;
+}
+
 static bool create_device_context(uint8_t slot_id)
 {
-    void* ctx = alloc_xhci_memory(sizeof(xhci_device_context), XHCI_DEVICE_CTX_ALIGNMENT, XHCI_DEVICE_CTX_BOUNDARY);
+    void* ctx = alloc_xhci_memory(ctx_entry_size * XHCI_DEVICE_CTX_ENTRIES,
+                                  XHCI_DEVICE_CTX_ALIGNMENT, XHCI_DEVICE_CTX_BOUNDARY);
     if (!ctx)
         return false;
 
@@ -1264,20 +1523,20 @@ static bool create_device_context(uint8_t slot_id)
     return true;
 }
 
-static xhci_input_context* alloc_input_context()
+static void* alloc_input_context()
 {
-    return (xhci_input_context*)alloc_xhci_memory(sizeof(xhci_input_context), XHCI_INPUT_CTX_ALIGNMENT,
-                                                  XHCI_INPUT_CTX_BOUNDARY);
+    return alloc_xhci_memory(ctx_entry_size * XHCI_INPUT_CTX_ENTRIES,
+                             XHCI_INPUT_CTX_ALIGNMENT, XHCI_INPUT_CTX_BOUNDARY);
 }
 
 static bool evaluate_context(uint8_t slot_id, uint16_t new_max_packet_size)
 {
-    xhci_input_context* input_ctx = alloc_input_context();
+    void* input_ctx = alloc_input_context();
     if (!input_ctx)
         return false;
 
-    input_ctx->control_context.add_flags = (1 << 1);
-    input_ctx->device_context.control_ep_context.max_packet_size = new_max_packet_size;
+    input_control_ctx(input_ctx)->add_flags = (1 << 1);
+    input_ep_ctx(input_ctx, 1)->max_packet_size = new_max_packet_size;
 
     xhci_trb_t cmd;
     memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
@@ -1504,19 +1763,19 @@ static bool configure_mass_storage(usb_mass_storage_dev* msd)
     uint8_t max_dci = in_dci > out_dci ? in_dci : out_dci;
 
     // Build Input Context for Configure Endpoint Command
-    xhci_input_context* input_ctx = alloc_input_context();
+    void* input_ctx = alloc_input_context();
     if (!input_ctx) return false;
 
-    input_ctx->control_context.add_flags = (1 << 0) | (1 << in_dci) | (1 << out_dci);
-    input_ctx->control_context.drop_flags = 0;
+    input_control_ctx(input_ctx)->add_flags = (1 << 0) | (1 << in_dci) | (1 << out_dci);
+    input_control_ctx(input_ctx)->drop_flags = 0;
 
     // Copy and update slot context
-    xhci_device_context* out_ctx = (xhci_device_context*)dcbaa_virt[slot_id];
-    input_ctx->device_context.slot_context = out_ctx->slot_context;
-    input_ctx->device_context.slot_context.context_entries = max_dci;
+    void* out_ctx = (void*)dcbaa_virt[slot_id];
+    *input_slot_ctx(input_ctx) = *device_slot_ctx(out_ctx);
+    input_slot_ctx(input_ctx)->context_entries = max_dci;
 
     // Bulk IN endpoint context
-    xhci_endpoint_context* ep_in = &input_ctx->device_context.ep[in_dci - 2];
+    xhci_endpoint_context* ep_in = input_ep_ctx(input_ctx, in_dci);
     ep_in->endpoint_type = XHCI_EP_TYPE_BULK_IN;
     ep_in->max_packet_size = msd->bulk_in_max_packet;
     ep_in->max_burst_size = 0;
@@ -1525,7 +1784,7 @@ static bool configure_mass_storage(usb_mass_storage_dev* msd)
     ep_in->transfer_ring_dequeue_ptr = msd->bulk_in_ring.phys_base | 1;
 
     // Bulk OUT endpoint context
-    xhci_endpoint_context* ep_out = &input_ctx->device_context.ep[out_dci - 2];
+    xhci_endpoint_context* ep_out = input_ep_ctx(input_ctx, out_dci);
     ep_out->endpoint_type = XHCI_EP_TYPE_BULK_OUT;
     ep_out->max_packet_size = msd->bulk_out_max_packet;
     ep_out->max_burst_size = 0;
@@ -1572,20 +1831,20 @@ static void setup_device(uint8_t port_index)
     transfer_ring_init(ep0_ring, XHCI_TRANSFER_RING_TRB_COUNT);
 
     // Build Input Context for Address Device
-    xhci_input_context* input_ctx = alloc_input_context();
+    void* input_ctx = alloc_input_context();
     if (!input_ctx)
         return;
 
-    input_ctx->control_context.add_flags = (1 << 0) | (1 << 1);
-    input_ctx->control_context.drop_flags = 0;
+    input_control_ctx(input_ctx)->add_flags = (1 << 0) | (1 << 1);
+    input_control_ctx(input_ctx)->drop_flags = 0;
 
-    xhci_slot_context* slot = &input_ctx->device_context.slot_context;
+    xhci_slot_context* slot = input_slot_ctx(input_ctx);
     slot->route_string = 0;
     slot->speed = port_speed;
     slot->context_entries = 1;
     slot->root_hub_port_num = port_id;
 
-    xhci_endpoint_context* ep0 = &input_ctx->device_context.control_ep_context;
+    xhci_endpoint_context* ep0 = input_ep_ctx(input_ctx, 1);
     ep0->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR;
     ep0->max_packet_size = max_packet_size_for_speed(port_speed);
     ep0->max_burst_size = 0;
@@ -1634,6 +1893,181 @@ static usb_status ensure_capacity_cached(uint8_t dev_index)
     return USB_OK;
 }
 
+// Controller selection
+
+// How many xHCI controllers the PCI scan turned up, and which one we settled
+// on; lsusb/boot diagnostics report these on machines with no serial port.
+static uint8_t xhci_controller_count = 0;
+static PCIDevice* active_controller = nullptr;
+
+// Halt a controller we are about to walk away from: with R/S clear it stops
+// fetching TRBs, so the rings and contexts allocated for it become inert.
+static void stop_controller()
+{
+    if (!op_regs)
+        return;
+
+    op_regs->usbcmd &= ~(uint32_t)(XHCI_USBCMD_RUN_STOP | XHCI_USBCMD_INTERRUPTER_ENABLE);
+    uint32_t timeout = 200;
+    while (!(op_regs->usbsts & XHCI_USBSTS_HCH) && timeout > 0)
+    {
+        delay_ms(1);
+        timeout--;
+    }
+}
+
+// Forget everything tied to one controller. The DMA allocations it made are
+// not reclaimed - alloc_xhci_memory has no size-tracking free list and this
+// runs a handful of times at boot - but nothing points at them any more.
+static void reset_controller_state()
+{
+    cap_regs = nullptr;
+    op_regs = nullptr;
+    runtime_regs = nullptr;
+    doorbells = nullptr;
+    xhc_base = 0;
+
+    dcbaa = nullptr;
+    dcbaa_virt = nullptr;
+
+    max_device_slots = 0;
+    max_interrupters_val = 0;
+    max_ports = 0;
+    max_scratchpad_bufs = 0;
+    xecp_offset = 0;
+    ctx_entry_size = 32;
+
+    usb3_port_count = 0;
+    device_count = 0;
+    mass_storage_count = 0;
+
+    memory::memset((uint8_t*)&cmd_ring, 0, sizeof(cmd_ring));
+    memory::memset((uint8_t*)&evt_ring, 0, sizeof(evt_ring));
+    memory::memset((uint8_t*)ep0_rings, 0, sizeof(ep0_rings));
+    memory::memset((uint8_t*)mass_storage_devs, 0, sizeof(mass_storage_devs));
+    memory::memset((uint8_t*)device_infos, 0, sizeof(device_infos));
+    memory::memset((uint8_t*)msd_capacity_cached, 0, sizeof(msd_capacity_cached));
+    memory::memset((uint8_t*)msd_block_size, 0, sizeof(msd_block_size));
+    memory::memset((uint8_t*)msd_last_lba, 0, sizeof(msd_last_lba));
+
+    // The bounce buffers are sized from the block size of the device that
+    // used to hold this index, so they cannot be carried over to another
+    // controller's devices.
+    memory::memset((uint8_t*)msd_dma_buf, 0, sizeof(msd_dma_buf));
+    memory::memset((uint8_t*)msd_dma_phys, 0, sizeof(msd_dma_phys));
+    memory::memset((uint8_t*)msd_dma_size, 0, sizeof(msd_dma_size));
+}
+
+// Bring up one controller and enumerate what is attached to it. Leaves the
+// controller running on success; `mass_storage_count` says what it found.
+static bool init_controller(PCIDevice* dev)
+{
+    reset_controller_state();
+
+    pci::enable_device(dev);
+
+    PCIBar bar = pci::get_bar(dev, 0);
+    if (!bar.valid || bar.is_io)
+    {
+        uart::printf("xhci: %u:%u.%u: invalid BAR0\n",
+                     (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function);
+        return false;
+    }
+
+    uint64_t bar_size = get_bar_size_64(dev, 0);
+    xhc_base = xhci_map_mmio(bar.base, bar_size);
+    if (!xhc_base)
+    {
+        uart::printf("xhci: %u:%u.%u: MMIO map failed\n",
+                     (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function);
+        return false;
+    }
+
+    parse_cap_regs();
+    parse_extended_capabilities();
+    uart::printf("xhci: %u:%u.%u: %u ports, %u slots, ctx=%u, scratchpad=%u, bar=%llx\n",
+                 (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function,
+                 (uint32_t)max_ports, (uint32_t)max_device_slots,
+                 ctx_entry_size, (uint32_t)max_scratchpad_bufs, (uint64_t)bar.base);
+
+    if (!take_ownership_from_bios())
+        return false;
+    if (!reset_controller())
+    {
+        uart::printf("xhci: %u:%u.%u: reset failed\n",
+                     (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function);
+        return false;
+    }
+    configure_operational_regs();
+    configure_runtime_regs();
+    if (!start_controller())
+    {
+        uart::printf("xhci: %u:%u.%u: start failed\n",
+                     (uint32_t)dev->bus, (uint32_t)dev->device, (uint32_t)dev->function);
+        return false;
+    }
+
+    process_events();
+
+    uart::printf("xhci: dma: cmdring=%llx evtring=%llx dcbaa=%llx\n",
+                 (uint64_t)cmd_ring.phys_base, (uint64_t)evt_ring.phys_base,
+                 (uint64_t)xhci_virt_to_phys(dcbaa));
+    dump_controller_state("after start");
+
+    power_on_all_ports();
+    wait_for_port_connections();
+
+    // Enumerate ports
+    for (uint8_t i = 0; i < max_ports; i++)
+    {
+        xhci_portsc portsc = read_portsc(i);
+        if (portsc.ccs)
+        {
+            if (reset_port(i))
+            {
+                portsc = read_portsc(i);
+                process_events();
+                setup_device(i);
+            }
+            else
+            {
+                uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
+            }
+        }
+    }
+
+    // Configure and prepare all mass storage devices. Slots that fail
+    // configuration or never reach readiness are dropped: the block layer
+    // above must not see a counted-but-unusable device.
+    uint8_t ready_count = 0;
+    for (uint8_t i = 0; i < mass_storage_count; i++)
+    {
+        usb_mass_storage_dev* msd = &mass_storage_devs[i];
+        if (!configure_mass_storage(msd))
+            continue;
+
+        scsi_inquiry(msd);
+        if (!scsi_test_unit_ready(msd))
+            continue;
+
+        if (ready_count != i)
+        {
+            mass_storage_devs[ready_count] = *msd;
+            memory::memset((uint8_t*)msd, 0, sizeof(*msd));
+        }
+        ready_count++;
+    }
+    mass_storage_count = ready_count;
+
+    for (uint8_t i = 0; i < mass_storage_count; i++)
+    {
+        if (ensure_capacity_cached(i) != USB_OK)
+            uart::printf("xhci: msd %u: READ CAPACITY failed\n", (uint32_t)i);
+    }
+
+    return true;
+}
+
 // Public API
 
 namespace usb
@@ -1654,77 +2088,87 @@ namespace usb
         shared_cbw_phys = 0;
         shared_csw_phys = 0;
         bot_tag = 1;
-        device_count = 0;
-        mass_storage_count = 0;
-        memory::memset((uint8_t*)mass_storage_devs, 0, sizeof(mass_storage_devs));
-        memory::memset((uint8_t*)msd_capacity_cached, 0, sizeof(msd_capacity_cached));
+        reset_controller_state();
 
-        // Find xHCI controller
-        PCIDevice* dev = pci::find(PCI_CLASS_SERIAL, 0x03, 0x30);
-        if (!dev)
+        // Collect every xHCI controller. A desktop board usually has one (the
+        // PCH at 00:14.0), but a mobile chipset commonly adds a second one for
+        // its USB4/Thunderbolt ports - and that one sits at a *lower* device
+        // number (00:0d.0 on Alder Lake-P), so "the first xHCI on the bus" is
+        // the controller with no user-facing ports on exactly the machines
+        // where that matters.
+        PCIDevice* controllers[MAX_XHCI_CONTROLLERS];
+        uint8_t controller_count = 0;
+
+        for (uint32_t i = 0; i < pci::device_count() &&
+                             controller_count < MAX_XHCI_CONTROLLERS; i++)
+        {
+            PCIDevice* d = pci::get_by_id(i);
+            if (!d || !d->valid)
+                continue;
+            if (d->class_code != PCI_CLASS_SERIAL || d->subclass != 0x03 ||
+                d->prog_if != 0x30)
+                continue;
+            controllers[controller_count++] = d;
+        }
+
+        if (controller_count == 0)
         {
             uart::printf("xhci: no controller found\n");
             return false;
         }
 
-        pci::enable_device(dev);
+        xhci_controller_count = controller_count;
+        uart::printf("xhci: %u controller(s) found\n", (uint32_t)controller_count);
 
-        PCIBar bar = pci::get_bar(dev, 0);
-        if (!bar.valid || bar.is_io)
+        // Try them in turn and keep the one that actually has our storage on
+        // it. A controller that yields no mass storage is halted again before
+        // the next attempt, so an abandoned one cannot keep DMAing into
+        // memory its successor is about to allocate.
+        uint8_t best = 0;
+        uint8_t best_devices = 0;
+        bool have_best = false;
+
+        for (uint8_t i = 0; i < controller_count; i++)
         {
-            uart::printf("xhci: invalid BAR0\n");
-            return false;
-        }
-
-        uint64_t bar_size = get_bar_size_64(dev, 0);
-        xhc_base = xhci_map_mmio(bar.base, bar_size);
-
-        // Initialize controller
-        parse_cap_regs();
-        parse_extended_capabilities();
-        if (!take_ownership_from_bios())
-            return false;
-        if (!reset_controller())
-            return false;
-        configure_operational_regs();
-        configure_runtime_regs();
-        if (!start_controller())
-            return false;
-
-        process_events();
-
-        // Enumerate ports
-        for (uint8_t i = 0; i < max_ports; i++)
-        {
-            xhci_portsc portsc = read_portsc(i);
-            if (portsc.ccs)
+            if (init_controller(controllers[i]) && mass_storage_count > 0)
             {
-                if (reset_port(i))
-                {
-                    portsc = read_portsc(i);
-                    process_events();
-                    setup_device(i);
-                }
-                else
-                {
-                    uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
-                }
+                active_controller = controllers[i];
+                uart::printf("xhci: using controller %u:%u.%u (%u disk(s))\n",
+                             (uint32_t)controllers[i]->bus,
+                             (uint32_t)controllers[i]->device,
+                             (uint32_t)controllers[i]->function,
+                             (uint32_t)mass_storage_count);
+                return true;
             }
+
+            if (!have_best || device_count > best_devices)
+            {
+                best = i;
+                best_devices = device_count;
+                have_best = true;
+            }
+
+            uart::printf("xhci: controller %u:%u.%u: %u device(s), no storage\n",
+                         (uint32_t)controllers[i]->bus,
+                         (uint32_t)controllers[i]->device,
+                         (uint32_t)controllers[i]->function,
+                         (uint32_t)device_count);
+
+            if (i + 1 < controller_count)
+                stop_controller();
         }
 
-        // Configure and prepare all mass storage devices
-        for (uint8_t i = 0; i < mass_storage_count; i++)
+        // No storage anywhere. Leave the controller that at least saw devices
+        // running, so lsusb/usbinfo still have something to report.
+        if (best_devices > 0 && best != controller_count - 1)
         {
-            usb_mass_storage_dev* msd = &mass_storage_devs[i];
-            if (!configure_mass_storage(msd))
-                continue;
-
-            scsi_inquiry(msd);
-            scsi_test_unit_ready(msd);
-            ensure_capacity_cached(i);
+            init_controller(controllers[best]);
+            active_controller = controllers[best];
         }
+        else if (controller_count > 0)
+            active_controller = controllers[controller_count - 1];
 
-        return true;
+        return false;
     }
 
     const char* get_usb_class_name(uint8_t cls)
@@ -1735,6 +2179,44 @@ namespace usb
     const char* get_usb_speed_str(uint8_t speed)
     {
         return usb_speed_str(speed);
+    }
+
+    uint32_t get_context_entry_size()
+    {
+        return ctx_entry_size;
+    }
+
+    uint8_t get_port_count()
+    {
+        return op_regs ? max_ports : 0;
+    }
+
+    // Raw PORTSC of one root port, for `usbports`. Zero when no controller
+    // came up, which the caller reports as such.
+    uint32_t get_port_status(uint8_t port)
+    {
+        if (!op_regs || port >= max_ports)
+            return 0;
+        return read_portsc(port).raw;
+    }
+
+    bool port_is_usb3(uint8_t port)
+    {
+        return is_usb3_port(port);
+    }
+
+    uint8_t get_controller_count()
+    {
+        return xhci_controller_count;
+    }
+
+    // Bus/device/function of the controller we are driving, or 0:0.0 when
+    // none came up.
+    void get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn)
+    {
+        *bus = active_controller ? active_controller->bus : 0;
+        *dev = active_controller ? active_controller->device : 0;
+        *fn  = active_controller ? active_controller->function : 0;
     }
 
     uint8_t get_device_count()
@@ -1791,19 +2273,29 @@ namespace usb
         if (st != USB_OK)
             return st;
 
+        // One request may not exceed the reusable DMA buffer; the block layer
+        // above splits larger transfers.
+        if (count > USB_MAX_XFER_SECTORS)
+            return USB_ERR_INVALID_PARAM;
+
+        // Bounds-check against the capacity READ CAPACITY reported: a bogus
+        // LBA from a broken filesystem must never reach the device.
+        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
+            return USB_ERR_INVALID_PARAM;
+
+        if (!ensure_dma_buffer(dev_index))
+            return USB_ERR_IO;
+
         uint32_t bs = msd_block_size[dev_index];
         uint32_t total = (uint32_t)count * bs;
 
-        uint8_t* dma_buf = (uint8_t*)alloc_xhci_memory(total, 64, 4096);
-        if (!dma_buf)
-            return USB_ERR_IO;
-        uintptr_t dma_phys = xhci_virt_to_phys(dma_buf);
+        uint8_t* dma_buf = msd_dma_buf[dev_index];
+        uintptr_t dma_phys = msd_dma_phys[dev_index];
 
-        bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys);
+        bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys, bs);
         if (ok)
             memory::memcpy((uint8_t*)buffer, dma_buf, total);
 
-        free_xhci_memory(dma_buf);
         return ok ? USB_OK : USB_ERR_IO;
     }
 
@@ -1822,19 +2314,37 @@ namespace usb
         if (st != USB_OK)
             return st;
 
+        if (count > USB_MAX_XFER_SECTORS)
+            return USB_ERR_INVALID_PARAM;
+
+        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
+            return USB_ERR_INVALID_PARAM;
+
+        if (!ensure_dma_buffer(dev_index))
+            return USB_ERR_IO;
+
         uint32_t bs = msd_block_size[dev_index];
         uint32_t total = (uint32_t)count * bs;
 
-        uint8_t* dma_buf = (uint8_t*)alloc_xhci_memory(total, 64, 4096);
-        if (!dma_buf)
-            return USB_ERR_IO;
-        uintptr_t dma_phys = xhci_virt_to_phys(dma_buf);
+        uint8_t* dma_buf = msd_dma_buf[dev_index];
+        uintptr_t dma_phys = msd_dma_phys[dev_index];
 
         memory::memcpy(dma_buf, (uint8_t*)buffer, total);
-        bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys);
+        bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys, bs);
 
-        free_xhci_memory(dma_buf);
         return ok ? USB_OK : USB_ERR_IO;
+    }
+
+    usb_status flush_cache(uint8_t dev_index)
+    {
+        if (dev_index >= mass_storage_count)
+            return USB_ERR_NOT_FOUND;
+
+        usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
+        if (!msd->configured)
+            return USB_ERR_NOT_READY;
+
+        return scsi_synchronize_cache(msd) ? USB_OK : USB_ERR_IO;
     }
 
 } // namespace usb

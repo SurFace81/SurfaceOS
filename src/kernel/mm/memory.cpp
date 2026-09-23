@@ -34,4 +34,22 @@ namespace memory
             dst[i] = src[i];
         }
     }
+
+    void memcpy(uint8_t* dst, const uint8_t* src, uint64_t size)
+    {
+        for (uint64_t i = 0; i < size; i++)
+        {
+            dst[i] = src[i];
+        }
+    }
+
+    int memcmp(const uint8_t* a, const uint8_t* b, uint64_t size)
+    {
+        for (uint64_t i = 0; i < size; i++)
+        {
+            if (a[i] != b[i])
+                return (int)a[i] - (int)b[i];
+        }
+        return 0;
+    }
 } // namespace memory

@@ -21,6 +21,10 @@ namespace heap
 {
     void init(void* start, size_t size);
     void get_stats(HeapStats* out);
+
+    // Allocate a new chunk of physical frames from the PMM and append
+    // it to the heap. Returns false when physical memory is exhausted.
+    bool grow();
 }
 
 #endif

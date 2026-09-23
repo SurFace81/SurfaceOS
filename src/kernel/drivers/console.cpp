@@ -2,7 +2,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/commands.h"
-#include "../../include/drivers/fs/fat32.h"
+#include "../../include/fs/vfs.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 32
@@ -23,6 +23,14 @@ static uint32_t input_pos = 0;
 // Temporary buffers for parsing
 static char line_buf[CONSOLE_INPUT_MAX];
 static char* argv_buf[CONSOLE_MAX_ARGS];
+
+// Deferred command queue. The keyboard handler only enqueues a command;
+// console::poll() executes it later from the main kernel loop (process
+// context). This keeps heavy synchronous work (USB I/O, page mapping for
+// `exec`) out of the keyboard IRQ, where it would block all interrupts
+// and could lose the PIC EOI.
+static char pending_line[CONSOLE_INPUT_MAX];
+static volatile bool pending_valid = false;
 
 // Command history
 static char history[HISTORY_SIZE][CONSOLE_INPUT_MAX];
@@ -211,10 +219,21 @@ static void on_key(keyboard_event_t e)
         history_push(cmd_line);
         history_browse = -1;
 
-        exec(cmd_line);
+        // Defer execution to the main loop. Running `exec` (and other
+        // heavy commands) here would execute inside the keyboard IRQ.
+        // The prompt is printed by poll() after the command finishes.
+        if (!pending_valid)
+        {
+            uint32_t len = strlen(cmd_line);
+            if (len >= CONSOLE_INPUT_MAX)
+                len = CONSOLE_INPUT_MAX - 1;
+            memcpy(pending_line, cmd_line, len);
+            pending_line[len] = '\0';
+            pending_valid = true;
+        }
+
         list::clear(input_buf);
         input_pos = 0;
-        screen::printf("\n\r%s> ", fat32::cwd_path());
         return;
     }
 
@@ -439,6 +458,33 @@ namespace console
         cmd_count++;
     }
 
+    void poll()
+    {
+        if (!pending_valid)
+            return;
+
+        pending_valid = false;
+
+        // Copy the line so exec() can parse it (parse_line mutates the buffer)
+        char local_line[CONSOLE_INPUT_MAX];
+        uint32_t len = strlen(pending_line);
+        if (len >= CONSOLE_INPUT_MAX)
+            len = CONSOLE_INPUT_MAX - 1;
+        memcpy(local_line, pending_line, len);
+        local_line[len] = '\0';
+
+        // Runs with interrupts enabled. This used to be wrapped in cli/sti
+        // because the xHCI driver measured its timeouts in `pause`
+        // instructions and any preemption blew through them. Those timeouts
+        // are wall-clock now (see delay_ms in xhci.cpp), which both fixes
+        // the real problem and is a hard requirement for `exec`: an app in
+        // ring 3 needs the timer and keyboard IRQs to keep arriving.
+        exec(local_line);
+
+        // Print the prompt now that the command has finished
+        { char cwdbuf[PATH_MAX]; if (vfs::cwd_path(cwdbuf, sizeof(cwdbuf)) != 0) { cwdbuf[0] = '/'; cwdbuf[1] = 0; } screen::printf("\n\r%s> ", cwdbuf); }
+    }
+
     void init()
     {
         cmd_count = 0;
@@ -462,7 +508,7 @@ namespace console
         screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: ", VERSION_STRING);
         screen::printf("%u", (uint32_t)(memory::total() / 1048576 + 1));
         screen::printf(" Mb\n\r\tCpu: %s @ %s MHz", cpu_name, freq);
-        screen::printf("\n\r------------------------------------------------\n\n\r%s> ", fat32::cwd_path());
+        { char cwdbuf[PATH_MAX]; if (vfs::cwd_path(cwdbuf, sizeof(cwdbuf)) != 0) { cwdbuf[0] = '/'; cwdbuf[1] = 0; } screen::printf("\n\r------------------------------------------------\n\n\r%s> ", cwdbuf); }
     }
 
 } // namespace console

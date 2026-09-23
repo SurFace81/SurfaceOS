@@ -11,3 +11,5 @@ disk
 *.bin
 *.EFI
 .clang-format
+test_disk.img
+uart*.log

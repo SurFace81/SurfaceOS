@@ -6,13 +6,97 @@
 #include "memory.h"
 #include "bootheader.h"
 
+// MEDIA_HARDDRIVE_DP node (UEFI spec, Media Device Path, subtype 1).
+// Laid over EFI_DEVICE_PATH_PROTOCOL by hand: efi.h does not define it.
+// packed: the on-wire node is exactly 42 bytes; natural alignment would pad
+// UINT64 PartitionStart and inflate sizeof() to 48, so the length check
+// `len >= sizeof(...)` would skip every real node.
+typedef struct {
+    UINT8   Type;           // 4  (MEDIA_DEVICE_PATH)
+    UINT8   SubType;        // 1  (MEDIA_HARDDRIVE_DP)
+    UINT8   Length[2];
+    UINT32  PartitionNumber;
+    UINT64  PartitionStart; // LBA
+    UINT64  PartitionSize;  // in LBAs
+    UINT8   Signature[16];  // MBR: disk signature (first 4 bytes used)
+                            // GPT: disk GUID
+    UINT8   MBRType;        // 1: MBR w/ 0x55AA, 2: GPT protective MBR
+    UINT8   SignatureType;  // 0: none, 1: MBR, 2: GUID
+} __attribute__((packed)) HARDDRIVE_DEVICE_PATH;
+
+#define MEDIA_DEVICE_PATH   4
+#define MEDIA_HARDDRIVE_DP  1
+#define END_DEVICE_PATH     0x7F
+
+// Walk a device path and copy the first hard-drive node's partition info
+// into the boot header. Superfloppies (whole-disk media nodes) have no
+// HARDDRIVE_DP: everything stays zero, and the kernel mounts the volume at
+// LBA 0.
+static void fill_boot_partition_info(EFI_DEVICE_PATH_PROTOCOL *DevicePath,
+                                     SFOS_BOOT_HEADER *BootHeader)
+{
+    BootHeader->BootPartitionStart = 0;
+    BootHeader->BootPartitionSize = 0;
+    BootHeader->BootDevicePathValid = 0;
+    BootHeader->BootPartitionSignatureType = 0;
+    for (int i = 0; i < 16; i++)
+        BootHeader->BootPartitionSignature[i] = 0;
+
+    if (!DevicePath)
+        return;
+
+    // Debug aid: record the (Type,SubType) pairs of up to 8 walked nodes in
+    // the signature bytes when no HARDDRIVE_DP is found; the kernel logs it.
+    UINT8 trace[16];
+    for (int i = 0; i < 16; i++)
+        trace[i] = 0;
+    int ti = 0;
+
+    for (;;) {
+        UINT16 len = (UINT16)(DevicePath->Length[0] | (DevicePath->Length[1] << 8));
+        if (len < 4)
+            break;
+
+        if (ti < 16)
+            trace[ti++] = DevicePath->Type;
+        if (ti < 16)
+            trace[ti++] = DevicePath->SubType;
+
+        if (DevicePath->Type == MEDIA_DEVICE_PATH &&
+            DevicePath->SubType == MEDIA_HARDDRIVE_DP &&
+            len >= sizeof(HARDDRIVE_DEVICE_PATH))
+        {
+            HARDDRIVE_DEVICE_PATH *hd = (HARDDRIVE_DEVICE_PATH *)DevicePath;
+            BootHeader->BootPartitionStart = hd->PartitionStart;
+            BootHeader->BootPartitionSize = hd->PartitionSize;
+            BootHeader->BootDevicePathValid = 1;
+            BootHeader->BootPartitionSignatureType = hd->SignatureType;
+            for (int i = 0; i < 16; i++)
+                BootHeader->BootPartitionSignature[i] = hd->Signature[i];
+            return;
+        }
+
+        if (DevicePath->Type == END_DEVICE_PATH)
+            break;
+
+        DevicePath = (EFI_DEVICE_PATH_PROTOCOL *)((UINT8 *)DevicePath + len);
+    }
+
+    for (int i = 0; i < 16; i++)
+        BootHeader->BootPartitionSignature[i] = trace[i];
+}
+
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     // Disable WatchdogTimer
     SystemTable->BootServices->SetWatchdogTimer(0, 0, 0, NULL);
 
-    // BootHeader
+    // BootHeader. Zeroed: the kernel reads fields the loader never writes
+    // (boot partition info on a superfloppy, and anything added later), and
+    // garbage there silently misidentified the root volume.
     SFOS_BOOT_HEADER BootHeader;
+    for (UINTN i = 0; i < sizeof(BootHeader); i++)
+        ((UINT8 *)&BootHeader)[i] = 0;
 
     // Reset screen and disbale cursor
     {
@@ -105,6 +189,9 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         EFI_DEVICE_PATH_PROTOCOL *DevicePath;
         SystemTable->BootServices->HandleProtocol(LoadedImage->DeviceHandle, &EFI_DEVICE_PATH_PROTOCOL_GUID, (void**)&DevicePath);
 
+        // Identify the boot volume for the kernel's automount (stage 3.2).
+        fill_boot_partition_info(DevicePath, &BootHeader);
+
         SystemTable->BootServices->HandleProtocol(LoadedImage->DeviceHandle, &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, (void**)&Volume);
     }
 
@@ -134,6 +221,7 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     BootHeader.ScreenWidth = newBuffer->Width;
     BootHeader.ScreenHeight = newBuffer->Height;
     BootHeader.ScreenPixelsPerScanLine = newBuffer->PixelsPerScanLine;
+    BootHeader.ScreenPixelFormat = newBuffer->PixelFormat;
 
     // Load STDFont and set STDFont entry in BootHeader
     UINT64 FontAddress = 0x4000;
@@ -147,14 +235,29 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_PHYSICAL_ADDRESS PagingSpace = (EFI_PHYSICAL_ADDRESS)0x300000;
     SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, (5 * 1024 * 1024) / 4096, &PagingSpace); // 5 MB for 2 GB memory
 
+    // Kernel load address. Must be set before the BootHeader copy: it used
+    // to be assigned after, so the kernel saw garbage in KernelAddress.
+    BootHeader.KernelAddress = 0x200000;
+
     // Copy BootHeader
     EFI_PHYSICAL_ADDRESS BootHeaderAddress = (EFI_PHYSICAL_ADDRESS)0x100000;
-    //SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, 4, &BootHeaderAddress);
     SystemTable->BootServices->CopyMem((void*)BootHeaderAddress, (void*)&BootHeader, sizeof(BootHeader));
 
-    // Load a kernel
-    BootHeader.KernelAddress = 0x200000;  // <---Bug! this is not copied! Must be before `Copy Bootloader`.
+    // Load a kernel. The pages are claimed from the firmware first: loading
+    // into an address the firmware still considers free means anything it
+    // decides to allocate afterwards can land on top of the kernel image.
+    // 1 MB covers the image plus its .bss, and linker.ld asserts the kernel
+    // stops before the page tables at 0x300000.
+    EFI_PHYSICAL_ADDRESS KernelSpace = (EFI_PHYSICAL_ADDRESS)BootHeader.KernelAddress;
+    if (SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData,
+                                                 0x100000 / 0x1000, &KernelSpace) != EFI_SUCCESS) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"Kernel memory allocate error!\n\rFatal error...");
+        while(1){}
+    }
     LoadFile(u"kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize);
+    // KernelSize is discovered after the copy: write it into the header that
+    // the kernel will actually read.
+    ((SFOS_BOOT_HEADER*)BootHeaderAddress)->KernelSize = BootHeader.KernelSize;
 
     // Reset screen and disbale cursor again
     {

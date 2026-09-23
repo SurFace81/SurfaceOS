@@ -1,5 +1,10 @@
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <errno.h>
+#include <sys/stat.h>
 
 static void print_uint(uint32_t n)
 {
@@ -82,65 +87,60 @@ int main()
     print_pad2(dt.seconds);
     print("\n\n");
 
-    // Test SYS_STAT_FILE
+    // stat(2) through the fd layer
     print("=== STAT FILE ===\n");
     print("Path: ");
     char path[128];
     read_line(path, sizeof(path));
 
-    file_stat_t st;
-    uint32_t res = stat_file(path, &st);
-    if (res == (uint32_t)-1)
+    struct stat st;
+    if (stat(path, &st) != 0)
     {
-        print("File not found\n\n");
+        print("stat failed, errno ");
+        print_i64(errno);
+        print("\n\n");
     }
     else
     {
         print("Size: ");
-        print_uint(st.size);
+        print_u64((uint64_t)st.st_size);
         print(" bytes\n");
 
-        print("Attr: ");
-        if (st.attr & FILE_ATTR_DIRECTORY) print("[DIR] ");
-        if (st.attr & FILE_ATTR_READ_ONLY) print("[RO] ");
-        if (st.attr & FILE_ATTR_HIDDEN)    print("[HID] ");
-        if (st.attr & FILE_ATTR_SYSTEM)    print("[SYS] ");
-        if (st.attr & FILE_ATTR_ARCHIVE)   print("[ARC] ");
+        print("Mode: ");
+        print_hex64(st.st_mode);
+        print(S_ISDIR(st.st_mode) ? " [DIR]" : " [REG]");
+        if (!(st.st_mode & S_IWUSR)) print(" [RO]");
         print("\n\n");
     }
 
-    // Test SYS_READ_DIR
+    // opendir/readdir through getdents64
     print("=== READ DIR ===\n");
     print("Dir path (empty for cwd): ");
     char dir_path[128];
     uint32_t dir_len = read_line(dir_path, sizeof(dir_path));
 
-    const uint32_t max = 32;
-    dir_entry_t entries[max];
-    uint32_t count = read_dir(dir_len > 0 ? dir_path : "\\", entries, max);
-
-    if (count == 0)
+    DIR* d = opendir(dir_len > 0 ? dir_path : ".");
+    if (!d)
     {
         print("Empty or not found\n");
     }
     else
     {
-        print_uint(count);
-        print(" entries:\n");
-
-        for (uint32_t i = 0; i < count; i++)
+        uint32_t count = 0;
+        struct dirent* de;
+        while ((de = readdir(d)) != NULL)
         {
-            if (entries[i].attr & FILE_ATTR_DIRECTORY)
+            if (de->d_type == DT_DIR)
                 print("  <DIR>  ");
             else
-            {
-                print("  ");
-                print_uint(entries[i].size);
-                print("  ");
-            }
-            print(entries[i].name);
+                print("  <REG>  ");
+            print(de->d_name);
             print("\n");
+            count++;
         }
+        closedir(d);
+        print_uint(count);
+        print(" entries\n");
     }
 
     print("\nDone!\n");

@@ -31,6 +31,18 @@ typedef struct {
     uint64_t KernelSize;
     uint64_t StartDataAddress;
     uint64_t StartDataSize;
+    // GOP pixel format (EFI_GRAPHICS_PIXEL_FORMAT):
+    // 0 = RGBX, 1 = BGRX, 2 = BitMask, 3 = BltOnly
+    uint32_t ScreenPixelFormat;
+    // Boot volume identification (stage 3.2), from the MEDIA_HARDDRIVE_DP
+    // node of the booted image's device path. Must stay layout-identical
+    // with SFOS_BOOT_HEADER in src/boot/efi/bootheader.h.
+    uint64_t BootPartitionStart;         // LBA of the boot partition
+    uint64_t BootPartitionSize;          // sectors
+    uint32_t BootDevicePathValid;        // 1: a HARDDRIVE_DP node was found
+    uint32_t BootPartitionSignatureType; // 0 none (superfloppy), 1 MBR, 2 GPT
+    uint8_t  BootPartitionSignature[16]; // MBR: disk signature in [0..3]
+                                         // GPT: disk GUID
 } BOOT_HEADER;
 
 typedef struct {

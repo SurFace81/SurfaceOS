@@ -3,7 +3,11 @@
 
 #include "abi/types.h"
 
-void  heap_init(void* start, size_t size);
+// The process environment (envp from the initial stack). NULL if none.
+extern char** environ;
+
+const char* getenv(const char* name);
+
 void* malloc(size_t size);
 void  free(void* ptr);
 

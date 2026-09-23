@@ -1,13 +1,68 @@
 // src/kernel/drivers/commands.cpp
 #include "../../include/drivers/commands.h"
-#include "../../include/drivers/fs/fat32.h"
+#include "../../include/dev/blkdev.h"
+#include "../../include/dev/bcache.h"
+#include "../../include/fs/vfs.h"
+#include "../../include/fs/fat32fs.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/usb/xhci.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
+#include "../../include/mm/pmm.h"
 #include "../../include/drivers/pit.h"
+#include "../../include/drivers/uart.h"
 #include "../../include/drivers/rtc.h"
-#include "../../include/cpu/program.h"
+#include "../../include/cpu/process.h"
+#include "../../sdk/include/abi/process.h"
+#include "../../sdk/include/abi/errno.h"
+#include "../../sdk/include/abi/stat.h"
+#include "../../sdk/include/abi/dirent.h"
+#include "../../sdk/include/abi/time.h"
+
+namespace
+{
+    // Format epoch seconds as DD.MM.YYYY HH:MM (UTC) into out[17].
+    void format_epoch(uint64_t epoch, char* out)
+    {
+        if (epoch == 0)
+        {
+            strcpy(out, "                ");
+            return;
+        }
+        uint32_t secs = (uint32_t)(epoch % 86400);
+        sint64_t days = (sint64_t)(epoch / 86400);
+
+        sint64_t z = days + 719468;
+        sint64_t era = (z >= 0 ? z : z - 146096) / 146097;
+        uint32_t doe = (uint32_t)(z - era * 146097);
+        uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        sint64_t y = (sint64_t)yoe + era * 400;
+        uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        uint32_t mp = (5 * doy + 2) / 153;
+        uint32_t d = doy - (153 * mp + 2) / 5 + 1;
+        uint32_t m = mp + (mp < 10 ? 3u : (uint32_t)-9);
+        y += (m <= 2);
+
+        uint32_t hh = secs / 3600, mm = (secs / 60) % 60;
+        out[0]  = (char)('0' + d / 10);
+        out[1]  = (char)('0' + d % 10);
+        out[2]  = '.';
+        out[3]  = (char)('0' + m / 10);
+        out[4]  = (char)('0' + m % 10);
+        out[5]  = '.';
+        out[6]  = (char)('0' + (y / 1000) % 10);
+        out[7]  = (char)('0' + (y / 100) % 10);
+        out[8]  = (char)('0' + (y / 10) % 10);
+        out[9]  = (char)('0' + y % 10);
+        out[10] = ' ';
+        out[11] = (char)('0' + hh / 10);
+        out[12] = (char)('0' + hh % 10);
+        out[13] = ':';
+        out[14] = (char)('0' + mm / 10);
+        out[15] = (char)('0' + mm % 10);
+        out[16] = '\0';
+    }
+}
 
 // Built-in commands
 
@@ -91,99 +146,303 @@ static void cmd_lspci(int argc, const char** argv)
     }
 }
 
+// mount <device> <dir>: mount a FAT32 volume over an existing directory.
 static void cmd_mount(int argc, const char** argv)
 {
-    uint8_t index = 0;
-
-    if (argc > 1)
+    if (argc == 1)
     {
-        for (int i = 0; argv[1][i] != '\0'; i++)
+        // No arguments: list the mount table.
+        screen::printf("\n\r");
+        for (uint32_t i = 0; vfs::mount_count_get(i); i++)
         {
-            if (argv[1][i] < '0' || argv[1][i] > '9')
+            mount* m = vfs::mount_count_get(i);
+            if (m->point)
             {
-                screen::printf("\n\rUsage: mount [device_index]");
-                return;
+                char buf[PATH_MAX];
+                if (vfs::get_path(m->point, buf, sizeof(buf), nullptr) == 0)
+                    screen::printf("  %s on %s\n\r", m->devname, buf);
             }
-            index = index * 10 + (argv[1][i] - '0');
+            else
+                screen::printf("  %s on /\n\r", m->devname);
         }
+        return;
     }
 
-    if (fat32::mount(index))
-        screen::printf("\n\rFAT32 mounted (device %u)", (uint32_t)index);
+    if (argc < 3)
+    {
+        screen::printf("\n\rUsage: mount <device> <dir>   (lsblk lists devices)");
+        return;
+    }
+
+    blkdev* dev = block::find(argv[1]);
+    if (!dev)
+    {
+        screen::printf("\n\rNo such block device: %s", argv[1]);
+        return;
+    }
+
+    vnode* point = nullptr;
+    sint64_t rc = vfs::lookup(argv[2], vfs::cwd(), &point, true);
+    if (rc != 0)
+    {
+        screen::printf("\n\rMount point not found: %s", argv[2]);
+        return;
+    }
+
+    rc = vfs::mount_at(point, dev->name, &fat32fs::fs, dev);  // takes the ref
+    if (rc != 0)
+        screen::printf("\n\rMount failed (%d): no FAT32 volume on %s",
+                       (int)rc, dev->name);
     else
-        screen::printf("\n\rMount failed");
+        screen::printf("\n\r%s mounted on %s", dev->name, argv[2]);
 }
 
 static void cmd_umount(int argc, const char** argv)
 {
-    if (!fat32::is_mounted())
+    if (argc < 2)
     {
-        screen::printf("\n\rNothing is mounted");
+        screen::printf("\n\rUsage: umount <dir>");
         return;
     }
 
-    fat32::umount();
-    screen::printf("\n\rUnmounted");
+    vnode* point = nullptr;
+    sint64_t rc = vfs::lookup(argv[1], vfs::cwd(), &point, true);
+    if (rc != 0)
+    {
+        screen::printf("\n\rNot a directory: %s", argv[1]);
+        return;
+    }
+
+    // namei descends *into* a mount when it walks onto its point, so the
+    // vnode we get back for "/dev" is the mounted FS's root, not the
+    // directory it covers. Match on the root; keep the point comparison as
+    // a fallback for the case where the lookup did not cross (no mount).
+    mount* found = nullptr;
+    for (uint32_t i = 0; vfs::mount_count_get(i); i++)
+    {
+        mount* m = vfs::mount_count_get(i);
+        if (m->root == point || m->point == point)
+        {
+            found = m;
+            break;
+        }
+    }
+    vfs::unref(point);
+
+    if (!found)
+    {
+        screen::printf("\n\rNothing is mounted there");
+        uart::printf("umount: nothing mounted at %s\n", argv[1]);
+        return;
+    }
+    if (!found->point)
+    {
+        screen::printf("\n\rCannot umount the root filesystem");
+        uart::printf("umount: refused, %s is the root filesystem\n", argv[1]);
+        return;
+    }
+
+    rc = vfs::umount(found);
+    if (rc == 0)
+    {
+        screen::printf("\n\rUnmounted");
+        uart::printf("umount: ok %s\n", argv[1]);
+    }
+    else if (rc == -EBUSY)
+    {
+        screen::printf("\n\rBusy: something still has it open");
+        uart::printf("umount: busy %s\n", argv[1]);
+    }
+    else
+    {
+        screen::printf("\n\rUnmount failed (%d)", (int)rc);
+        uart::printf("umount: failed %s rc=%d\n", argv[1], (int)rc);
+    }
+}
+
+static void cmd_sync(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+    sint64_t rc = vfs::sync_all();
+    if (rc == 0)
+    {
+        screen::printf("\n\rSynchronized");
+        uart::printf("sync: ok\n");
+    }
+    else
+    {
+        screen::printf("\n\rSync failed (%d)", (int)rc);
+        uart::printf("sync: failed %d\n", (int)rc);
+    }
 }
 
 static void cmd_ls(int argc, const char** argv)
 {
-    const char* path = argc > 1 ? argv[1] : "";
+    const char* path = argc > 1 ? argv[1] : ".";
 
-    const uint32_t max_entries = 64;
-    fat32_dir_entry entries[max_entries];
-
-    uint32_t count = fat32::ls(path, entries, max_entries);
-
-    if (count == 0 && argc > 1)
+    vnode* dir = nullptr;
+    sint64_t rc = vfs::lookup(path, vfs::cwd(), &dir, true);
+    if (rc != 0)
     {
-        screen::printf("\n\rDirectory not found: %s", argv[1]);
+        screen::printf("\n\rDirectory not found: %s", path);
         return;
     }
 
-    for (uint32_t i = 0; i < count && i < max_entries; i++)
+    uint64_t cookie = 0;
+    screen::printf("\n\r");
+    for (;;)
     {
-        char name[13];
-        format_83_name(entries[i].name, name);
+        dirent_out d;
+        bool eof = false;
+        rc = dir->ops->readdir(dir, &cookie, &d, &eof);
+        if (rc != 0)
+        {
+            screen::printf("read error (%d)\n\r", (int)rc);
+            break;
+        }
+        if (eof)
+            break;
 
-        char dt[17];
-        format_datetime(entries[i].write_date, entries[i].write_time, dt);
+        vnode* child = nullptr;
+        rc = vfs::lookup(d.name, dir, &child, false);
+        if (rc == 0 && child)
+        {
+            struct stat st;
+            child->ops->getattr(child, &st);
 
-        if (entries[i].attr & FAT32_ATTR_DIRECTORY)
-            screen::printf("\n\r  %s       <DIR>  %s", dt, name);
+            char dt[17];
+            format_epoch((uint64_t)st.st_mtim.tv_sec, dt);
+
+            if (st.st_mode & S_IFDIR)
+                screen::printf("  %s       <DIR>  %s\n\r", dt, d.name);
+            else
+                screen::printf("  %s  %10u  %s\n\r", dt,
+                               (uint32_t)st.st_size, d.name);
+            vfs::unref(child);
+        }
         else
-            screen::printf("\n\r  %s  %10u  %s", dt, entries[i].file_size, name);
+        {
+            screen::printf("                              %s\n\r", d.name);
+        }
     }
+    vfs::unref(dir);
 }
 
-static void cmd_copy(int argc, const char** argv)
+// Copy a regular file through the VFS in 32 KiB chunks.
+static void cmd_cp(int argc, const char** argv)
 {
     if (argc < 3)
     {
-        screen::printf("\n\rUsage: copy <source> <destination>");
+        screen::printf("\n\rUsage: cp <source> <destination>");
         return;
     }
 
-    screen::printf("\n\r");
-    if (fat32::copy(argv[1], argv[2]))
-        screen::printf("Copied %s -> %s", argv[1], argv[2]);
+    vnode* src = nullptr;
+    sint64_t rc = vfs::lookup(argv[1], vfs::cwd(), &src, false);
+    if (rc != 0 || src->type != vtype::REG)
+    {
+        if (src) vfs::unref(src);
+        screen::printf("\n\rSource is not a file: %s", argv[1]);
+        return;
+    }
+
+    // Destination: create in its parent directory.
+    vnode* parent = nullptr;
+    char name[NAME_MAX + 1];
+    rc = vfs::lookup_parent(argv[2], vfs::cwd(), &parent, name);
+    if (rc != 0)
+    {
+        vfs::unref(src);
+        screen::printf("\n\rDestination not found: %s", argv[2]);
+        return;
+    }
+
+    vnode* dst = nullptr;
+    rc = parent->ops->lookup(parent, name, &dst);
+    if (rc == 0 && dst)
+    {
+        if (dst->type != vtype::REG)
+        {
+            vfs::unref(dst);
+            vfs::unref(parent);
+            vfs::unref(src);
+            screen::printf("\n\rDestination is not a file");
+            return;
+        }
+        rc = dst->ops->truncate(dst, 0);
+    }
     else
-        screen::printf("Copy failed");
+    {
+        rc = parent->ops->create(parent, name, 0644, &dst);
+    }
+    vfs::unref(parent);
+    if (rc != 0)
+    {
+        vfs::unref(src);
+        screen::printf("\n\rCannot create %s (%d)", argv[2], (int)rc);
+        return;
+    }
+
+    const uint32_t CHUNK = 32 * 1024;
+    uint8_t* buf = (uint8_t*)kmalloc(CHUNK);
+    bool ok = buf != nullptr;
+    uint64_t off = 0, woff = 0;
+
+    while (ok && off < src->size)
+    {
+        uint64_t want = src->size - off;
+        if (want > CHUNK) want = CHUNK;
+
+        uint64_t done = 0;
+        rc = src->ops->read(src, off, buf, want, &done);
+        if (rc != 0 || done == 0) { ok = false; break; }
+
+        uint64_t wdone = 0;
+        rc = dst->ops->write(dst, woff, buf, done, &wdone);
+        if (rc != 0 || wdone != done) { ok = false; break; }
+
+        off += done;
+        woff += wdone;
+    }
+    if (buf) kfree(buf);
+
+    if (ok)
+    {
+        dst->ops->fsync(dst);
+        screen::printf("\n\rCopied %s -> %s", argv[1], argv[2]);
+    }
+    else
+        screen::printf("\n\rCopy failed (%d)", (int)rc);
+
+    vfs::unref(src);
+    vfs::unref(dst);
 }
 
-static void cmd_rename(int argc, const char** argv)
+static void cmd_mv(int argc, const char** argv)
 {
     if (argc < 3)
     {
-        screen::printf("\n\rUsage: rename <path> <new_name>");
+        screen::printf("\n\rUsage: mv <source> <destination>");
         return;
     }
 
+    vnode* od = nullptr, *nd = nullptr;
+    char oname[NAME_MAX + 1], nname[NAME_MAX + 1];
+
+    sint64_t rc = vfs::lookup_parent(argv[1], vfs::cwd(), &od, oname);
+    if (rc == 0)
+        rc = vfs::lookup_parent(argv[2], vfs::cwd(), &nd, nname);
+    if (rc == 0)
+        rc = od->ops->rename(od, oname, nd, nname, 0);
+
+    if (od) vfs::unref(od);
+    if (nd) vfs::unref(nd);
+
     screen::printf("\n\r");
-    if (fat32::rename(argv[1], argv[2]))
-        screen::printf("Renamed %s -> %s", argv[1], argv[2]);
+    if (rc == 0)
+        screen::printf("Moved %s -> %s", argv[1], argv[2]);
     else
-        screen::printf("Rename failed");
+        screen::printf("Move failed (%d)", (int)rc);
 }
 
 static bool is_printable(uint8_t c)
@@ -207,8 +466,26 @@ static void cmd_cat(int argc, const char** argv)
         return;
     }
 
-    uint32_t n = fat32::read_file(argv[1], buf, max_size);
-    if (n == (uint32_t)-1 || n == 0)
+    vnode* v = nullptr;
+    sint64_t vrc = vfs::lookup(argv[1], vfs::cwd(), &v, false);
+    if (vrc != 0 || v->type != vtype::REG)
+    {
+        if (v) vfs::unref(v);
+        screen::printf("\n\rFile not found: %s", argv[1]);
+        kfree(buf);
+        return;
+    }
+    uint64_t done = 0;
+    vrc = v->ops->read(v, 0, buf, max_size, &done);
+    vfs::unref(v);
+    if (vrc != 0)
+    {
+        screen::printf("\n\rRead error (%d)", (int)vrc);
+        kfree(buf);
+        return;
+    }
+    uint32_t n = (uint32_t)done;
+    if (n == 0)
     {
         screen::printf("\n\rFile not found or read error");
         kfree(buf);
@@ -265,8 +542,26 @@ static void cmd_xxd(int argc, const char** argv)
         return;
     }
 
-    uint32_t n = fat32::read_file(argv[1], buf, max_size);
-    if (n == (uint32_t)-1 || n == 0)
+    vnode* v = nullptr;
+    sint64_t vrc = vfs::lookup(argv[1], vfs::cwd(), &v, false);
+    if (vrc != 0 || v->type != vtype::REG)
+    {
+        if (v) vfs::unref(v);
+        screen::printf("\n\rFile not found: %s", argv[1]);
+        kfree(buf);
+        return;
+    }
+    uint64_t done = 0;
+    vrc = v->ops->read(v, 0, buf, max_size, &done);
+    vfs::unref(v);
+    if (vrc != 0)
+    {
+        screen::printf("\n\rRead error (%d)", (int)vrc);
+        kfree(buf);
+        return;
+    }
+    uint32_t n = (uint32_t)done;
+    if (n == 0)
     {
         screen::printf("\n\rFile not found or read error");
         kfree(buf);
@@ -349,12 +644,48 @@ static void cmd_write(int argc, const char** argv)
     }
     data[pos] = '\0';
 
-    uint32_t written = fat32::write_file(argv[1], (const uint8_t*)data, pos);
     screen::printf("\n\r");
-    if (written != (uint32_t)-1)
-        screen::printf("%u bytes written to %s", written, argv[1]);
+
+    vnode* parent = nullptr;
+    char name[NAME_MAX + 1];
+    sint64_t rc = vfs::lookup_parent(argv[1], vfs::cwd(), &parent, name);
+    if (rc != 0)
+    {
+        screen::printf("Path not found: %s (%d)", argv[1], (int)rc);
+        return;
+    }
+
+    vnode* v = nullptr;
+    rc = parent->ops->lookup(parent, name, &v);
+    if (rc == 0 && v)
+    {
+        if (v->type != vtype::REG)
+        {
+            vfs::unref(v);
+            vfs::unref(parent);
+            screen::printf("Not a file: %s", argv[1]);
+            return;
+        }
+        v->ops->truncate(v, 0);
+    }
     else
-        screen::printf("Write failed");
+        rc = parent->ops->create(parent, name, 0644, &v);
+    vfs::unref(parent);
+
+    if (rc != 0)
+    {
+        screen::printf("Cannot create %s (%d)", argv[1], (int)rc);
+        return;
+    }
+
+    uint64_t wdone = 0;
+    rc = pos ? v->ops->write(v, 0, data, pos, &wdone) : 0;
+    vfs::unref(v);
+
+    if (rc == 0)
+        screen::printf("%u bytes written to %s", (uint32_t)wdone, argv[1]);
+    else
+        screen::printf("Write failed (%d)", (int)rc);
 }
 
 static void cmd_mkdir(int argc, const char** argv)
@@ -365,26 +696,128 @@ static void cmd_mkdir(int argc, const char** argv)
         return;
     }
 
+    vnode* parent = nullptr;
+    char name[NAME_MAX + 1];
+    sint64_t rc = vfs::lookup_parent(argv[1], vfs::cwd(), &parent, name);
+    if (rc == 0)
+        rc = parent->ops->mkdir(parent, name, 0755);
+    if (parent)
+        vfs::unref(parent);
+
     screen::printf("\n\r");
-    if (fat32::mkdir(argv[1]))
+    if (rc == 0)
         screen::printf("Directory created: %s", argv[1]);
     else
-        screen::printf("mkdir failed");
+        screen::printf("mkdir failed (%d)", (int)rc);
 }
 
+// rm <path>: unlink a file. rm -r is not supported (use rmdir for empty
+// directories).
 static void cmd_rm(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\rUsage: rm <path>");
+        screen::printf("\n\rUsage: rm <file> | rmdir <dir>");
         return;
     }
 
+    vnode* parent = nullptr;
+    char name[NAME_MAX + 1];
+    sint64_t rc = vfs::lookup_parent(argv[1], vfs::cwd(), &parent, name);
+    if (rc == 0)
+        rc = parent->ops->unlink(parent, name);
+    if (parent)
+        vfs::unref(parent);
+
     screen::printf("\n\r");
-    if (fat32::remove(argv[1]))
+    if (rc == 0)
         screen::printf("Removed: %s", argv[1]);
     else
-        screen::printf("Remove failed");
+        screen::printf("Remove failed (%d)", (int)rc);
+}
+
+static void cmd_rmdir(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: rmdir <dir>");
+        return;
+    }
+
+    vnode* parent = nullptr;
+    char name[NAME_MAX + 1];
+    sint64_t rc = vfs::lookup_parent(argv[1], vfs::cwd(), &parent, name);
+    if (rc == 0)
+        rc = parent->ops->rmdir(parent, name);
+    if (parent)
+        vfs::unref(parent);
+
+    screen::printf("\n\r");
+    if (rc == 0)
+        screen::printf("Removed: %s", argv[1]);
+    else if (rc == -ENOTEMPTY)
+        screen::printf("Directory not empty: %s", argv[1]);
+    else
+        screen::printf("rmdir failed (%d)", (int)rc);
+}
+
+static void cmd_pwd(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+    char buf[PATH_MAX];
+    sint64_t rc = vfs::cwd_path(buf, sizeof(buf));
+    screen::printf("\n\r%s", rc == 0 ? buf : "?");
+}
+
+// dmesg: the kernel boot log. Everything the drivers report goes to the
+// serial line, which no laptop has, so keep a copy on screen too.
+static void cmd_dmesg(int argc, const char** argv)
+{
+    static char buf[UART_LOG_SIZE + 1];
+    uint32_t len = uart::log_read(buf, UART_LOG_SIZE);
+    buf[len] = '\0';
+
+    screen::printf("\n\r");
+    for (uint32_t i = 0; i < len; i++)
+    {
+        // The log uses bare newlines; the console wants CR with them.
+        if (buf[i] == '\n')
+            screen::printf("\n\r");
+        else
+            screen::printf("%c", buf[i]);
+    }
+}
+
+// usbports: the raw root-port state of the active controller. The one thing
+// worth photographing when a machine enumerates nothing: it separates "no
+// controller", "port unpowered", "nothing plugged in" and "device present but
+// enumeration failed".
+static void cmd_usbports(int argc, const char** argv)
+{
+    uint8_t ports = usb::get_port_count();
+    screen::printf("\n\r");
+    screen::printf("\n\r Root ports: %u   context entry: %u bytes",
+                   (uint32_t)ports, usb::get_context_entry_size());
+
+    if (ports == 0)
+    {
+        screen::printf("\n\r No controller running");
+        return;
+    }
+
+    for (uint8_t i = 0; i < ports; i++)
+    {
+        uint32_t raw = usb::get_port_status(i);
+        char hex[9];
+        hex_to_str(raw, hex, 8);
+
+        screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
+            (uint32_t)i,
+            usb::port_is_usb3(i) ? "usb3" : "usb2",
+            hex,
+            raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
+            (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+    }
 }
 
 static void cmd_lsusb(int argc, const char** argv)
@@ -500,34 +933,41 @@ static void cmd_usbinfo(int argc, const char** argv)
 
 static void cmd_lsblk(int argc, const char** argv)
 {
-    uint8_t count = usb::get_block_device_count();
+    (void)argc; (void)argv;
     screen::printf("\n\r");
-    screen::printf("\n\r Block devices: %u", (uint32_t)count);
-    screen::printf("\n\r");
+    uart::printf("lsblk:\n");
 
+    uint32_t count = block::count();
     if (count == 0)
     {
         screen::printf("\n\r No block devices found");
+        uart::printf("lsblk: no block devices\n");
         return;
     }
 
-    for (uint8_t i = 0; i < count; i++)
+    for (uint32_t i = 0; i < count; i++)
     {
-        usb_block_device bdev;
-        if (usb::get_block_device_info(i, &bdev) != USB_OK)
+        blkdev* d = block::get(i);
+        if (!d)
             continue;
 
-        uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
+        uint64_t total_mb = d->sector_count * d->sector_size / (1024 * 1024);
 
-        screen::printf("\n\r  [%u] block_size=%u  sectors=%u",
-            (uint32_t)i, bdev.block_size, bdev.last_lba + 1);
+        screen::printf("\n\r %s%-9s %uB x %u",
+            d->parent ? "  " : " ", d->name,
+            d->sector_size, (uint32_t)d->sector_count);
 
         if (total_mb > 1024)
             screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
         else
             screen::printf("  size=%u MB", (uint32_t)total_mb);
 
-        screen::printf("  %s", bdev.ready ? "ready" : "not ready");
+        if (d->parent)
+            screen::printf("  offset=%u", (uint32_t)d->lba_offset);
+
+        uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
+                     d->sector_size, (uint32_t)d->sector_count,
+                     (uint32_t)d->lba_offset);
     }
 }
 
@@ -538,6 +978,17 @@ static void cmd_meminfo(int argc, const char** argv)
     uint64_t total_ram = memory::total();
     uint64_t total_ram_mb = total_ram / (1024 * 1024);
     screen::printf("\n\r Physical RAM:      %u MB", (uint32_t)total_ram_mb);
+
+    pmm::Stats pstats;
+    pmm::get_stats(&pstats);
+    // Mirrored to the serial log: the test harness compares the free-frame
+    // count across sessions to catch a leaked per-process kernel stack.
+    uart::printf("meminfo: frames_free=%u frames_used=%u\n",
+                 (uint32_t)pstats.free_frames, (uint32_t)pstats.used_frames);
+    screen::printf("\n\r");
+    screen::printf("\n\r PMM frames (4 KB): %u total, %u free, %u used",
+        (uint32_t)pstats.total_frames, (uint32_t)pstats.free_frames, (uint32_t)pstats.used_frames);
+    screen::printf("\n\r PMM managed:       %u MB", (uint32_t)(pstats.max_phys / (1024 * 1024)));
 
     HeapStats stats;
     heap::get_stats(&stats);
@@ -698,25 +1149,70 @@ static void cmd_cd(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\r%s", fat32::cwd_path());
+        char buf[PATH_MAX];
+        if (vfs::cwd_path(buf, sizeof(buf)) == 0)
+            screen::printf("\n\r%s", buf);
         return;
     }
 
-    if (!fat32::set_cwd(argv[1]))
+    vnode* v = nullptr;
+    sint64_t rc = vfs::lookup(argv[1], vfs::cwd(), &v, true);
+    if (rc != 0)
+    {
         screen::printf("\n\rDirectory not found: %s", argv[1]);
+        return;
+    }
+    vfs::set_cwd(v);        // takes the reference
 }
 
 static void cmd_exec(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\rUsage: exec <filename>");
+        screen::printf("\n\rUsage: exec <filename> [args...]   (Esc terminates the app)");
         return;
     }
 
+    // argv[1..] becomes the program's argv, so argv[0] is its own name.
+    int status = 0;
     screen::printf("\n\r");
-    if (!program::exec(argv[1]))
+    if (!process::run(argv[1], argc - 1, argv + 1, &status))
+    {
+        // PATH fallback: a bare name is looked up in /bin.
+        char alt[NAME_MAX + 8];
+        bool has_slash = false;
+        for (const char* p = argv[1]; *p; p++)
+            if (*p == '/')
+                has_slash = true;
+
+        if (!has_slash)
+        {
+            alt[0] = '/'; alt[1] = 'b'; alt[2] = 'i'; alt[3] = 'n'; alt[4] = '/';
+            uint32_t n = 5;
+            for (const char* p = argv[1]; *p && n < sizeof(alt) - 1; p++)
+                alt[n++] = *p;
+            alt[n] = '\0';
+
+            if (process::run(alt, argc - 1, argv + 1, &status))
+            {
+                if (WIFSIGNALED(status))
+                    screen::printf("%s: terminated by signal %u", argv[1],
+                                   (uint32_t)WTERMSIG(status));
+                else if (WEXITSTATUS(status) != 0)
+                    screen::printf("%s: exited with status %u", argv[1],
+                                   (uint32_t)WEXITSTATUS(status));
+                return;
+            }
+        }
+
         screen::printf("Failed to load: %s", argv[1]);
+        return;
+    }
+
+    if (WIFSIGNALED(status))
+        screen::printf("%s: terminated by signal %u", argv[1], (uint32_t)WTERMSIG(status));
+    else if (WEXITSTATUS(status) != 0)
+        screen::printf("%s: exited with status %u", argv[1], (uint32_t)WEXITSTATUS(status));
 }
 
 namespace commands
@@ -736,15 +1232,20 @@ namespace commands
         console::register_command("mkdir",   cmd_mkdir);
         console::register_command("rm",      cmd_rm);
         console::register_command("lsusb",   cmd_lsusb);
+        console::register_command("usbports", cmd_usbports);
+        console::register_command("dmesg",   cmd_dmesg);
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
+        console::register_command("sync",    cmd_sync);
         console::register_command("meminfo", cmd_meminfo);
         console::register_command("time",    cmd_time);
         console::register_command("uptime",  cmd_uptime);
         console::register_command("settime", cmd_settime);
         console::register_command("cd",      cmd_cd);
-        console::register_command("copy",    cmd_copy);
-        console::register_command("rename",  cmd_rename);
+        console::register_command("pwd",     cmd_pwd);
+        console::register_command("cp",      cmd_cp);
+        console::register_command("mv",      cmd_mv);
+        console::register_command("rmdir",   cmd_rmdir);
         console::register_command("exec",    cmd_exec);
     }
 }

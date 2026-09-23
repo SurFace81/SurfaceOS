@@ -31,6 +31,20 @@ typedef struct {
     UINT64 KernelSize;
     UINT64 StartDataAddress;
     UINT64 StartDataSize;
+    // GOP pixel format (EFI_GRAPHICS_PIXEL_FORMAT):
+    // 0 = RGBX, 1 = BGRX, 2 = BitMask, 3 = BltOnly
+    UINT32 ScreenPixelFormat;
+    // Boot volume identification (stage 3.2). Taken from the
+    // MEDIA_HARDDRIVE_DP node of LoadedImage->DeviceHandle's device path:
+    // where on which disk the booted volume lives and how that disk is
+    // signed, so the kernel can find the same volume through its own USB
+    // driver and mount it as /. All zeros when no hard-drive node exists.
+    UINT64 BootPartitionStart;         // LBA of the boot partition
+    UINT64 BootPartitionSize;          // sectors
+    UINT32 BootDevicePathValid;        // 1: a HARDDRIVE_DP node was found
+    UINT32 BootPartitionSignatureType; // 0 none (superfloppy), 1 MBR, 2 GPT
+    UINT8  BootPartitionSignature[16]; // MBR: disk signature in [0..3]
+                                       // GPT: disk GUID
 } SFOS_BOOT_HEADER;
 
 #pragma pack(push, 1)
