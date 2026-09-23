@@ -125,6 +125,30 @@ namespace
             vfs::umount(m, true);   // shutdown: tear down regardless of fds
     }
 
+    // What the loader did to VT-d (it has no way to print after
+    // ExitBootServices). Also on screen: the laptop that needs this has no
+    // serial port.
+    void report_dmar(const BOOT_HEADER* hdr)
+    {
+        uart::printf("boot: acpi rsdp=%llx\n", hdr->AcpiRsdpAddress);
+
+        if (!(hdr->DmarFlags & BOOT_DMAR_PRESENT))
+        {
+            uart::printf("boot: no DMAR table, no VT-d to take over\n");
+            return;
+        }
+
+        uart::printf("boot: DMAR %u unit(s), remapping was %s, turned off on %u%s\n",
+                     hdr->DmarUnits,
+                     (hdr->DmarFlags & BOOT_DMAR_WAS_ENABLED) ? "on" : "off",
+                     hdr->DmarDisabled,
+                     (hdr->DmarFlags & BOOT_DMAR_TIMEOUT) ? " (TIMEOUT)" : "");
+        if (hdr->DmarFlags & BOOT_DMAR_WAS_ENABLED)
+            screen::printf("VT-d: %u unit(s), remapping turned off on %u%s\n\r",
+                           hdr->DmarUnits, hdr->DmarDisabled,
+                           (hdr->DmarFlags & BOOT_DMAR_TIMEOUT) ? ", TIMEOUT" : "");
+    }
+
     void automount_root(const BOOT_HEADER* hdr)
     {
         // Pass 1: exact boot-volume match.
@@ -246,6 +270,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
                  BootHeader->ScreenWidth, BootHeader->ScreenHeight,
                  (uint64_t)BootHeader->FrameBufferAddress,
                  (uint64_t)screen::vram_base());
+    report_dmar(BootHeader);
 
     keyboard::init();
     uart::printf("boot: keyboard ready\n");
