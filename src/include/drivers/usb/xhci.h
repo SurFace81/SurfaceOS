@@ -483,6 +483,16 @@ struct usb_csw {
 // Max USB3 ports we track
 #define XHCI_MAX_USB3_PORTS 32
 
+// A mobile chipset can expose a PCH xHCI and a separate USB4/Thunderbolt one.
+#define MAX_XHCI_CONTROLLERS 8
+
+// Port bring-up timing. 20 ms is the spec's settle time after setting PP;
+// the scan window covers USB3 link training plus a USB2 device's debounce.
+#define XHCI_PORT_POWER_SETTLE_MS   20
+#define XHCI_PORT_SCAN_TIMEOUT_MS   1000
+#define XHCI_PORT_POLL_INTERVAL_MS  10
+#define XHCI_PORT_DEBOUNCE_MS       100
+
 // Public API structures
 
 enum usb_status {
@@ -523,6 +533,12 @@ struct usb_block_device {
 // Public API
 namespace usb {
     bool       init();
+    uint32_t   get_context_entry_size();
+    uint8_t    get_port_count();
+    uint32_t   get_port_status(uint8_t port);
+    bool       port_is_usb3(uint8_t port);
+    uint8_t    get_controller_count();
+    void       get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn);
     uint8_t    get_device_count();
     usb_status get_device_info(uint8_t index, usb_device_info* out);
     uint8_t    get_block_device_count();

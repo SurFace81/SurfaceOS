@@ -187,6 +187,23 @@ namespace
 
         uart::printf("boot: no mountable FAT32 volume found - running without root\n");
         screen::printf("No root volume found; fs commands unavailable.\n\r");
+
+        // There is no serial port on most laptops, so put enough on the
+        // screen to tell the three failure modes apart: no controller at
+        // all, a controller with no devices, and devices with no volume.
+        uint32_t blkdevs = 0;
+        while (block::get(blkdevs))
+            blkdevs++;
+
+        uint8_t bus = 0, dev = 0, fn = 0;
+        usb::get_controller_location(&bus, &dev, &fn);
+        screen::printf("  xhci: %u controller(s), using %u:%u.%u; "
+                       "%u usb device(s), %u disk(s), %u volume(s)\n\r",
+                       (uint32_t)usb::get_controller_count(),
+                       (uint32_t)bus, (uint32_t)dev, (uint32_t)fn,
+                       (uint32_t)usb::get_device_count(),
+                       (uint32_t)usb::get_block_device_count(),
+                       blkdevs);
     }
 }
 

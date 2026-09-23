@@ -10,6 +10,7 @@
 #include "../../include/mm/memory.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/drivers/pit.h"
+#include "../../include/drivers/uart.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/cpu/process.h"
 #include "../../sdk/include/abi/process.h"
@@ -768,6 +769,57 @@ static void cmd_pwd(int argc, const char** argv)
     screen::printf("\n\r%s", rc == 0 ? buf : "?");
 }
 
+// dmesg: the kernel boot log. Everything the drivers report goes to the
+// serial line, which no laptop has, so keep a copy on screen too.
+static void cmd_dmesg(int argc, const char** argv)
+{
+    static char buf[UART_LOG_SIZE + 1];
+    uint32_t len = uart::log_read(buf, UART_LOG_SIZE);
+    buf[len] = '\0';
+
+    screen::printf("\n\r");
+    for (uint32_t i = 0; i < len; i++)
+    {
+        // The log uses bare newlines; the console wants CR with them.
+        if (buf[i] == '\n')
+            screen::printf("\n\r");
+        else
+            screen::printf("%c", buf[i]);
+    }
+}
+
+// usbports: the raw root-port state of the active controller. The one thing
+// worth photographing when a machine enumerates nothing: it separates "no
+// controller", "port unpowered", "nothing plugged in" and "device present but
+// enumeration failed".
+static void cmd_usbports(int argc, const char** argv)
+{
+    uint8_t ports = usb::get_port_count();
+    screen::printf("\n\r");
+    screen::printf("\n\r Root ports: %u   context entry: %u bytes",
+                   (uint32_t)ports, usb::get_context_entry_size());
+
+    if (ports == 0)
+    {
+        screen::printf("\n\r No controller running");
+        return;
+    }
+
+    for (uint8_t i = 0; i < ports; i++)
+    {
+        uint32_t raw = usb::get_port_status(i);
+        char hex[9];
+        hex_to_str(raw, hex, 8);
+
+        screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
+            (uint32_t)i,
+            usb::port_is_usb3(i) ? "usb3" : "usb2",
+            hex,
+            raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
+            (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+    }
+}
+
 static void cmd_lsusb(int argc, const char** argv)
 {
     uint8_t count = usb::get_device_count();
@@ -1180,6 +1232,8 @@ namespace commands
         console::register_command("mkdir",   cmd_mkdir);
         console::register_command("rm",      cmd_rm);
         console::register_command("lsusb",   cmd_lsusb);
+        console::register_command("usbports", cmd_usbports);
+        console::register_command("dmesg",   cmd_dmesg);
         console::register_command("usbinfo", cmd_usbinfo);
         console::register_command("lsblk",   cmd_lsblk);
         console::register_command("sync",    cmd_sync);
