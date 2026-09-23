@@ -5,7 +5,7 @@
 #include "../../include/fs/vfs.h"
 #include "../version.h"
 
-#define MAX_COMMANDS 32
+#define MAX_COMMANDS 64
 #define HISTORY_SIZE 32
 
 struct Command

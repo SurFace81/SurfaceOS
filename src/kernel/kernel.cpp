@@ -8,6 +8,7 @@
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
 #include "../include/cpu/syscall.h"
+#include "../include/acpi/acpi.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
@@ -259,6 +260,9 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     pmm::init(BootHeader);
     memory::init(BootHeader->TotalMemorySize);
+
+    // Tables only, no AML: just enough for reboot/shutdown.
+    acpi::init(BootHeader);
 
     // From here on every stage announces itself on the serial line. On real
     // hardware a hang before the timer IRQ starts flushing the back buffer
