@@ -74,7 +74,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/tss.o \
 				bin/kernel/cpu/signal.o \
 				bin/kernel/cpu/process.o \
-				bin/kernel/cpu/process.asm.o \
+				bin/kernel/cpu/task.o \
+				bin/kernel/cpu/task.asm.o \
 				bin/kernel/cpu/elf.o \
 				bin/kernel/cpu/features.o \
 				bin/kernel/cpu/uaccess.o \

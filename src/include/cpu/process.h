@@ -47,24 +47,29 @@ struct vnode;
 // Scheduling model
 // ---------------------------------------------------------------------------
 //
-// User code is preempted by the timer; kernel code is not. A process switch
-// only ever happens at the boundary back to ring 3 - on return from a syscall,
-// an IRQ that interrupted user code, or a user-mode fault - by rewriting the
-// trap frame that is about to be popped. Consequences:
+// User code is preempted by the timer; kernel code is not. Every process
+// has its own kernel stack and a task (task.h) that runs on it: a trap from
+// ring 3 lands on that stack, and a process switch is a task::switch_to from
+// inside the trap handler, which leaves the trap frame where it is. The
+// other process resumes inside its own handler and returns to ring 3
+// through its own frame. Switches happen only on the way back to ring 3 -
+// on return from a syscall, an IRQ that interrupted user code, or a
+// user-mode fault - so the drivers (xHCI, FAT32, screen) never see
+// reentrancy.
 //
-//   * the drivers (xHCI, FAT32, screen) never see reentrancy;
-//   * a syscall that has to wait (read_key, waitpid) does not sleep inside
-//     the kernel. It rewinds RIP over `int 0x80`, marks the process blocked
-//     and switches away; when the process is woken it simply re-executes the
-//     syscall with its registers intact.
+// When nothing in the session can run, the idle task takes over: it polls
+// for a process to wake (a key, a timer, a child, a signal) and halts in
+// between. The console runs on the boot task and waits in run() while a
+// session is on; end_session switches back to it.
 //
-// Each process nevertheless owns its kernel stack, and TSS RSP0 follows the
-// switch. The restart trick only works while a syscall has committed no
-// side effect before it waits, which is true of read() on a tty and of
-// wait4() but not of, say, a pipe write - that would need to keep kernel
-// state across the wait, i.e. to sleep on its own stack.
+// A syscall that has to wait (read_key, waitpid) still does not sleep in
+// the kernel: it rewinds RIP over `int 0x80`, marks the process blocked and
+// switches away; when the process runs again it re-executes the syscall
+// with its registers intact. That only works while a syscall has committed
+// no side effect before it waits, which is true of read() on a tty and of
+// wait4() but not of, say, a pipe write.
 //
-// Signals turned out not to need that. A handler runs in ring 3 like any
+// Signals do not need to sleep either. A handler runs in ring 3 like any
 // other code, and rt_sigreturn restores the saved context wholesale rather
 // than resuming a kernel call, so delivery is just a rewrite of the trap
 // frame at the same boundary (see the signal section of process.cpp). What

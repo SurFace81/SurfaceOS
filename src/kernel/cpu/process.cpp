@@ -8,6 +8,7 @@
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/signal.h"
 #include "../../include/cpu/tss.h"
+#include "../../include/cpu/task.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/cpu/irq.h"
@@ -26,9 +27,6 @@
 #include "../../sdk/include/abi/time.h"
 #include "../../sdk/include/abi/auxv.h"
 #include "../../sdk/include/abi/fcntl.h"
-
-extern "C" void process_enter_user(cpu_context* ctx);
-extern "C" void process_return_to_kernel(void);
 
 #define USER_CS             0x23
 #define USER_SS             0x2B
@@ -83,13 +81,18 @@ namespace process
         uint64_t    brk;            // current program break
         uint64_t    mmap_cursor;    // where the next mmap search starts
 
-        cpu_context ctx;            // user state while not running
+        // User state a fresh image or a fork child starts from. Once the
+        // process runs, its live user state is the trap frame on its own
+        // kernel stack, not this.
+        cpu_context ctx;
         uint8_t     fpu[512] __attribute__((aligned(16)));   // FXSAVE area
-        // Kernel stack for traps taken while this process runs (TSS RSP0).
-        // Owned by the table *slot*, not by the process: terminate() can
-        // free a process while running on this very stack, so it is released
-        // only at session teardown, from the console stack.
+        // Kernel stack for traps taken while this process runs (TSS RSP0),
+        // and the task that runs on it. Owned by the table *slot*, not by
+        // the process: terminate() can free a process while running on this
+        // very stack, so it is released only at session teardown, from the
+        // console stack.
         uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
+        Task        task;
 
         // POSIX file state: descriptors, cwd (referenced vnode) and umask.
         fd_table    fds;
@@ -110,6 +113,12 @@ namespace process
     static int      root_status     = 0;
     static uint32_t slice_ticks     = 0;
 
+    // The console runs on the boot task; the idle task runs when a session
+    // has nothing runnable.
+    static Task     console_task;
+    static Task     idle_task;
+    const uint64_t  IDLE_STACK_SIZE = 16 * 1024;
+
     const uint64_t KERNEL_STACK_FRAMES = KERNEL_STACK_SIZE / 4096;
 
     // Clean FPU/SSE state every new program starts from.
@@ -128,8 +137,8 @@ namespace process
     }
 
     // Hand every live slot's kernel stack back. Only safe once nothing runs
-    // on one of them, i.e. after process_return_to_kernel has put us back on
-    // the console stack.
+    // on one of them, i.e. once end_session has switched back to the console
+    // task.
     static void free_kernel_stacks()
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
@@ -242,26 +251,34 @@ namespace process
     static void fpu_save(uint8_t* area)    { asm volatile("fxsave (%0)"  :: "r"(area) : "memory"); }
     static void fpu_restore(uint8_t* area) { asm volatile("fxrstor (%0)" :: "r"(area) : "memory"); }
 
-    static void save_context(Process* p, user_regs* regs, iret_frame* iret)
+    // Leave the running process (if there still is one): its FPU state is
+    // the live one until now.
+    static void leave_current()
     {
-        p->ctx.regs = *regs;
-        p->ctx.iret = *iret;
-        fpu_save(p->fpu);
+        if (current)
+            fpu_save(current->fpu);
     }
 
-    // Make `p` the running process: its registers go into the trap frame that
-    // is about to be popped, its address space and FPU state become live.
-    static void load_context(Process* p, user_regs* regs, iret_frame* iret)
+    // Run `p`: its address space, FPU state and kernel stack become live and
+    // its task resumes - inside its own trap handler, or at its first entry
+    // to ring 3. Returns when the calling task is switched back to.
+    static void switch_process(Process* p)
     {
+        leave_current();
         current = p;
-        // The trap we are about to return from still runs on the outgoing
-        // process's stack - that is fine, it is finished with. What matters
-        // is that the *next* entry from ring 3 lands on p's own stack.
         tss::set_kernel_stack(kstack_top(p));
         paging::switch_address_space(p->cr3);
         fpu_restore(p->fpu);
-        *regs = p->ctx.regs;
-        *iret = p->ctx.iret;
+        task::switch_to(&p->task);
+    }
+
+    // Run a kernel task (idle, console): no process is current meanwhile.
+    static void switch_kernel_task(Task* t)
+    {
+        leave_current();
+        current = nullptr;
+        paging::switch_address_space(paging::kernel_pml4());
+        task::switch_to(t);
     }
 
     static void initial_context(cpu_context* ctx, uint64_t entry, uint64_t rsp)
@@ -840,13 +857,11 @@ namespace process
         return false;
     }
 
-    __attribute__((noreturn))
+    // Hand control back to the console, which tears the session down. Only
+    // the idle task ever returns from this, in the next session.
     static void end_session()
     {
-        paging::switch_address_space(paging::kernel_pml4());
-        current = nullptr;
-        process_return_to_kernel();
-        while (1) asm volatile("hlt");
+        switch_kernel_task(&console_task);
     }
 
     static void kill_session()
@@ -951,11 +966,8 @@ namespace process
             signal_group(tty::fg_pgrp(), n);
     }
 
-    static void stop_process(Process* p, int n, user_regs* regs, iret_frame* iret)
+    static void stop_process(Process* p, int n)
     {
-        if (p == current)
-            save_context(p, regs, iret);
-
         p->state = State::Stopped;
         p->wait  = Wait::None;
         p->stop_status  = stop_code(n);
@@ -966,7 +978,7 @@ namespace process
     // Apply every pending signal whose action needs no user code. Returns
     // true when `current` can no longer continue and the caller has to
     // reschedule.
-    static bool service_signals(user_regs* regs, iret_frame* iret)
+    static bool service_signals()
     {
         bool switch_away = false;
 
@@ -999,7 +1011,7 @@ namespace process
                         break;          // handled when it was posted
 
                     case sig::Action::Stop:
-                        stop_process(p, n, regs, iret);
+                        stop_process(p, n);
                         switch_away |= (p == current);
                         break;
 
@@ -1103,13 +1115,11 @@ namespace process
         return true;
     }
 
-    // Choose what runs next and load it into the trap frame. The caller has
-    // already saved the current process (if it is still alive). Never returns
-    // to the caller when the session is over.
-    static void reschedule(user_regs* regs, iret_frame* iret)
+    // The session-wide part of every scheduling decision: act on ^C / kill
+    // requests and on signals that need no user code, end the session when
+    // nobody is left, then pick a process that can run (nullptr: none).
+    static Process* choose_next()
     {
-        bool stall_reported = false;
-
         for (;;)
         {
             if (kill_requested)
@@ -1117,39 +1127,71 @@ namespace process
                 screen::printf("\n[interrupted]\n");
                 kill_session();
                 end_session();
+                continue;
             }
 
             tty_signals();
-            service_signals(regs, iret);
+            service_signals();
 
             if (!any_live())
+            {
                 end_session();
+                continue;
+            }
 
-            Process* next = pick_next();
+            return pick_next();
+        }
+    }
+
+    // The idle task: runs whenever a session has nothing runnable, polls
+    // for a process to wake and halts in between. Interrupts arriving here
+    // come from ring 0, so they never re-enter the scheduler.
+    static void idle_loop(void*)
+    {
+        bool stall_reported = false;
+        for (;;)
+        {
+            Process* next = choose_next();
             if (next)
             {
-                slice_ticks = 0;
-                load_context(next, regs, iret);
-                // The address space is live now, so the frame can be
-                // written. If that fails the process is gone: pick again.
-                if (deliver_signals(next, regs, iret))
-                    continue;
-                return;
+                stall_reported = false;
+                switch_process(next);
+                continue;
             }
 
             if (!stall_reported && !any_runnable())
             {
                 // Every process is stopped and nothing in the session can
                 // send SIGCONT, because the console is not running while a
-                // session is. Esc is the way out.
+                // session is.
                 stall_reported = true;
-                screen::printf("\n[stopped - press Esc to end the session]\n");
+                screen::printf("\n[stopped - press Ctrl+Alt+Backspace to end the session]\n");
             }
 
-            // Everyone is waiting (for a key, a timer, a child, a signal).
-            // Idle until an interrupt changes that. Interrupts arriving here
-            // come from ring 0, so they never re-enter the scheduler.
             asm volatile("sti; hlt");
+        }
+    }
+
+    // Switch away from the current process (which may be blocked, stopped
+    // or already terminated) to whatever should run next, the idle task if
+    // nothing can. Returns once the process is resumed, with the signals
+    // it has to handle delivered into its trap frame `regs`/`iret`. A
+    // terminated process never returns from here.
+    static void reschedule(user_regs* regs, iret_frame* iret)
+    {
+        for (;;)
+        {
+            Process* next = choose_next();
+            if (!next)
+                switch_kernel_task(&idle_task);
+            else if (next != current)
+                switch_process(next);
+
+            // Running again: whoever switched to us made us current.
+            slice_ticks = 0;
+            if (deliver_signals(current, regs, iret))
+                continue;               // killed instead: pick again
+            return;
         }
     }
 
@@ -1165,7 +1207,7 @@ namespace process
             return;
         }
 
-        if (service_signals(regs, iret) || !current ||
+        if (service_signals() || !current ||
             current->state != State::Runnable)
         {
             reschedule(regs, iret);
@@ -1187,7 +1229,6 @@ namespace process
 
         current->state = State::Blocked;
         current->wait = why;
-        save_context(current, regs, iret);
         reschedule(regs, iret);
     }
 
@@ -1215,6 +1256,18 @@ namespace process
     {
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
+
+        task::init(&console_task, "console");
+        uint64_t idle_frames = pmm::alloc_frames(IDLE_STACK_SIZE / 4096);
+        if (!idle_frames)
+        {
+            uart::printf("process: no memory for the idle stack\n");
+            screen::printf("\n\rprocess: no memory for the idle stack");
+            for (;;)
+                asm volatile("cli; hlt");
+        }
+        uint64_t idle_top = (uint64_t)phys_to_virt(idle_frames) + IDLE_STACK_SIZE;
+        task::prepare_kernel(&idle_task, "idle", idle_top, idle_loop, nullptr);
 
         asm volatile("fninit");
         fpu_save(fpu_template);
@@ -1360,15 +1413,9 @@ namespace process
         uart::printf("process: session start, pid %u %s entry=%llx\n",
                      (uint32_t)p->pid, p->name, p->ctx.iret.rip);
 
-        tss::set_kernel_stack(kstack_top(p));
-
-        current = p;
-        paging::switch_address_space(p->cr3);
-        fpu_restore(p->fpu);
-
-        cpu_context* frame = (cpu_context*)(kstack_top(p) - sizeof(cpu_context));
-        *frame = p->ctx;
-        process_enter_user(frame);
+        // The console task waits here until end_session switches back.
+        task::prepare_user(&p->task, p->name, kstack_top(p), &p->ctx);
+        switch_process(p);
 
         // --- the session is over ---
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
@@ -1414,7 +1461,6 @@ namespace process
 
         if (irq == IRQ0_TIMER && ++slice_ticks >= TIME_SLICE_TICKS)
         {
-            save_context(current, regs, iret);
             reschedule(regs, iret);
             return;
         }
@@ -1574,7 +1620,6 @@ namespace process
     void sys_yield(user_regs* regs, iret_frame* iret)
     {
         regs->rax = 0;
-        save_context(current, regs, iret);
         reschedule(regs, iret);
     }
 
@@ -1669,11 +1714,13 @@ namespace process
         child->rewound    = false;
         child->mask_saved = false;
 
-        // The child resumes from the same instruction with rax = 0.
+        // The child resumes from the same instruction with rax = 0, on its
+        // own kernel stack.
         child->ctx.regs = *regs;
         child->ctx.iret = *iret;
         child->ctx.regs.rax = 0;
         fpu_save(child->fpu);
+        task::prepare_user(&child->task, child->name, kstack_top(child), &child->ctx);
 
         child->state = State::Runnable;
         regs->rax = (uint64_t)child->pid;
