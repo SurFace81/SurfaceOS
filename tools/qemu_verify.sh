@@ -76,7 +76,7 @@ wait_for "boot: root mounted" 10; result $? "root automounted again"
 # warning must appear, proving the flag round-trips.
 wait_for "volume is dirty" 5; result $? "dirty volume detected and reported"
 
-type_cmd "exec /bin/fstest verify"
+type_cmd "exec /apps/fstest verify"
 wait_for "fstest verify: " 240; result $? "fstest verify finished"
 grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -q "fstest verify: [0-9]* passed, 0 failed" "$LOG"

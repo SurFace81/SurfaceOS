@@ -1177,10 +1177,10 @@ static void cmd_exec(int argc, const char** argv)
     // argv[1..] becomes the program's argv, so argv[0] is its own name.
     int status = 0;
     screen::printf("\n\r");
-    if (!process::run(argv[1], argc - 1, argv + 1, &status))
+    bool ran = process::run(argv[1], argc - 1, argv + 1, &status);
+    if (!ran)
     {
-        // PATH fallback: a bare name is looked up in /bin.
-        char alt[NAME_MAX + 8];
+        // PATH fallback: a bare name is looked up in /apps.
         bool has_slash = false;
         for (const char* p = argv[1]; *p; p++)
             if (*p == '/')
@@ -1188,24 +1188,21 @@ static void cmd_exec(int argc, const char** argv)
 
         if (!has_slash)
         {
-            alt[0] = '/'; alt[1] = 'b'; alt[2] = 'i'; alt[3] = 'n'; alt[4] = '/';
-            uint32_t n = 5;
+            static const char prefix[] = "/apps/";
+            char alt[NAME_MAX + sizeof(prefix)];
+            uint32_t n = 0;
+            for (const char* p = prefix; *p; p++)
+                alt[n++] = *p;
             for (const char* p = argv[1]; *p && n < sizeof(alt) - 1; p++)
                 alt[n++] = *p;
             alt[n] = '\0';
 
-            if (process::run(alt, argc - 1, argv + 1, &status))
-            {
-                if (WIFSIGNALED(status))
-                    screen::printf("%s: terminated by signal %u", argv[1],
-                                   (uint32_t)WTERMSIG(status));
-                else if (WEXITSTATUS(status) != 0)
-                    screen::printf("%s: exited with status %u", argv[1],
-                                   (uint32_t)WEXITSTATUS(status));
-                return;
-            }
+            ran = process::run(alt, argc - 1, argv + 1, &status);
         }
+    }
 
+    if (!ran)
+    {
         screen::printf("Failed to load: %s", argv[1]);
         return;
     }

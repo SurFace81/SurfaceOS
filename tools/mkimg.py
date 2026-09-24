@@ -17,7 +17,7 @@ The image is created from scratch:
                mkfs.fat --offset, UEFI-only. This is the default and matches
                how a real USB stick is laid out.
 
-Applications land in /bin/<lowercase name> without an extension, through
+Applications land in /apps/<lowercase name> without an extension, through
 LFN; the boot files are /EFI/Boot/BOOTX64.EFI, and /sfos/KERNEL.BIN and
 /sfos/FONT.FNT (the UEFI loader and the kernel expect them there). The
 test tree /home, /tmp and /test/long directory name/ is created too.
@@ -103,7 +103,7 @@ def build_gpt(image, size_mib):
 def populate(image, off_bytes, efi, kernel, font, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
-    for d in ("/EFI", "/EFI/Boot", "/sfos", "/bin", "/dev", "/home", "/tmp",
+    for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/dev", "/home", "/tmp",
               "/test", "/test/long directory name"):
         try:
             fs.makedir(d)
@@ -120,13 +120,13 @@ def populate(image, off_bytes, efi, kernel, font, apps):
     with open(font, "rb") as f:
         put("/sfos/FONT.FNT", f.read())
 
-    # Applications: /bin/<lowercase basename>, no extension (LFN).
+    # Applications: /apps/<lowercase basename>, no extension (LFN).
     for app in apps:
         base = app.rsplit("/", 1)[-1]
         if base.endswith(".bin"):
             base = base[:-4]
         with open(app, "rb") as f:
-            put("/bin/" + base.lower(), f.read())
+            put("/apps/" + base.lower(), f.read())
 
     # A test tree exercising LFN, spaces and nesting (fstest reads these).
     put("/test/long directory name/file with spaces.txt",

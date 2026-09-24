@@ -207,8 +207,7 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 
 
 # Disk image: built by tools/mkimg.py (pyfatfs, no sudo). LAYOUT=gpt|mbr|
-# superfloppy, IMG_SIZE_MIB=64. Apps land in /APPS (8.3) until stage 3.7
-# moves them to /bin with LFN names.
+# superfloppy, IMG_SIZE_MIB=64. Apps land in /apps/<name> (LFN).
 $(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \

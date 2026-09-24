@@ -140,7 +140,7 @@ wait_for "lsblk: usb0" 10; result $? "lsblk lists usb0"
 type_cmd "sync";   sleep 3
 wait_for "sync: ok" 10; result $? "sync flushes the cache"
 
-type_cmd "cd /bin"; sleep 3
+type_cmd "cd /apps"; sleep 3
 
 # 1. normal exit
 WANT=$(( $(sessions_ended) + 1 ))
