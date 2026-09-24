@@ -45,7 +45,7 @@ namespace process
     // -----------------------------------------------------------------------
 
     enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
-    enum class Wait  : uint8_t { None, Signal, Queue };
+    enum class Wait  : uint8_t { None, Queue };
 
     struct Process
     {
@@ -74,13 +74,13 @@ namespace process
         bool        stop_pending;   // a stop the parent has not seen yet
         bool        cont_pending;   // ditto for a resume
 
-        // Signals. `rewound` says the saved context points at an `int 0x80`
-        // that block() rewound and that has not re-executed yet - which is
-        // exactly when a caught signal has to choose between EINTR and
-        // SA_RESTART. It is cleared the moment the syscall does run again
-        // (syscall_enter), so it can never be stale.
+        // Signals. restart_pending: a signal ended a sleep inside syscall
+        // `syscall_nr` before it had a result (syscall_interrupted). On the
+        // way back to ring 3 the call is either restarted - RIP stepped back
+        // over `int 0x80`, rax = syscall_nr - or fails with EINTR.
         sig::signal_state sig;
-        bool        rewound;
+        uint64_t    syscall_nr;     // of the syscall running now
+        bool        restart_pending;
         bool        mask_saved;     // sigsuspend: restore this on sigreturn
         sigset_t    saved_mask;
 
@@ -862,7 +862,6 @@ namespace process
         {
             case Wait::Queue:  return p->woken ||
                                       (p->wake_tick && pit::ticks() >= p->wake_tick);
-            case Wait::Signal: return false;    // pause/sigsuspend: only a signal
             default:           return true;
         }
     }
@@ -940,9 +939,9 @@ namespace process
     //                      about to be resumed.
     //
     // Returning from a handler does not resume a kernel call: rt_sigreturn
-    // restores the saved context wholesale. That is why signals fit the
-    // existing "rewind RIP and restart" model without the scheduler having
-    // to learn how to sleep on a kernel stack.
+    // restores the saved context wholesale. A syscall the signal interrupted
+    // has already given up its sleep by then (EINTR or a restart, see
+    // restart_syscall).
 
     const sigset_t STOP_SIGNALS = SIGMASK(SIGSTOP) | SIGMASK(SIGTSTP) |
                                   SIGMASK(SIGTTIN) | SIGMASK(SIGTTOU);
@@ -1079,6 +1078,15 @@ namespace process
         return switch_away;
     }
 
+    // Make the return to ring 3 re-execute the syscall p was in: step back
+    // over `int 0x80` with the syscall number in rax again (every other
+    // argument register is still as the caller left it).
+    static void restart_syscall(Process* p, user_regs* regs, iret_frame* iret)
+    {
+        iret->rip -= INT80_LENGTH;
+        regs->rax = p->syscall_nr;
+    }
+
     // Build the handler frame on the user stack and point the trap frame at
     // the handler. False when the stack is unusable.
     static bool push_signal_frame(Process* p, int n, user_regs* regs,
@@ -1088,19 +1096,14 @@ namespace process
         if (!act.restorer)
             return false;               // the SDK always supplies one
 
-        // EINTR or SA_RESTART. block() rewound RIP over the `int 0x80`, so
-        // the context about to be saved would re-execute the syscall after
-        // the handler returns - which is exactly SA_RESTART. Without it the
-        // interrupted call has to fail instead, so step back over the
-        // rewind and plant the error before the context is captured.
-        if (p->rewound)
+        // An interrupted syscall: with SA_RESTART the context saved in the
+        // frame re-executes it after the handler returns; without, it fails
+        // with EINTR (already in rax).
+        if (p->restart_pending)
         {
-            if (!(act.flags & SA_RESTART))
-            {
-                iret->rip += INT80_LENGTH;
-                regs->rax = SYSCALL_ERR(EINTR);
-            }
-            p->rewound = false;
+            if (act.flags & SA_RESTART)
+                restart_syscall(p, regs, iret);
+            p->restart_pending = false;
         }
 
         cpu_context ctx;
@@ -1341,20 +1344,6 @@ namespace process
 
         if (deliver_signals(current, regs, iret))
             reschedule(regs, iret);
-    }
-
-    // Put the current process to sleep. With `restart`, the syscall is
-    // re-executed from scratch when the process wakes up; otherwise it
-    // returns whatever the caller left in regs->rax.
-    static void block(Wait why, bool restart, user_regs* regs, iret_frame* iret)
-    {
-        if (restart)
-            iret->rip -= INT80_LENGTH;
-        current->rewound = restart;
-
-        current->state = State::Blocked;
-        current->wait = why;
-        reschedule(regs, iret);
     }
 
     // -----------------------------------------------------------------------
@@ -1631,13 +1620,13 @@ namespace process
         return_to_user(regs, iret);
     }
 
-    // Called at the top of every syscall: the saved context is about to be
-    // superseded by a real execution, so the rewind block() recorded is no
-    // longer outstanding.
-    void syscall_enter()
+    void syscall_enter(uint64_t nr)
     {
         if (current)
-            current->rewound = false;
+        {
+            current->syscall_nr = nr;
+            current->restart_pending = false;
+        }
     }
 
     void syscall_return(user_regs* regs, iret_frame* iret)
@@ -1648,6 +1637,14 @@ namespace process
             return;
         }
         return_to_user(regs, iret);
+
+        // Interrupted, but no handler ran after all (the signal went away
+        // meanwhile): restart as if nothing had happened.
+        if (current && current->restart_pending)
+        {
+            restart_syscall(current, regs, iret);
+            current->restart_pending = false;
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1707,14 +1704,12 @@ namespace process
         return signal_group(pgid, sig);
     }
 
-    void syscall_interrupted(user_regs*, iret_frame* iret)
+    void syscall_interrupted(user_regs* regs)
     {
-        // rax still holds the syscall number: rewinding RIP over `int 0x80`
-        // makes the return to ring 3 re-execute the call. push_signal_frame
-        // steps forward again and plants EINTR when the handler has no
-        // SA_RESTART.
-        iret->rip -= INT80_LENGTH;
-        current->rewound = true;
+        // EINTR unless push_signal_frame (SA_RESTART) or syscall_return
+        // (no handler) turn it into a restart.
+        regs->rax = SYSCALL_ERR(EINTR);
+        current->restart_pending = true;
     }
 
     // -----------------------------------------------------------------------
@@ -1848,8 +1843,8 @@ namespace process
         // Handlers and the blocked mask carry over; pending signals do not
         // (POSIX: the child starts with an empty pending set).
         sig::inherit(&child->sig, &current->sig);
-        child->rewound    = false;
-        child->mask_saved = false;
+        child->restart_pending = false;
+        child->mask_saved      = false;
 
         // The child resumes from the same instruction with rax = 0, on its
         // own kernel stack.
@@ -1982,8 +1977,8 @@ namespace process
         // Every handler address belonged to the image that has just been
         // replaced; ignored signals and the blocked mask survive.
         sig::reset_on_exec(&current->sig);
-        current->rewound    = false;
-        current->mask_saved = false;
+        current->restart_pending = false;
+        current->mask_saved      = false;
 
         fpu_restore(current->fpu);
         *regs = current->ctx.regs;
@@ -2074,7 +2069,7 @@ namespace process
             current->wait_opts = options;
             if (!wait::wait_event(&current->child_wq, current_child_event, 0))
             {
-                syscall_interrupted(regs, iret);
+                syscall_interrupted(regs);
                 return;
             }
         }
@@ -2279,20 +2274,30 @@ namespace process
         iret->ss     = USER_SS;
         iret->rflags = sig::sanitize_rflags(f.ctx.iret.rflags);
 
-        current->rewound    = false;
-        current->mask_saved = false;
+        current->restart_pending = false;
+        current->mask_saved      = false;
+    }
+
+    // Nothing wakes this queue: only a signal that runs a handler ends a
+    // sleep on it (one that stops, kills or is ignored does not).
+    static wait_queue signal_wq;
+
+    static void sleep_for_signal()
+    {
+        while (wait::sleep_on(&signal_wq))
+            ;                               // spurious: SIGCONT after a stop
     }
 
     // pause(): wait for any signal that runs a handler.
-    void sys_pause(user_regs* regs, iret_frame* iret)
+    void sys_pause(user_regs* regs, iret_frame*)
     {
+        sleep_for_signal();
         regs->rax = SYSCALL_ERR(EINTR);     // the only way pause returns
-        block(Wait::Signal, false, regs, iret);
     }
 
     // rt_sigsuspend(mask, sigsetsize): swap the mask, wait, and let the
     // sigframe put the old one back - that is what makes it atomic.
-    void sys_rt_sigsuspend(user_regs* regs, iret_frame* iret)
+    void sys_rt_sigsuspend(user_regs* regs, iret_frame*)
     {
         if (regs->rsi != SIGSET_BYTES)
         {
@@ -2311,8 +2316,8 @@ namespace process
         current->mask_saved = true;
         sig::set_mask(&current->sig, SIG_SETMASK, mask, nullptr);
 
+        sleep_for_signal();
         regs->rax = SYSCALL_ERR(EINTR);
-        block(Wait::Signal, false, regs, iret);
     }
 
     // -----------------------------------------------------------------------
@@ -2391,7 +2396,7 @@ namespace process
         {
             if (!tty::wait_key())
             {
-                syscall_interrupted(regs, iret);
+                syscall_interrupted(regs);
                 return;
             }
         }

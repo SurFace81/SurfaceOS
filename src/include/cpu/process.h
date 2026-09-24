@@ -62,19 +62,16 @@ struct vnode;
 // between. The console runs on the boot task and waits in run() while a
 // session is on; end_session switches back to it.
 //
-// A syscall that has to wait (read_key, waitpid) still does not sleep in
-// the kernel: it rewinds RIP over `int 0x80`, marks the process blocked and
-// switches away; when the process runs again it re-executes the syscall
-// with its registers intact. That only works while a syscall has committed
-// no side effect before it waits, which is true of read() on a tty and of
-// wait4() but not of, say, a pipe write.
+// A syscall that has to wait (a tty read, waitpid, nanosleep, pause) sleeps
+// in the kernel on a wait queue (wait.h) and carries on from where it was
+// when it is woken. A signal that runs a handler also ends the sleep; the
+// call then either fails with EINTR or, under SA_RESTART, is restarted from
+// scratch on the way back to ring 3 (syscall_interrupted).
 //
-// Signals do not need to sleep either. A handler runs in ring 3 like any
-// other code, and rt_sigreturn restores the saved context wholesale rather
-// than resuming a kernel call, so delivery is just a rewrite of the trap
-// frame at the same boundary (see the signal section of process.cpp). What
-// a rewound syscall gains is a choice: restart as before with SA_RESTART,
-// or step back over the rewind and fail with EINTR.
+// A handler runs in ring 3 like any other code, and rt_sigreturn restores
+// the saved context wholesale rather than resuming a kernel call, so
+// delivery is just a rewrite of the trap frame at the same boundary (see
+// the signal section of process.cpp).
 //
 // The stack belongs to the process table *slot*, not to the process:
 // terminate() can free a process while executing on that very stack, so the
@@ -137,10 +134,9 @@ namespace process
     inline int exit_code_status(int code) { return (code & 0xFF) << 8; }
     inline int signal_status(int sig)     { return sig & 0x7F; }
 
-    // First step of every syscall: the saved context is about to be
-    // superseded, so a rewind recorded by a blocking call is no longer
-    // outstanding (see `rewound` in process.cpp).
-    void syscall_enter();
+    // First step of every syscall: remembers the number, in case the call
+    // is interrupted and has to be restarted.
+    void syscall_enter(uint64_t nr);
 
     // Last step of every syscall: honours a pending Esc, applies signals
     // and may switch to another process.
@@ -167,9 +163,10 @@ namespace process
 
     // A syscall slept in the kernel (wait.h) and a signal ended the sleep
     // before it had a result. Nothing may have been committed yet: the call
-    // is restarted from scratch unless the signal's handler lacks
-    // SA_RESTART, in which case it fails with EINTR. Leaves regs untouched.
-    void syscall_interrupted(user_regs* regs, iret_frame* iret);
+    // fails with EINTR (set in regs->rax) if the handler lacks SA_RESTART,
+    // and is restarted from scratch otherwise. The argument registers must
+    // still hold what the caller passed.
+    void syscall_interrupted(user_regs* regs);
 
     // Every timer tick, from any ring: wakes the sleep_until sleepers that
     // are due.

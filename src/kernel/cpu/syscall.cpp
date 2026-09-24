@@ -200,7 +200,7 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
     iret_frame* iret = (iret_frame*)(regs + 1);
     uint64_t nr = regs->rax;
 
-    process::syscall_enter();
+    process::syscall_enter(nr);
 
     syscall_handler h = nullptr;
     if (nr < SYSCALL_NR_MAX)

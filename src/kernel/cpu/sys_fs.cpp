@@ -454,7 +454,7 @@ namespace
         {
             if (!tty::wait_readable())
             {
-                process::syscall_interrupted(regs, iret);
+                process::syscall_interrupted(regs);
                 return;
             }
         }
@@ -576,7 +576,7 @@ namespace
             {
                 if (!tty::wait_readable())
                 {
-                    process::syscall_interrupted(regs, iret);
+                    process::syscall_interrupted(regs);
                     return;
                 }
                 n = do_read(f, nullptr, v.iov_base, v.iov_len);
