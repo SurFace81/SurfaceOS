@@ -226,7 +226,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     // Load STDFont and set STDFont entry in BootHeader
     UINT64 FontAddress = 0x4000;
-    LoadFile(u"font.fnt", SystemTable, Volume, FontAddress, NULL);
+    if (!LoadFile(u"\\sfos\\font.fnt", SystemTable, Volume, FontAddress, NULL)) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"\\sfos\\font.fnt not found!\n\rFatal error...");
+        while(1){}
+    }
     BootHeader.StandartFontBuffer = (void*)FontAddress;
     BootHeader.FontSymbolSizeX = 8;
     BootHeader.FontSymbolSizeY = 16;
@@ -259,7 +262,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(SystemTable->ConOut, L"Kernel memory allocate error!\n\rFatal error...");
         while(1){}
     }
-    LoadFile(u"kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize);
+    if (!LoadFile(u"\\sfos\\kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize)) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"\\sfos\\kernel.bin not found!\n\rFatal error...");
+        while(1){}
+    }
     // KernelSize is discovered after the copy: write it into the header that
     // the kernel will actually read.
     ((SFOS_BOOT_HEADER*)BootHeaderAddress)->KernelSize = BootHeader.KernelSize;

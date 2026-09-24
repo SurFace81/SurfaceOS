@@ -18,8 +18,8 @@ The image is created from scratch:
                how a real USB stick is laid out.
 
 Applications land in /bin/<lowercase name> without an extension, through
-LFN; the boot files are /EFI/Boot/BOOTX64.EFI, /KERNEL.BIN and /FONT.FNT at
-the volume root (the UEFI loader and the kernel expect them there). The
+LFN; the boot files are /EFI/Boot/BOOTX64.EFI, and /sfos/KERNEL.BIN and
+/sfos/FONT.FNT (the UEFI loader and the kernel expect them there). The
 test tree /home, /tmp and /test/long directory name/ is created too.
 
 Requires: mkfs.fat, and sfdisk (mbr) / sgdisk (gpt) on PATH; pyfatfs.
@@ -103,7 +103,7 @@ def build_gpt(image, size_mib):
 def populate(image, off_bytes, efi, kernel, font, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
-    for d in ("/EFI", "/EFI/Boot", "/bin", "/dev", "/home", "/tmp",
+    for d in ("/EFI", "/EFI/Boot", "/sfos", "/bin", "/dev", "/home", "/tmp",
               "/test", "/test/long directory name"):
         try:
             fs.makedir(d)
@@ -116,9 +116,9 @@ def populate(image, off_bytes, efi, kernel, font, apps):
     with open(efi, "rb") as f:
         put("/EFI/Boot/BOOTX64.EFI", f.read())
     with open(kernel, "rb") as f:
-        put("/KERNEL.BIN", f.read())
+        put("/sfos/KERNEL.BIN", f.read())
     with open(font, "rb") as f:
-        put("/FONT.FNT", f.read())
+        put("/sfos/FONT.FNT", f.read())
 
     # Applications: /bin/<lowercase basename>, no extension (LFN).
     for app in apps:

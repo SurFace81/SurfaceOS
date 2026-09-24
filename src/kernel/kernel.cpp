@@ -101,7 +101,7 @@ namespace
     //    loaded image. A blkdev matches when it starts at that LBA on a disk
     //    with that signature.
     // 2. No match (unknown layout, several sticks, ...): take the first
-    //    volume with a KERNEL.BIN in its root - that is our kernel, so that
+    //    volume with a /sfos/KERNEL.BIN - that is our kernel, so that
     //    volume is where we booted from in all but the strangest setups.
     // 3. Nothing at all: say so explicitly and run the console rootless;
     //    every fs command then fails cleanly instead of hanging.
@@ -196,7 +196,7 @@ namespace
                 continue;
 
             vnode* v = nullptr;
-            if (vfs::lookup("/KERNEL.BIN", nullptr, &v, false) == 0)
+            if (vfs::lookup("/sfos/KERNEL.BIN", nullptr, &v, false) == 0)
             {
                 vfs::unref(v);
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);

@@ -21,8 +21,9 @@ EFI_FILE_PROTOCOL* OpenFile(CHAR16* fileName, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *V
     EFI_FILE_PROTOCOL* RootFS;
     Volume->OpenVolume(Volume, &RootFS);
 
-    EFI_FILE_PROTOCOL* FileHandle;
-    RootFS->Open(RootFS, &FileHandle, fileName, EFI_FILE_MODE_READ, 0);
+    EFI_FILE_PROTOCOL* FileHandle = NULL;
+    if (RootFS->Open(RootFS, &FileHandle, fileName, EFI_FILE_MODE_READ, 0) != EFI_SUCCESS)
+        FileHandle = NULL;
 
     return FileHandle;
 }
@@ -40,25 +41,30 @@ EFI_FILE_INFO* GetFileInfo(EFI_FILE_PROTOCOL* FileHandle, EFI_SYSTEM_TABLE* Syst
     return buf;
 }
 
-void LoadFile(CHAR16* fileName, EFI_SYSTEM_TABLE* SystemTable, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Volume, UINT64 Address, UINT64* FileSize) {
+// Returns 0 when the file is missing or unreadable, 1 when it was loaded.
+int LoadFile(CHAR16* fileName, EFI_SYSTEM_TABLE* SystemTable, EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *Volume, UINT64 Address, UINT64* FileSize) {
     EFI_FILE_PROTOCOL* file = OpenFile(fileName, Volume);
     void* buffer;
+    int loaded = 0;
 
     if (file != NULL) {
         EFI_FILE_INFO* fileInfo = GetFileInfo(file, SystemTable);
         if (fileInfo != NULL) {
             UINT64 fileSize = fileInfo->FileSize;
-            *FileSize = fileSize;
+            if (FileSize != NULL)
+                *FileSize = fileSize;
 
             SystemTable->BootServices->AllocatePool(EfiLoaderCode, fileSize, (void**)&buffer);
 
             file->Read(file, &fileSize, buffer);
 
             CopyFile(Address, buffer, fileSize, SystemTable);
+            loaded = 1;
         }
 
         CloseFile(file);
     }
+    return loaded;
 }
 
 #endif
