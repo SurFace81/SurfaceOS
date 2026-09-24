@@ -45,7 +45,7 @@ namespace process
     // -----------------------------------------------------------------------
 
     enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
-    enum class Wait  : uint8_t { None, Child, Signal, Queue };
+    enum class Wait  : uint8_t { None, Signal, Queue };
 
     struct Process
     {
@@ -54,8 +54,8 @@ namespace process
         pid_t       pid;
         pid_t       ppid;           // 0: parent is the console session
         pid_t       pgid;           // process group, for job control
-        pid_t       wait_pid;       // Wait::Child: which child (<= 0: any)
-        uint64_t    wait_opts;      // Wait::Child: WNOHANG/WUNTRACED/...
+        pid_t       wait_pid;       // wait4 sleeping: which child (<= 0: any)
+        uint64_t    wait_opts;      // wait4 sleeping: WUNTRACED/WCONTINUED/...
         uint64_t    wake_tick;      // Wait::Queue: deadline tick, 0 for none
 
         // Wait::Queue: the queue slept on (null once woken), the next
@@ -63,6 +63,9 @@ namespace process
         wait_queue* wq;
         Process*    wq_next;
         bool        woken;
+
+        // wait4 sleeps here; notify_parent wakes it on every child event.
+        wait_queue  child_wq;
         int         exit_status;    // valid in Zombie
 
         // Job control: set when the process is stopped, cleared when the
@@ -816,6 +819,14 @@ namespace process
             current = nullptr;
     }
 
+    static bool child_event(Process* p);
+
+    // wait_event condition for wait4: an event for the calling process.
+    static bool current_child_event()
+    {
+        return child_event(current);
+    }
+
     static bool child_event(Process* p)
     {
         bool has_child = false;
@@ -849,7 +860,6 @@ namespace process
 
         switch (p->wait)
         {
-            case Wait::Child:  return child_event(p);
             case Wait::Queue:  return p->woken ||
                                       (p->wake_tick && pit::ticks() >= p->wake_tick);
             case Wait::Signal: return false;    // pause/sigsuspend: only a signal
@@ -945,7 +955,10 @@ namespace process
             return;                     // the session is the parent
         Process* parent = find_live(p->ppid);
         if (parent)
+        {
             sig::post(&parent->sig, SIGCHLD);
+            wait::wake_up(&parent->child_wq);
+        }
     }
 
     static void post_signal(Process* p, int n)
@@ -1737,8 +1750,9 @@ namespace process
         reschedule(regs, iret);
     }
 
-    // nanosleep(req, rem): req/rem are user `struct timespec`. rem is always
-    // zero for now. Sleeps in the kernel (wait::sleep_until).
+    // nanosleep(req, rem): req/rem are user `struct timespec`. Sleeps in the
+    // kernel (wait::sleep_until); rem is written only when a signal cuts the
+    // sleep short.
     void sys_nanosleep(user_regs* regs, iret_frame*)
     {
         timespec req;
@@ -1759,16 +1773,6 @@ namespace process
             return;
         }
 
-        if (rem_ptr)
-        {
-            timespec rem = { 0, 0 };
-            if (!uaccess::copy_to_user(rem_ptr, &rem, sizeof(rem)))
-            {
-                regs->rax = SYSCALL_ERR(EFAULT);
-                return;
-            }
-        }
-
         uint64_t ms = (uint64_t)req.tv_sec * 1000ULL + (uint64_t)(req.tv_nsec / 1000000);
         if (ms == 0)
             ms = 1;             // never a busy spin
@@ -1777,10 +1781,31 @@ namespace process
         if (!hz)
             hz = pit::frequency();
         uint64_t ticks = (ms * hz + 999) / 1000;
-        regs->rax = 0;
-        // A signal ends the sleep early; the call still reports success
-        // (EINTR comes with the rest of the in-kernel sleeping).
-        wait::sleep_until(pit::ticks() + (ticks ? ticks : 1));
+        uint64_t deadline = pit::ticks() + (ticks ? ticks : 1);
+
+        if (wait::sleep_until(deadline))
+        {
+            regs->rax = 0;
+            return;
+        }
+
+        // A handler is about to run (a signal without one stops, kills or
+        // is ignored without ending the sleep). Linux returns EINTR here
+        // whatever SA_RESTART says, with the time that was left in rem.
+        if (rem_ptr)
+        {
+            uint64_t now = pit::ticks();
+            uint64_t left_ms = deadline > now ? ((deadline - now) * 1000) / hz : 0;
+            timespec rem;
+            rem.tv_sec  = (sint64_t)(left_ms / 1000);
+            rem.tv_nsec = (sint64_t)(left_ms % 1000) * 1000000LL;
+            if (!uaccess::copy_to_user(rem_ptr, &rem, sizeof(rem)))
+            {
+                regs->rax = SYSCALL_ERR(EFAULT);
+                return;
+            }
+        }
+        regs->rax = SYSCALL_ERR(EINTR);
     }
 
     void sys_fork(user_regs* regs, iret_frame* iret)
@@ -1977,73 +2002,82 @@ namespace process
             return;
         }
 
-        bool has_child = false;
-        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        for (;;)
         {
-            Process* q = &table[i];
-            if (q->state == State::Unused || q->ppid != current->pid)
-                continue;
-            if (pid > 0 && q->pid != pid)
-                continue;
-
-            has_child = true;
-
-            // A stopped or resumed child is reported without being reaped:
-            // it is still there, and the shell will want to continue it.
-            int  status = 0;
-            bool report = false;
-
-            if (q->state == State::Zombie)
+            bool has_child = false;
+            for (uint32_t i = 0; i < MAX_PROCESSES; i++)
             {
-                status = q->exit_status;
-                report = true;
-            }
-            else if (q->stop_pending && (options & WUNTRACED))
-            {
-                status = q->stop_status;
-                report = true;
-            }
-            else if (q->cont_pending && (options & WCONTINUED))
-            {
-                status = 0xFFFF;
-                report = true;
-            }
+                Process* q = &table[i];
+                if (q->state == State::Unused || q->ppid != current->pid)
+                    continue;
+                if (pid > 0 && q->pid != pid)
+                    continue;
 
-            if (!report)
-                continue;
+                has_child = true;
 
-            if (status_ptr && !uaccess::copy_to_user(status_ptr, &status, sizeof(status)))
-            {
-                regs->rax = SYSCALL_ERR(EFAULT);
+                // A stopped or resumed child is reported without being reaped:
+                // it is still there, and the shell will want to continue it.
+                int  status = 0;
+                bool report = false;
+
+                if (q->state == State::Zombie)
+                {
+                    status = q->exit_status;
+                    report = true;
+                }
+                else if (q->stop_pending && (options & WUNTRACED))
+                {
+                    status = q->stop_status;
+                    report = true;
+                }
+                else if (q->cont_pending && (options & WCONTINUED))
+                {
+                    status = 0xFFFF;
+                    report = true;
+                }
+
+                if (!report)
+                    continue;
+
+                if (status_ptr && !uaccess::copy_to_user(status_ptr, &status, sizeof(status)))
+                {
+                    regs->rax = SYSCALL_ERR(EFAULT);
+                    return;
+                }
+
+                regs->rax = (uint64_t)q->pid;
+                if (q->state == State::Zombie)
+                    free_process(q);
+                else
+                {
+                    q->stop_pending = false;
+                    q->cont_pending = false;
+                }
                 return;
             }
 
-            regs->rax = (uint64_t)q->pid;
-            if (q->state == State::Zombie)
-                free_process(q);
-            else
+            if (!has_child)
             {
-                q->stop_pending = false;
-                q->cont_pending = false;
+                regs->rax = SYSCALL_ERR(ECHILD);
+                return;
             }
-            return;
-        }
 
-        if (!has_child)
-        {
-            regs->rax = SYSCALL_ERR(ECHILD);
-            return;
-        }
+            if (options & WNOHANG)
+            {
+                regs->rax = 0;
+                return;
+            }
 
-        if (options & WNOHANG)
-        {
-            regs->rax = 0;
-            return;
+            // Sleep until a child event this call asked for, then scan again.
+            // A caught signal ends the sleep: restart (SA_RESTART) or EINTR.
+            current->wait_pid  = pid;
+            current->wait_opts = options;
+            if (!wait::wait_event(&current->child_wq, current_child_event, 0))
+            {
+                syscall_interrupted(regs, iret);
+                return;
+            }
         }
-
-        current->wait_pid  = pid;
-        current->wait_opts = options;
-        block(Wait::Child, true, regs, iret);
     }
 
     // kill(pid, sig) with the POSIX pid conventions. Nothing is delivered

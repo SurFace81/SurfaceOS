@@ -11,6 +11,9 @@
 #include <signal.h>
 #include <errno.h>
 #include <termios.h>
+#include <syscall.h>
+#include <abi/syscall.h>
+#include <abi/time.h>
 
 static int passed = 0;
 static int failed = 0;
@@ -291,6 +294,67 @@ static void t_eintr()
     waitpid(child, nullptr, 0);
 }
 
+// A child that sends SIGUSR1 to the parent after `delay` ms, then lives on
+// for another `linger` ms and exits with 7.
+static pid_t signal_later(uint32_t delay, uint32_t linger)
+{
+    pid_t parent = getpid();
+    pid_t child = fork();
+    if (child == 0)
+    {
+        sleep_ms(delay);
+        kill(parent, SIGUSR1);
+        sleep_ms(linger);
+        exit(7);
+    }
+    return child;
+}
+
+static void t_eintr_sleeps()
+{
+    section("EINTR in nanosleep and wait4");
+
+    // nanosleep fails with EINTR even under SA_RESTART, and says in rem
+    // how much of the second was left.
+    install(SIGUSR1, record, SA_RESTART);
+    reset_record();
+    pid_t child = signal_later(100, 0);
+
+    struct timespec req = { 1, 0 };
+    struct timespec rem = { -1, -1 };
+    sint64_t r = syscall(SYS_NANOSLEEP, (uint64_t)&req, (uint64_t)&rem);
+    check("an interrupted nanosleep fails with EINTR", r == -EINTR);
+    check("even with SA_RESTART, after the handler ran", caught_count == 1);
+    uint64_t left = (uint64_t)rem.tv_sec * 1000 + (uint64_t)(rem.tv_nsec / 1000000);
+    check("rem holds the time that was left", rem.tv_sec >= 0 && left > 500 && left < 1000);
+    waitpid(child, nullptr, 0);
+
+    // wait4 without SA_RESTART: the signal ends the wait with EINTR, and
+    // the child can still be collected afterwards.
+    install(SIGUSR1, record, 0);
+    reset_record();
+    child = signal_later(100, 150);
+
+    int status = -1;
+    pid_t w = waitpid(child, &status, 0);
+    check("an interrupted waitpid fails", w == -1);
+    check("with EINTR", errno == EINTR);
+    check("after the handler ran", caught_count == 1);
+    check("the child is collected by the next waitpid",
+          waitpid(child, &status, 0) == child && WEXITSTATUS(status) == 7);
+
+    // With SA_RESTART the wait carries on through the handler.
+    install(SIGUSR1, record, SA_RESTART);
+    reset_record();
+    child = signal_later(100, 150);
+
+    status = -1;
+    w = waitpid(child, &status, 0);
+    check("SA_RESTART resumes waitpid until the child exits",
+          w == child && WEXITSTATUS(status) == 7);
+    check("and the handler still ran", caught_count == 1);
+}
+
 // --- faults ----------------------------------------------------------------
 
 static volatile int segv_caught = 0;
@@ -547,6 +611,7 @@ int main(int argc, char** argv)
     t_mask();
     t_order();
     t_eintr();
+    t_eintr_sleeps();
     t_segv();
     t_kill();
     t_sigchld();
