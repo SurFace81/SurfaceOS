@@ -43,7 +43,18 @@ typedef struct {
     uint32_t BootPartitionSignatureType; // 0 none (superfloppy), 1 MBR, 2 GPT
     uint8_t  BootPartitionSignature[16]; // MBR: disk signature in [0..3]
                                          // GPT: disk GUID
+    // ACPI: the RSDP (0: none found) and what the loader did to the VT-d
+    // remapping units listed in DMAR before jumping here.
+    uint64_t AcpiRsdpAddress;
+    uint32_t DmarUnits;                  // DRHD units listed in DMAR
+    uint32_t DmarDisabled;               // units that had remapping on, now off
+    uint32_t DmarFlags;                  // BOOT_DMAR_* below
 } BOOT_HEADER;
+
+// BOOT_HEADER.DmarFlags, mirror DMAR_FLAG_* in src/boot/efi/acpi.h
+#define BOOT_DMAR_PRESENT       (1U << 0)   // a DMAR table exists
+#define BOOT_DMAR_WAS_ENABLED   (1U << 1)   // some unit had TE, IRE or EPM on
+#define BOOT_DMAR_TIMEOUT       (1U << 2)   // some unit did not acknowledge
 
 typedef struct {
     uint64_t Start;

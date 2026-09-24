@@ -9,6 +9,7 @@
 
 #include "../../include/mm/heap.h"
 #include "../../include/mm/pmm.h"
+#include "../../include/cpu/paging.h"
 #include "../../include/drivers/uart.h"
 
 struct BlockHeader
@@ -98,8 +99,7 @@ namespace heap
         if (!phys)
             return false;
 
-        // Kernel runs identity-mapped: physical address is usable directly.
-        heap_insert_chunk((uint8_t*)phys, GROW_FRAMES * FRAME_SIZE);
+        heap_insert_chunk((uint8_t*)phys_to_virt(phys), GROW_FRAMES * FRAME_SIZE);
         return true;
     }
 

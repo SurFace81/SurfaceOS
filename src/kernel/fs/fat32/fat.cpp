@@ -659,18 +659,21 @@ namespace fat
 
     void set_dirty_bit(fat_super* sb, bool dirty)
     {
-        // FAT[1] holds the volume flags; bit 27 is "dirty".
+        // FAT[1] holds the volume flags; bit 27 set means clean, so marking
+        // the volume dirty clears it.
         uint32_t v = 0;
         if (read_entry(sb, 1, &v) != 0)
             return;
 
-        uint32_t want = dirty ? (v | FAT_VOL_DIRTY) : (v & ~FAT_VOL_DIRTY);
+        uint32_t want = dirty ? (v & ~FAT_VOL_CLEAN) : (v | FAT_VOL_CLEAN);
         if (want == v)
             return;
 
-        if (write_entry(sb, 1, want) != 0)
-            uart::printf("fat32: cannot %s the dirty bit\n",
-                         dirty ? "set" : "clear");
+        // Straight to the disk: the flag exists for the crash case, and a
+        // "dirty" that only reached the write-back cache is lost with it.
+        if (write_entry(sb, 1, want) != 0 || bcache::flush(sb->dev) != 0)
+            uart::printf("fat32: cannot mark the volume %s\n",
+                         dirty ? "dirty" : "clean");
     }
 
     // Mount-time FSInfo read; rebuilds the hint when unusable.

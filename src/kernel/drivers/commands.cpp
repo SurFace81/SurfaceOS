@@ -13,6 +13,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/cpu/process.h"
+#include "../../include/acpi/acpi.h"
 #include "../../sdk/include/abi/process.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/stat.h"
@@ -1215,6 +1216,99 @@ static void cmd_exec(int argc, const char** argv)
         screen::printf("%s: exited with status %u", argv[1], (uint32_t)WEXITSTATUS(status));
 }
 
+// Flush every mounted file system and unmount the root (and with it
+// everything mounted below) before the power goes: only an unmount clears
+// the FAT dirty bit, so a sync alone would leave the next boot warning about
+// an unclean volume. Forced: the machine is going away, open fds with it.
+// A failure is reported but does not stop the reboot: the user asked for
+// it, and the alternative is the power button with the same data loss.
+static void prepare_power_off(const char* what)
+{
+    screen::printf("\n\r%s: syncing file systems...", what);
+    screen::flush();
+
+    sint64_t rc = vfs::sync_all();
+    mount* root = vfs::root_mount();
+    if (root)
+    {
+        vfs::set_cwd(nullptr);
+        sint64_t urc = vfs::umount(root, true);
+        if (rc == 0)
+            rc = urc;
+    }
+
+    if (rc != 0)
+    {
+        screen::printf(" failed (%d)", (int)rc);
+        uart::printf("%s: sync failed %d\n", what, (int)rc);
+    }
+    else
+        uart::printf("%s: sync ok\n", what);
+    screen::flush();
+}
+
+static void cmd_reboot(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+    prepare_power_off("reboot");
+    screen::printf("\n\rRebooting...");
+    screen::flush();
+    acpi::reboot();
+}
+
+static void cmd_shutdown(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+    prepare_power_off("shutdown");
+    screen::printf("\n\rPowering off...");
+    screen::flush();
+    acpi::shutdown();
+
+    // Still here: no \_S5, or the platform ignored it. The file systems are
+    // clean, so holding the machine is the honest thing to do.
+    screen::printf("\n\rACPI power-off failed. It is now safe to turn off the computer.");
+    screen::flush();
+    for (;;)
+        asm volatile("cli; hlt");
+}
+
+static void cmd_acpi(int argc, const char** argv)
+{
+    (void)argc; (void)argv;
+
+    uint32_t units = 0, disabled = 0, flags = 0;
+    acpi::dmar_status(&units, &disabled, &flags);
+
+    if (!acpi::available())
+    {
+        screen::printf("\n\rNo ACPI tables");
+        return;
+    }
+
+    char sig[5];
+    uint64_t phys = 0;
+    uint32_t len = 0;
+    bool ok = false;
+    for (uint32_t i = 0; acpi::table_info(i, sig, &phys, &len, &ok); i++)
+        screen::printf("\n\r%s at %llx, %u bytes%s", sig, phys, len, ok ? "" : ", BAD CHECKSUM");
+
+    uint8_t a = 0, b = 0;
+    if (acpi::s5_values(&a, &b))
+        screen::printf("\n\r_S5: SLP_TYPa=%u SLP_TYPb=%u", (uint32_t)a, (uint32_t)b);
+    else
+        screen::printf("\n\r_S5: not found (shutdown unavailable)");
+    screen::printf("\n\rReset register: %s%s",
+                   acpi::has_reset_register() ? "yes" : "no",
+                   acpi::hardware_reduced() ? ", hardware-reduced ACPI" : "");
+
+    if (flags & BOOT_DMAR_PRESENT)
+        screen::printf("\n\rVT-d: %u unit(s), remapping was %s, turned off on %u%s",
+                       units, (flags & BOOT_DMAR_WAS_ENABLED) ? "on" : "off", disabled,
+                       (flags & BOOT_DMAR_TIMEOUT) ? " (TIMEOUT)" : "");
+    else
+        screen::printf("\n\rVT-d: no DMAR table");
+}
+
 namespace commands
 {
     void init()
@@ -1247,5 +1341,8 @@ namespace commands
         console::register_command("mv",      cmd_mv);
         console::register_command("rmdir",   cmd_rmdir);
         console::register_command("exec",    cmd_exec);
+        console::register_command("acpi",    cmd_acpi);
+        console::register_command("reboot",  cmd_reboot);
+        console::register_command("shutdown", cmd_shutdown);
     }
 }

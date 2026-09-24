@@ -3,11 +3,12 @@
 // See paging.h for the address space layout. Three rules hold everywhere in
 // this file:
 //
-//  * Page tables always live in identity-mapped RAM, so a physical table
-//    address can be dereferenced directly. That is what makes the walk below
-//    work without a recursive mapping.
-//  * Nothing outside PML4[0] is ever mapped with 2 MiB pages except the
-//    kernel device window.
+//  * Page tables are reached through the direct map: an entry holds a
+//    physical address, table() turns it into a pointer. That is what makes
+//    the walk below work without a recursive mapping, no matter which
+//    address space CR3 currently holds.
+//  * 2 MiB pages exist only in the kernel half (direct map, device window,
+//    kernel image). User space is 4 KiB pages throughout.
 //  * PAGE_NX is only ever set when the CPU reported NX support; bit 63 is a
 //    reserved bit (and faults) when EFER.NXE is clear.
 
@@ -17,18 +18,34 @@
 #include "../../include/mm/pmm.h"
 #include "../../include/drivers/uart.h"
 
-// Provided by linker.ld; marks the end of the kernel image + .bss.
-extern "C" uint8_t __kernel_end[];
+// Provided by linker.ld: physical end of the kernel image + .bss.
+extern "C" uint8_t __kernel_phys_end[];
+
+// init() zeroes and fills the final tables while kentry's boot tables are
+// still the live CR3; the two blocks must not overlap.
+static_assert(PT_TOTAL_SIZE <= PT_BOOT_OFFSET, "final page tables overlap the boot tables");
 
 namespace paging {
 
     static uint64_t kernel_pml4_phys = 0;
-    static uint64_t static_tables    = 0;   // base of the static table block
-    static uint64_t identity_max     = 0;   // exclusive, 2 MiB aligned
+    static uint8_t* static_tables    = nullptr; // static table block (virtual)
+    static uint64_t direct_map_max   = 0;   // exclusive, 2 MiB aligned
     static uint64_t nx_bit           = 0;   // PAGE_NX, or 0 when unsupported
 
     // Bump allocator for the kernel device window.
-    static uint64_t next_device_virt = KERNEL_VIRT_BASE;
+    static uint64_t next_device_virt = DEVICE_WINDOW_BASE;
+
+    // Every entry of every kernel-half table: supervisor, global. Global keeps
+    // these TLB entries alive across CR3 switches (with CR4.PGE, see
+    // cpu::init_features); without PGE the bit is simply ignored.
+    static const uint64_t KERNEL_TABLE = PAGE_PRESENT | PAGE_WRITE;
+    static const uint64_t KERNEL_LARGE = PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE | PAGE_GLOBAL;
+
+    // The next-level table an entry points to, through the direct map.
+    static inline uint64_t* table(uint64_t entry)
+    {
+        return (uint64_t*)phys_to_virt(entry & PAGE_ADDR_MASK);
+    }
 
     static inline uint64_t read_cr3()
     {
@@ -42,15 +59,15 @@ namespace paging {
     static inline uint64_t pd_index(uint64_t virt)   { return (virt >> 21) & 0x1FF; }
     static inline uint64_t pt_index(uint64_t virt)   { return (virt >> 12) & 0x1FF; }
 
-    // Highest address the kernel has to reach through the identity map.
+    // Highest address the kernel has to reach through the direct map.
     // Everything that is real RAM (free, kernel, firmware, ACPI, reserved)
-    // counts; memory-mapped IO does not - devices get the kernel window.
-    static uint64_t compute_identity_limit(BOOT_HEADER* bh)
+    // counts; memory-mapped IO does not - devices get the device window.
+    static uint64_t compute_direct_map_limit(BOOT_HEADER* bh)
     {
         const uint32_t TYPE_MAPPED_IO = 5;
 
         uint64_t limit = 0;
-        uint8_t* map = (uint8_t*)bh->MemoryMapAddress;
+        uint8_t* map = (uint8_t*)phys_to_virt((uint64_t)bh->MemoryMapAddress);
 
         for (uint64_t i = 0; i < bh->MemoryMapEntriesNumber; i++)
         {
@@ -67,64 +84,67 @@ namespace paging {
         limit = (limit + PAGE_SIZE_2M - 1) & ~(PAGE_SIZE_2M - 1);
 
         const uint64_t floor = 64ULL * 1024 * 1024;
-        const uint64_t ceiling = (uint64_t)PT_ID_PD_COUNT * 512 * PAGE_SIZE_2M;  // 32 GiB
+        const uint64_t ceiling = DIRECT_MAP_MAX;
 
         if (limit < floor)   limit = floor;
         if (limit > ceiling) limit = ceiling;
         return limit;
     }
 
-    void init(uint64_t* table_base, BOOT_HEADER* boot_header)
+    // The boot header and its memory map are read through the direct map
+    // that kentry.asm's boot tables provide for the first 1 GiB.
+    void init(uint64_t tables_phys, BOOT_HEADER* boot_header)
     {
-        uint64_t base = (uint64_t)table_base;
-
-        static_tables = base;
+        static_tables = (uint8_t*)phys_to_virt(tables_phys);
         nx_bit = cpu::has_nx() ? PAGE_NX : 0;
 
-        memory::memset((uint8_t*)base, 0x00, PT_TOTAL_SIZE);
+        memory::memset(static_tables, 0x00, PT_TOTAL_SIZE);
 
-        uint64_t* pml4      = (uint64_t*)(base + PT_PML4_OFFSET);
-        uint64_t* id_pdpt   = (uint64_t*)(base + PT_ID_PDPT_OFFSET);
-        uint64_t* id_pd     = (uint64_t*)(base + PT_ID_PD_OFFSET);
-        uint64_t* kern_pdpt = (uint64_t*)(base + PT_KERN_PDPT_OFFSET);
-        uint64_t* kern_pd   = (uint64_t*)(base + PT_KERN_PD_OFFSET);
+        uint64_t* pml4      = (uint64_t*)(static_tables + PT_PML4_OFFSET);
+        uint64_t* dm_pdpt   = (uint64_t*)(static_tables + PT_DM_PDPT_OFFSET);
+        uint64_t* dm_pd     = (uint64_t*)(static_tables + PT_DM_PD_OFFSET);
+        uint64_t* dev_pdpt  = (uint64_t*)(static_tables + PT_DEV_PDPT_OFFSET);
+        uint64_t* kern_pdpt = (uint64_t*)(static_tables + PT_KERN_PDPT_OFFSET);
+        uint64_t* kern_pd   = (uint64_t*)(static_tables + PT_KERN_PD_OFFSET);
 
-        identity_max = compute_identity_limit(boot_header);
+        direct_map_max = compute_direct_map_limit(boot_header);
 
-        // --- PML4[0]: identity map of physical RAM, supervisor only ---
-        pml4[0] = (uint64_t)id_pdpt | PAGE_PRESENT | PAGE_WRITE;
+        // --- PML4[273]: direct map of physical RAM, RW, never executable ---
+        pml4[DIRECT_MAP_PML4_INDEX] = (tables_phys + PT_DM_PDPT_OFFSET) | KERNEL_TABLE;
 
-        uint64_t id_pages = identity_max / PAGE_SIZE_2M;          // 2 MiB pages
-        uint64_t id_pds   = (id_pages + 511) / 512;
+        uint64_t dm_pages = direct_map_max / PAGE_SIZE_2M;
+        uint64_t dm_pds   = (dm_pages + 511) / 512;
 
-        for (uint64_t i = 0; i < id_pds; i++)
-            id_pdpt[i] = ((uint64_t)id_pd + i * 0x1000) | PAGE_PRESENT | PAGE_WRITE;
+        for (uint64_t i = 0; i < dm_pds; i++)
+            dm_pdpt[i] = (tables_phys + PT_DM_PD_OFFSET + i * 0x1000) | KERNEL_TABLE;
+        for (uint64_t i = 0; i < dm_pages; i++)
+            dm_pd[i] = (i * PAGE_SIZE_2M) | KERNEL_LARGE | nx_bit;
 
-        // Only the pages holding the kernel image stay executable; the heap,
-        // the stacks, the page tables and the screen back buffer all get NX.
-        uint64_t kernel_first = 0x200000 / PAGE_SIZE_2M;
-        uint64_t kernel_last  = ((uint64_t)__kernel_end + PAGE_SIZE_2M - 1) / PAGE_SIZE_2M;
+        // --- PML4[256]: device window, empty until map_device() ---
+        pml4[DEVICE_PML4_INDEX] = (tables_phys + PT_DEV_PDPT_OFFSET) | KERNEL_TABLE;
+        for (uint64_t i = 0; i < PT_DEV_PD_COUNT; i++)
+            dev_pdpt[i] = (tables_phys + PT_DEV_PD_OFFSET + i * 0x1000) | KERNEL_TABLE;
 
-        for (uint64_t i = 0; i < id_pages; i++)
-        {
-            uint64_t flags = PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE;
-            if (i < kernel_first || i >= kernel_last)
-                flags |= nx_bit;
-            id_pd[i] = (i * PAGE_SIZE_2M) | flags;
-        }
+        // --- PML4[511]: the kernel image, KERNEL_VMA + phys ---
+        // The only executable kernel memory. 2 MiB granularity, so .text,
+        // .rodata and .data share a page (as they did under the identity map).
+        pml4[KERNEL_PML4_INDEX] = (tables_phys + PT_KERN_PDPT_OFFSET) | KERNEL_TABLE;
+        kern_pdpt[KERNEL_PDPT_INDEX] = (tables_phys + PT_KERN_PD_OFFSET) | KERNEL_TABLE;
 
-        // --- PML4[256]: kernel device window, empty for now ---
-        pml4[KERNEL_PML4_INDEX] = (uint64_t)kern_pdpt | PAGE_PRESENT | PAGE_WRITE;
-        for (uint64_t i = 0; i < PT_KERN_PD_COUNT; i++)
-            kern_pdpt[i] = ((uint64_t)kern_pd + i * 0x1000) | PAGE_PRESENT | PAGE_WRITE;
+        uint64_t kernel_first = KERNEL_PHYS_BASE / PAGE_SIZE_2M;
+        uint64_t kernel_last  = ((uint64_t)__kernel_phys_end + PAGE_SIZE_2M - 1) / PAGE_SIZE_2M;
+        for (uint64_t i = kernel_first; i < kernel_last; i++)
+            kern_pd[i] = (i * PAGE_SIZE_2M) | KERNEL_LARGE;
 
-        kernel_pml4_phys = (uint64_t)pml4;
-        asm volatile("mov %0, %%cr3" :: "r"(pml4) : "memory");
+        // PML4[0..255] stay empty: from here on a physical address used as
+        // a pointer faults instead of quietly working.
+        kernel_pml4_phys = tables_phys + PT_PML4_OFFSET;
+        asm volatile("mov %0, %%cr3" :: "r"(kernel_pml4_phys) : "memory");
     }
 
-    uint64_t identity_limit()
+    uint64_t direct_map_limit()
     {
-        return identity_max;
+        return direct_map_max;
     }
 
     uint64_t map_device(uint64_t phys, uint64_t size, uint64_t cache)
@@ -137,22 +157,22 @@ namespace paging {
         uint64_t pages        = (size + offset + PAGE_SIZE_2M - 1) / PAGE_SIZE_2M;
 
         uint64_t virt = next_device_virt;
-        if (virt + pages * PAGE_SIZE_2M > KERNEL_VIRT_BASE + KERNEL_WINDOW_SIZE)
+        if (virt + pages * PAGE_SIZE_2M > DEVICE_WINDOW_BASE + DEVICE_WINDOW_SIZE)
         {
             uart::printf("paging: kernel device window exhausted\n");
             return 0;
         }
         next_device_virt += pages * PAGE_SIZE_2M;
 
-        uint64_t* kern_pd = (uint64_t*)(static_tables + PT_KERN_PD_OFFSET);
+        uint64_t* dev_pd = (uint64_t*)(static_tables + PT_DEV_PD_OFFSET);
 
         for (uint64_t i = 0; i < pages; i++)
         {
             uint64_t v = virt + i * PAGE_SIZE_2M;
-            uint64_t slot = (v - KERNEL_VIRT_BASE) / PAGE_SIZE_2M;
+            uint64_t slot = (v - DEVICE_WINDOW_BASE) / PAGE_SIZE_2M;
 
-            kern_pd[slot] = (phys_aligned + i * PAGE_SIZE_2M)
-                          | PAGE_PRESENT | PAGE_WRITE | PAGE_SIZE | cache | nx_bit;
+            dev_pd[slot] = (phys_aligned + i * PAGE_SIZE_2M)
+                         | KERNEL_LARGE | cache | nx_bit;
             invalidate_page(v);
         }
 
@@ -175,26 +195,26 @@ namespace paging {
 
     uint64_t virtual_to_phys(uint64_t virt)
     {
-        uint64_t *pml4 = (uint64_t*)read_cr3();
+        uint64_t *pml4 = table(read_cr3());
         uint64_t entry = pml4[pml4_index(virt)];
         if (!(entry & PAGE_PRESENT))
             return 0;
 
-        uint64_t *pdpt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pdpt = table(entry);
         entry = pdpt[pdpt_index(virt)];
         if (!(entry & PAGE_PRESENT))
             return 0;
         if (entry & PAGE_SIZE)    // 1 GiB huge page
             return (entry & PAGE_ADDR_MASK) | (virt & 0x3FFFFFFF);
 
-        uint64_t *pd = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pd = table(entry);
         entry = pd[pd_index(virt)];
         if (!(entry & PAGE_PRESENT))
             return 0;
         if (entry & PAGE_SIZE)    // 2 MiB huge page
             return (entry & PAGE_ADDR_MASK) | (virt & 0x1FFFFF);
 
-        uint64_t *pt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pt = table(entry);
         entry = pt[pt_index(virt)];
         if (!(entry & PAGE_PRESENT))
             return 0;
@@ -205,25 +225,25 @@ namespace paging {
     // in a huge page.
     static uint64_t* find_pte(uint64_t virt)
     {
-        uint64_t *pml4 = (uint64_t*)read_cr3();
+        uint64_t *pml4 = table(read_cr3());
         uint64_t entry = pml4[pml4_index(virt)];
         if (!(entry & PAGE_PRESENT)) return nullptr;
 
-        uint64_t *pdpt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pdpt = table(entry);
         entry = pdpt[pdpt_index(virt)];
         if (!(entry & PAGE_PRESENT) || (entry & PAGE_SIZE)) return nullptr;
 
-        uint64_t *pd = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pd = table(entry);
         entry = pd[pd_index(virt)];
         if (!(entry & PAGE_PRESENT) || (entry & PAGE_SIZE)) return nullptr;
 
-        uint64_t *pt = (uint64_t*)(entry & PAGE_ADDR_MASK);
+        uint64_t *pt = table(entry);
         return &pt[pt_index(virt)];
     }
 
     bool is_user_range(uint64_t addr, uint64_t len)
     {
-        if (addr < USER_BASE || addr >= USER_LIMIT)
+        if (addr < USER_MIN || addr >= USER_LIMIT)
             return false;
         return len <= USER_LIMIT - addr;    // cannot overflow, addr < USER_LIMIT
     }
@@ -242,26 +262,42 @@ namespace paging {
         return true;
     }
 
-    // Allocate (or reuse) the next-level table for a 4 KiB mapping walk.
-    static uint64_t* next_table(uint64_t* table, uint64_t index, uint64_t flags)
+    // Allocate a zeroed page-table frame; 0 on failure.
+    static uint64_t alloc_table()
     {
-        if (table[index] & PAGE_PRESENT)
-            return (uint64_t*)(table[index] & PAGE_ADDR_MASK);
-
         uint64_t frame = pmm::alloc_frame();
+        if (frame)
+            memory::memset((uint8_t*)phys_to_virt(frame), 0x00, 4096);
+        return frame;
+    }
+
+    // Allocate (or reuse) the next-level table for a 4 KiB mapping walk.
+    static uint64_t* next_table(uint64_t* parent, uint64_t index, uint64_t flags)
+    {
+        if (parent[index] & PAGE_PRESENT)
+            return table(parent[index]);
+
+        uint64_t frame = alloc_table();
         if (!frame)
             return nullptr;
 
-        memory::memset((uint8_t*)frame, 0x00, 4096);
-        table[index] = frame | flags;
-        return (uint64_t*)frame;
+        parent[index] = frame | flags;
+        return table(frame);
     }
 
     // NOTE: maps into the currently active address space (cr3).
     // Switch to the target process address space before mapping its pages.
     bool map_page(uint64_t virt, uint64_t phys, uint64_t flags)
     {
-        uint64_t *pml4 = (uint64_t*)read_cr3();
+        uint64_t *pml4 = table(read_cr3());
+
+        // A new upper-half PML4 entry would only exist in this address
+        // space; the kernel half is fixed by init() (see paging.h).
+        if (pml4_index(virt) >= USER_PML4_COUNT && !(pml4[pml4_index(virt)] & PAGE_PRESENT))
+        {
+            uart::printf("paging: map_page(%llx): kernel PML4 slot not set up\n", virt);
+            return false;
+        }
 
         // Intermediate tables must always be user-accessible when the leaf
         // page is (the CPU ANDs the U/S bit along the walk), and must never
@@ -285,11 +321,10 @@ namespace paging {
 
     bool map_user_page(uint64_t virt, uint64_t phys, uint64_t flags)
     {
-        // Without this check a crafted ELF (p_vaddr in the low canonical
-        // range) would walk PML4[0] - which every address space shares with
-        // the kernel - and permanently punch user-accessible entries into
-        // the kernel's own page tables. destroy_address_space() only tears
-        // down PML4[USER_PML4_INDEX], so the damage would outlive the app.
+        // Without this check a crafted ELF could map page 0 (turning a NULL
+        // dereference into a read of its own data) or walk an upper-half
+        // PML4 entry - which every address space shares with the kernel -
+        // and punch user-accessible entries into the kernel's own tables.
         if (!is_user_range(virt, PAGE_SIZE_4K))
             return false;
 
@@ -338,67 +373,61 @@ namespace paging {
         return *pte & PAGE_ADDR_MASK;
     }
 
-    // Allocate a zeroed table frame for the clone; 0 on failure.
-    static uint64_t alloc_table()
+    // Deep-copy one level of the user half. `level` is that of `src`
+    // (3 = PDPT, 2 = PD, 1 = PT); PT entries are data pages and get a fresh
+    // frame with the same contents. Entries keep their flags.
+    static bool clone_level(uint64_t* dst, const uint64_t* src, int level)
     {
-        uint64_t frame = pmm::alloc_frame();
-        if (frame)
-            memory::memset((uint8_t*)frame, 0x00, 4096);
-        return frame;
+        for (uint64_t i = 0; i < 512; i++)
+        {
+            uint64_t e = src[i];
+            if (!(e & PAGE_PRESENT))
+                continue;
+
+            if (level == 1)
+            {
+                uint64_t frame = pmm::alloc_frame();
+                if (!frame)
+                    return false;
+                memory::memcpy((uint8_t*)phys_to_virt(frame),
+                               (const uint8_t*)table(e), 4096);
+                dst[i] = frame | (e & ~PAGE_ADDR_MASK);
+                continue;
+            }
+
+            if (e & PAGE_SIZE)
+                continue;       // user space has no huge pages
+
+            uint64_t frame = alloc_table();
+            if (!frame)
+                return false;
+            dst[i] = frame | (e & ~PAGE_ADDR_MASK);
+
+            if (!clone_level(table(frame), table(e), level - 1))
+                return false;
+        }
+        return true;
     }
 
     bool clone_user_space(uint64_t dst_pml4, uint64_t src_pml4)
     {
-        uint64_t src_e = ((uint64_t*)src_pml4)[USER_PML4_INDEX];
-        uint64_t dst_e = ((uint64_t*)dst_pml4)[USER_PML4_INDEX];
-        if (!(src_e & PAGE_PRESENT) || !(dst_e & PAGE_PRESENT))
-            return false;
-
-        uint64_t* src_pdpt = (uint64_t*)(src_e & PAGE_ADDR_MASK);
-        uint64_t* dst_pdpt = (uint64_t*)(dst_e & PAGE_ADDR_MASK);
-
-        // Tables are walked and written through the identity map, so this
+        // Tables are walked and written through the direct map, so this
         // works no matter which address space CR3 currently holds.
-        for (uint64_t i = 0; i < 512; i++)
+        uint64_t* src = table(src_pml4);
+        uint64_t* dst = table(dst_pml4);
+
+        for (uint64_t i = 0; i < USER_PML4_COUNT; i++)
         {
-            if (!(src_pdpt[i] & PAGE_PRESENT) || (src_pdpt[i] & PAGE_SIZE))
+            if (!(src[i] & PAGE_PRESENT))
                 continue;
 
-            uint64_t pd_frame = alloc_table();
-            if (!pd_frame)
+            uint64_t frame = alloc_table();
+            if (!frame)
                 return false;
-            dst_pdpt[i] = pd_frame | (src_pdpt[i] & ~PAGE_ADDR_MASK);
+            dst[i] = frame | (src[i] & ~PAGE_ADDR_MASK);
 
-            uint64_t* src_pd = (uint64_t*)(src_pdpt[i] & PAGE_ADDR_MASK);
-            uint64_t* dst_pd = (uint64_t*)pd_frame;
-
-            for (uint64_t j = 0; j < 512; j++)
-            {
-                if (!(src_pd[j] & PAGE_PRESENT) || (src_pd[j] & PAGE_SIZE))
-                    continue;
-
-                uint64_t pt_frame = alloc_table();
-                if (!pt_frame)
-                    return false;
-                dst_pd[j] = pt_frame | (src_pd[j] & ~PAGE_ADDR_MASK);
-
-                uint64_t* src_pt = (uint64_t*)(src_pd[j] & PAGE_ADDR_MASK);
-                uint64_t* dst_pt = (uint64_t*)pt_frame;
-
-                for (uint64_t k = 0; k < 512; k++)
-                {
-                    if (!(src_pt[k] & PAGE_PRESENT))
-                        continue;
-
-                    uint64_t frame = pmm::alloc_frame();
-                    if (!frame)
-                        return false;
-
-                    memory::memcpy((uint8_t*)frame,
-                                   (uint8_t*)(src_pt[k] & PAGE_ADDR_MASK), 4096);
-                    dst_pt[k] = frame | (src_pt[k] & ~PAGE_ADDR_MASK);
-                }
-            }
+            if (!clone_level(table(frame), table(src[i]), 3))
+                return false;
         }
         return true;
     }
@@ -425,68 +454,43 @@ namespace paging {
 
     uint64_t create_address_space()
     {
-        uint64_t pml4 = pmm::alloc_frame();
+        uint64_t pml4 = alloc_table();
         if (!pml4)
             return 0;
 
-        memory::memset((uint8_t*)pml4, 0x00, 4096);
-
-        // Share every kernel mapping by copying two PML4 entries: the
-        // identity map and the device window. Neither carries PAGE_USER, so
-        // ring 3 cannot reach them.
-        uint64_t *kpml4 = (uint64_t*)kernel_pml4_phys;
-        uint64_t *upml4 = (uint64_t*)pml4;
-        upml4[0]                 = kpml4[0];
-        upml4[KERNEL_PML4_INDEX] = kpml4[KERNEL_PML4_INDEX];
-
-        // Fresh empty PDPT for the user region.
-        uint64_t user_pdpt = pmm::alloc_frame();
-        if (!user_pdpt)
-        {
-            pmm::free_frame(pml4);
-            return 0;
-        }
-        memory::memset((uint8_t*)user_pdpt, 0x00, 4096);
-        upml4[USER_PML4_INDEX] = user_pdpt | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
+        // Share the kernel by copying the upper half of its PML4: the tables
+        // below those entries are the kernel's own, so later changes inside
+        // them (map_device) are visible everywhere. None carries PAGE_USER.
+        // The lower half starts empty; map_page builds it on demand.
+        uint64_t *kpml4 = table(kernel_pml4_phys);
+        uint64_t *upml4 = table(pml4);
+        for (uint64_t i = USER_PML4_COUNT; i < 512; i++)
+            upml4[i] = kpml4[i];
 
         return pml4;
     }
 
-    // Free the page-table subtree of one PDPT entry (user region only).
-    static void destroy_pdpt_entry(uint64_t pdpt_phys, uint64_t pdpt_idx)
+    // Free a user page-table subtree: every table and every data page below
+    // `table_phys` (a table of `level`: 3 = PDPT, 2 = PD, 1 = PT), then the
+    // table itself.
+    static void destroy_level(uint64_t table_phys, int level)
     {
-        uint64_t *pdpt = (uint64_t*)pdpt_phys;
-        uint64_t pdpt_entry = pdpt[pdpt_idx];
-        if (!(pdpt_entry & PAGE_PRESENT))
-            return;
+        uint64_t *t = table(table_phys);
 
-        uint64_t pd_phys = pdpt_entry & PAGE_ADDR_MASK;
-        uint64_t *pd = (uint64_t*)pd_phys;
-
-        for (uint64_t pd_idx = 0; pd_idx < 512; pd_idx++)
+        for (uint64_t i = 0; i < 512; i++)
         {
-            uint64_t pd_entry = pd[pd_idx];
-            if (!(pd_entry & PAGE_PRESENT))
+            uint64_t e = t[i];
+            if (!(e & PAGE_PRESENT))
                 continue;
 
-            if (pd_entry & PAGE_SIZE)
-            {
-                // 2 MiB huge page in user space: free the whole region
-                pmm::free_frames(pd_entry & PAGE_ADDR_MASK, 512);
-                continue;
-            }
-
-            uint64_t pt_phys = pd_entry & PAGE_ADDR_MASK;
-            uint64_t *pt = (uint64_t*)pt_phys;
-            for (uint64_t pt_idx = 0; pt_idx < 512; pt_idx++)
-            {
-                uint64_t pt_entry = pt[pt_idx];
-                if (pt_entry & PAGE_PRESENT)
-                    pmm::free_frame(pt_entry & PAGE_ADDR_MASK);
-            }
-            pmm::free_frame(pt_phys);
+            if (level == 1)
+                pmm::free_frame(e & PAGE_ADDR_MASK);
+            else if (level == 2 && (e & PAGE_SIZE))
+                pmm::free_frames(e & PAGE_ADDR_MASK, 512);   // 2 MiB page
+            else if (!(e & PAGE_SIZE))
+                destroy_level(e & PAGE_ADDR_MASK, level - 1);
         }
-        pmm::free_frame(pd_phys);
+        pmm::free_frame(table_phys);
     }
 
     void destroy_address_space(uint64_t pml4_phys)
@@ -494,17 +498,11 @@ namespace paging {
         if (!pml4_phys || pml4_phys == kernel_pml4_phys)
             return;
 
-        uint64_t *pml4 = (uint64_t*)pml4_phys;
-        uint64_t entry = pml4[USER_PML4_INDEX];
-        if (entry & PAGE_PRESENT)
-        {
-            uint64_t pdpt_phys = entry & PAGE_ADDR_MASK;
-
-            for (uint64_t i = 0; i < 512; i++)
-                destroy_pdpt_entry(pdpt_phys, i);
-
-            pmm::free_frame(pdpt_phys);
-        }
+        // Lower half only: the upper half belongs to the kernel.
+        uint64_t *pml4 = table(pml4_phys);
+        for (uint64_t i = 0; i < USER_PML4_COUNT; i++)
+            if (pml4[i] & PAGE_PRESENT)
+                destroy_level(pml4[i] & PAGE_ADDR_MASK, 3);
 
         pmm::free_frame(pml4_phys);
     }

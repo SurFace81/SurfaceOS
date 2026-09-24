@@ -12,28 +12,33 @@ struct fd_table;
 struct vnode;
 
 // ---------------------------------------------------------------------------
-// User address space layout (inside PML4[USER_PML4_INDEX], 1 GiB)
+// User address space layout (lower half, [USER_MIN, USER_LIMIT), see paging.h)
 // ---------------------------------------------------------------------------
 //
-//   USER_BASE + 1 MiB     ELF image (PT_LOAD segments, see src/sdk/linker.ld)
-//   image_end             heap, grows up via SYS_BRK      (up to USER_MMAP_BASE)
-//   USER_MMAP_BASE        anonymous mmap region           (up to the stack)
-//   stack bottom          stack, grows down, NX           (one guard page above)
+//   0x0000000000000000  NULL guard, never mapped            (below USER_MIN)
+//   0x0000000000400000  ELF image (PT_LOAD segments, see src/sdk/linker.ld)
+//   image_end           heap, grows up via SYS_BRK          (up to USER_MMAP_BASE)
+//   0x0000000010000000  anonymous mmap window               (USER_MMAP_SIZE)
+//   ...                 unused
+//   stack bottom        stack, grows down, NX               (USER_STACK_SIZE)
+//   0x00007FFFFFFFF000  USER_STACK_TOP; one unmapped guard page above it
 //
-// Everything must stay inside [USER_BASE, USER_LIMIT); paging::map_user_page
-// enforces that.
+// Every address space has the whole lower half to itself, so all programs
+// link at the same address. The regions are sized independently: the mmap
+// window is a fixed span because sys_mmap scans it page by page, and the
+// stack sits at the top of the half so either can grow without moving the
+// other. paging::map_user_page enforces [USER_MIN, USER_LIMIT).
 //
 // The argv/envp/auxv block execve() builds lives at the top of this same
 // stack (the SysV ABI initial-process-stack layout), so there is no separate
 // args region any more.
-#define USER_IMAGE_VADDR    (USER_BASE + 0x100000)
+#define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/linker.ld
 #define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
-#define USER_MMAP_BASE      (USER_BASE + 0x10000000)
+#define USER_MMAP_BASE      0x10000000ULL
+#define USER_MMAP_SIZE      0x30000000ULL           // 768 MiB
+#define USER_MMAP_LIMIT     (USER_MMAP_BASE + USER_MMAP_SIZE)
 #define USER_STACK_SIZE     (1024 * 1024)           // 1 MiB: args + program stack
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
-// The mmap region runs up to the bottom of the stack (leaving a gap so the
-// two never collide): stack bottom is USER_STACK_TOP - USER_STACK_SIZE.
-#define USER_MMAP_LIMIT     (USER_STACK_TOP - USER_STACK_SIZE)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32

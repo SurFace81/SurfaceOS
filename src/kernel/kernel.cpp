@@ -8,6 +8,7 @@
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
 #include "../include/cpu/syscall.h"
+#include "../include/acpi/acpi.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
@@ -27,10 +28,6 @@
 #include "../include/drivers/usb/xhci.h"
 #include "../include/stdlib/string.h"
 #include "../sdk/include/abi/errno.h"
-
-// Base of the static page tables. The bootloader AllocatePages()es 5 MB here
-// and linker.ld asserts that the kernel image stops short of it.
-#define PAGE_TABLE_BASE 0x300000
 
 namespace
 {
@@ -129,6 +126,30 @@ namespace
             vfs::umount(m, true);   // shutdown: tear down regardless of fds
     }
 
+    // What the loader did to VT-d (it has no way to print after
+    // ExitBootServices). Also on screen: the laptop that needs this has no
+    // serial port.
+    void report_dmar(const BOOT_HEADER* hdr)
+    {
+        uart::printf("boot: acpi rsdp=%llx\n", hdr->AcpiRsdpAddress);
+
+        if (!(hdr->DmarFlags & BOOT_DMAR_PRESENT))
+        {
+            uart::printf("boot: no DMAR table, no VT-d to take over\n");
+            return;
+        }
+
+        uart::printf("boot: DMAR %u unit(s), remapping was %s, turned off on %u%s\n",
+                     hdr->DmarUnits,
+                     (hdr->DmarFlags & BOOT_DMAR_WAS_ENABLED) ? "on" : "off",
+                     hdr->DmarDisabled,
+                     (hdr->DmarFlags & BOOT_DMAR_TIMEOUT) ? " (TIMEOUT)" : "");
+        if (hdr->DmarFlags & BOOT_DMAR_WAS_ENABLED)
+            screen::printf("VT-d: %u unit(s), remapping turned off on %u%s\n\r",
+                           hdr->DmarUnits, hdr->DmarDisabled,
+                           (hdr->DmarFlags & BOOT_DMAR_TIMEOUT) ? ", TIMEOUT" : "");
+    }
+
     void automount_root(const BOOT_HEADER* hdr)
     {
         // Pass 1: exact boot-volume match.
@@ -207,23 +228,28 @@ namespace
     }
 }
 
-extern "C" void kmain(BOOT_HEADER* BootHeader)
+extern "C" void kmain(uint64_t boot_header_phys)
 {
-    // kentry.asm has already zeroed .bss and switched to the kernel stack.
-    //
+    // kentry.asm has already zeroed .bss, switched to the kernel stack and
+    // moved us to the higher half. Its boot tables direct-map the first
+    // 1 GiB, which is where the loader put the boot header.
+    BOOT_HEADER* BootHeader = (BOOT_HEADER*)phys_to_virt(boot_header_phys);
+
     // Init order is load-bearing:
     //   features before paging  - PAGE_NX is a reserved bit until EFER.NXE
     //                             is set, and PAGE_CACHE_WC means nothing
     //                             until the PAT is programmed.
     //   paging  before pmm      - the PMM refuses to manage memory the
-    //                             identity map does not cover.
+    //                             direct map does not cover.
     //   uart    before pmm      - so the memory report is actually visible.
     //   pmm     before screen   - the back buffer is a PMM allocation now.
     cpu::init_features();
 
     gdt::init();
     tss::init();
-    paging::init((uint64_t*)PAGE_TABLE_BASE, BootHeader);
+    // The bootloader AllocatePages()es 5 MB at PAGE_TABLES_PHYS and
+    // linker.ld asserts that the kernel image stops short of it.
+    paging::init(PAGE_TABLES_PHYS, BootHeader);
 
     idt::init();
     irq::init();
@@ -235,6 +261,9 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
     pmm::init(BootHeader);
     memory::init(BootHeader->TotalMemorySize);
 
+    // Tables only, no AML: just enough for reboot/shutdown.
+    acpi::init(BootHeader);
+
     // From here on every stage announces itself on the serial line. On real
     // hardware a hang before the timer IRQ starts flushing the back buffer
     // leaves a black screen and nothing else to go on.
@@ -245,6 +274,7 @@ extern "C" void kmain(BOOT_HEADER* BootHeader)
                  BootHeader->ScreenWidth, BootHeader->ScreenHeight,
                  (uint64_t)BootHeader->FrameBufferAddress,
                  (uint64_t)screen::vram_base());
+    report_dmar(BootHeader);
 
     keyboard::init();
     uart::printf("boot: keyboard ready\n");

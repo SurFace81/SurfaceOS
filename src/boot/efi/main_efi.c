@@ -5,6 +5,7 @@
 #include "gop.h"
 #include "memory.h"
 #include "bootheader.h"
+#include "acpi.h"
 
 // MEDIA_HARDDRIVE_DP node (UEFI spec, Media Device Path, subtype 1).
 // Laid over EFI_DEVICE_PATH_PROTOCOL by hand: efi.h does not define it.
@@ -235,6 +236,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     EFI_PHYSICAL_ADDRESS PagingSpace = (EFI_PHYSICAL_ADDRESS)0x300000;
     SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, (5 * 1024 * 1024) / 4096, &PagingSpace); // 5 MB for 2 GB memory
 
+    // ACPI root for the kernel; the loader itself needs it for DMAR below.
+    ACPI_RSDP *Rsdp = acpi_find_rsdp(SystemTable);
+    BootHeader.AcpiRsdpAddress = (UINT64)Rsdp;
+
     // Kernel load address. Must be set before the BootHeader copy: it used
     // to be assigned after, so the kernel saw garbage in KernelAddress.
     BootHeader.KernelAddress = 0x200000;
@@ -269,7 +274,87 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     // Call kernel
     void (__attribute__((sysv_abi)) *Start)(SFOS_BOOT_HEADER*) = ((__attribute__((sysv_abi)) void (*)(SFOS_BOOT_HEADER*) ) BootHeader.KernelAddress);
 
-    SystemTable->BootServices->ExitBootServices(ImageHandle, MapKey);
+    // Exit boot services. The MapKey from the memory map at the top is long
+    // stale by now (every AllocatePool/AllocatePages/LoadFile since changed
+    // the map), and ExitBootServices rejects a stale key. It used to be
+    // called unchecked with that key, so it failed and the firmware - its
+    // timers, its drivers, its DMA protection - stayed alive under the
+    // kernel. Take a fresh key with no allocation in between; the spec
+    // allows exactly one more GetMemoryMap + retry if that still races.
+    // The map handed to the kernel stays the early one: nothing allocated
+    // since then is memory the kernel may use anyway.
+    //
+    // The buffer is sized from the map as it is *now*, not from the early
+    // one: GOP, the file system driver and every LoadFile since then split
+    // the map into many more descriptors on real firmware, and a buffer
+    // sized off the early map made GetMemoryMap fail with BUFFER_TOO_SMALL.
+    // A failed ExitBootServices call may still run the firmware's
+    // before-exit handlers, which allocate and change the map again, and
+    // after a failed call only GetMemoryMap/ExitBootServices are allowed -
+    // so the buffer gets generous slack up front and the loop retries a few
+    // times rather than once.
+    {
+        EFI_BOOT_SERVICES *BS = SystemTable->BootServices;
+        EFI_MEMORY_DESCRIPTOR* ExitMap = NULL;
+        UINTN ExitMapCapacity = 0;
+        UINTN ExitMapSize = 0;
+        EFI_STATUS ebs = EFI_BUFFER_TOO_SMALL;
+        int attempt = 0;
+        int ebsTried = 0;
+
+        for (; attempt < 8; attempt++) {
+            if (ebs == EFI_BUFFER_TOO_SMALL) {
+                // Pool allocations are only legal before the first
+                // ExitBootServices call.
+                if (ebsTried)
+                    break;
+                if (ExitMap)
+                    BS->FreePool(ExitMap);
+                ExitMap = NULL;
+                ExitMapSize = 0;
+                BS->GetMemoryMap(&ExitMapSize, NULL, &MapKey, &DescriptorSize, &DescriptorVersion);
+                ExitMapCapacity = ExitMapSize + 64 * DescriptorSize;
+                if (BS->AllocatePool(EfiLoaderData, ExitMapCapacity, (void**)&ExitMap) != EFI_SUCCESS) {
+                    ebs = EFI_OUT_OF_RESOURCES;
+                    break;
+                }
+            }
+
+            ExitMapSize = ExitMapCapacity;
+            ebs = BS->GetMemoryMap(&ExitMapSize, ExitMap, &MapKey, &DescriptorSize, &DescriptorVersion);
+            if (ebs == EFI_BUFFER_TOO_SMALL)
+                continue;
+            if (ebs != EFI_SUCCESS)
+                break;
+
+            ebsTried = 1;
+            ebs = BS->ExitBootServices(ImageHandle, MapKey);
+            if (ebs != EFI_INVALID_PARAMETER)   // success, or not a stale key
+                break;
+        }
+
+        if (ebs != EFI_SUCCESS) {
+            // Status low byte, attempt, map size needed vs buffer (bytes):
+            // enough to tell a stale key from a short buffer on hardware.
+            CHAR16 msg[] = L"ExitBootServices failed! st=XX try=X map=XXXXX/XXXXX\n\rFatal error...";
+            UINT64 fields[4] = { ebs & 0xFF, (UINT64)attempt, ExitMapSize, ExitMapCapacity };
+            UINTN pos[4] = { 28, 35, 41, 47 }, width[4] = { 2, 1, 5, 5 };
+            for (int f = 0; f < 4; f++)
+                for (UINTN d = 0; d < width[f]; d++)
+                    msg[pos[f] + d] = nums_table[(fields[f] >> (4 * (width[f] - 1 - d))) & 0xF];
+            SystemTable->ConOut->OutputString(SystemTable->ConOut, msg);
+            while(1){}
+        }
+    }
+
+    // Boot services are gone, the firmware's page tables are still live:
+    // switch the VT-d units off through their physical register addresses
+    // and tell the kernel how it went.
+    {
+        SFOS_BOOT_HEADER *Header = (SFOS_BOOT_HEADER*)BootHeaderAddress;
+        Header->DmarFlags = acpi_disable_dmar(Rsdp, &Header->DmarUnits, &Header->DmarDisabled);
+    }
+
     Start((SFOS_BOOT_HEADER*)BootHeaderAddress);
 
     while(1) {}

@@ -132,7 +132,7 @@ namespace bcache
             uint64_t frame = pmm::alloc_frame();
             if (!frame)
                 break;
-            buffers[i].data = (uint8_t*)frame;    // identity-mapped
+            buffers[i].data = (uint8_t*)phys_to_virt(frame);
             allocated++;
         }
         nbuf = allocated;

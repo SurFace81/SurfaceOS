@@ -11,8 +11,9 @@ ENTRY(_start)
  * table in it at file offset 0 (the Linux layout), which is what makes
  * AT_PHDR point at real memory in the loaded image.
  *
- * The link address must stay inside [USER_BASE, USER_MMAP_BASE); see
- * USER_IMAGE_VADDR in src/include/cpu/process.h.
+ * The link address is USER_IMAGE_VADDR (src/include/cpu/process.h); the
+ * image must end below USER_MMAP_BASE. Pages below 0x10000 are the NULL
+ * guard and never mapped.
  */
 PHDRS
 {
@@ -22,7 +23,7 @@ PHDRS
 }
 
 SECTIONS {
-    . = 0x40000100000 + SIZEOF_HEADERS;
+    . = 0x400000 + SIZEOF_HEADERS;
 
     .text : {
         *(.text._start)

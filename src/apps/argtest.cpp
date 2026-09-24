@@ -205,9 +205,9 @@ int main(int argc, char** argv)
     uint64_t phent = aux_get(av, AT_PHENT, &f);
     check("AT_PHENT is 56", f && phent == 56);
     uint64_t phdr = aux_get(av, AT_PHDR, &f);
-    check("AT_PHDR points into the image", f && phdr >= 0x40000100000ULL && phdr < 0x40001000000ULL);
+    check("AT_PHDR points into the image", f && phdr >= 0x400000ULL && phdr < 0x1000000ULL);
     uint64_t rnd = aux_get(av, AT_RANDOM, &f);
-    bool rnd_ok = f && rnd >= 0x4003FE00000ULL && rnd < 0x40040000000ULL;   // stack
+    bool rnd_ok = f && rnd >= 0x7FFFFFE00000ULL && rnd < 0x800000000000ULL;   // stack
     check("AT_RANDOM points to 16 bytes on the stack", rnd_ok);
     if (rnd_ok)
     {

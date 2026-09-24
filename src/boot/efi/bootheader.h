@@ -45,6 +45,13 @@ typedef struct {
     UINT32 BootPartitionSignatureType; // 0 none (superfloppy), 1 MBR, 2 GPT
     UINT8  BootPartitionSignature[16]; // MBR: disk signature in [0..3]
                                        // GPT: disk GUID
+    // ACPI. RSDP from the EFI configuration table (0: none found), and what
+    // the loader did to the VT-d remapping units listed in DMAR right before
+    // jumping to the kernel (see acpi.h).
+    UINT64 AcpiRsdpAddress;
+    UINT32 DmarUnits;                  // DRHD units listed in DMAR
+    UINT32 DmarDisabled;               // units that had remapping on, now off
+    UINT32 DmarFlags;                  // DMAR_FLAG_* from acpi.h
 } SFOS_BOOT_HEADER;
 
 #pragma pack(push, 1)
