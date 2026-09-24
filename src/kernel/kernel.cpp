@@ -226,6 +226,46 @@ namespace
         //                (uint32_t)usb::get_block_device_count(),
         //                blkdevs);
     }
+
+    // Look up the top-level directory /<name>, creating it on the root
+    // volume when it is missing (an image made by hand, or an older mkimg).
+    // On success *out holds a reference when out is not null; *created is
+    // set when the directory had to be made.
+    sint64_t ensure_root_dir(const char* name, vnode** out, bool* created)
+    {
+        char path[16];
+        path[0] = '/';
+        uint32_t n = 1;
+        for (const char* p = name; *p && n < sizeof(path) - 1; p++)
+            path[n++] = *p;
+        path[n] = '\0';
+
+        vnode* dir = nullptr;
+        sint64_t rc = vfs::lookup(path, nullptr, &dir, true);
+        if (rc == -ENOENT)
+        {
+            vnode* root = nullptr;
+            rc = vfs::lookup("/", nullptr, &root, true);
+            if (rc == 0 && root->ops->mkdir)
+            {
+                rc = root->ops->mkdir(root, name, 0755);
+                if (rc == 0)
+                {
+                    uart::printf("boot: created %s\n", path);
+                    *created = true;
+                    rc = vfs::lookup(path, nullptr, &dir, true);
+                }
+            }
+            if (root)
+                vfs::unref(root);
+        }
+
+        if (rc == 0 && out)
+            *out = dir;
+        else if (dir)
+            vfs::unref(dir);
+        return rc;
+    }
 }
 
 extern "C" void kmain(uint64_t boot_header_phys)
@@ -301,24 +341,27 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     automount_root(BootHeader);
 
-    // Mount devfs over /dev. The directory comes from the disk image
-    // (tools/mkimg.py creates it); when it is missing, create it on the
-    // root volume.
+    // The top-level directories come from the disk image (tools/mkimg.py
+    // creates them); the ones that are missing are created on the root
+    // volume and flushed right away, so a power cut does not lose them.
+    if (vfs::root_mount())
+    {
+        static const char* const dirs[] = { "dev", "files", "tmp", "mount" };
+        bool created = false;
+        for (const char* d : dirs)
+        {
+            sint64_t rc = ensure_root_dir(d, nullptr, &created);
+            if (rc != 0)
+                uart::printf("boot: /%s unavailable (%d)\n", d, (int)rc);
+        }
+        if (created)
+            vfs::sync_all();
+    }
+
+    // Mount devfs over /dev.
     {
         vnode* dev_dir = nullptr;
         sint64_t rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
-        if (rc == -ENOENT)
-        {
-            vnode* root = nullptr;
-            rc = vfs::lookup("/", nullptr, &root, true);
-            if (rc == 0 && root->ops->mkdir)
-            {
-                rc = root->ops->mkdir(root, "dev", 0755);
-                if (rc == 0)
-                    rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
-            }
-            vfs::unref(root);
-        }
         if (rc == 0 && dev_dir)
         {
             rc = vfs::mount_at(dev_dir, "devfs", &devfs::fs, nullptr);

@@ -20,7 +20,8 @@ The image is created from scratch:
 Applications land in /apps/<lowercase name> without an extension, through
 LFN; the boot files are /EFI/Boot/BOOTX64.EFI, and /sfos/KERNEL.BIN and
 /sfos/FONT.FNT (the UEFI loader and the kernel expect them there). The
-test tree /home, /tmp and /test/long directory name/ is created too.
+top-level /files, /tmp and /mount and the test tree /test/long directory
+name/ are created too.
 
 Requires: mkfs.fat, and sfdisk (mbr) / sgdisk (gpt) on PATH; pyfatfs.
 """
@@ -103,8 +104,8 @@ def build_gpt(image, size_mib):
 def populate(image, off_bytes, efi, kernel, font, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
-    for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/dev", "/home", "/tmp",
-              "/test", "/test/long directory name"):
+    for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/dev", "/files",
+              "/tmp", "/mount", "/test", "/test/long directory name"):
         try:
             fs.makedir(d)
         except Exception:
