@@ -28,6 +28,7 @@
 #include "../include/drivers/usb/xhci.h"
 #include "../include/stdlib/string.h"
 #include "../sdk/include/abi/errno.h"
+#include "../sdk/include/abi/dirent.h"
 
 namespace
 {
@@ -262,6 +263,55 @@ namespace
             vfs::unref(dir);
         return rc;
     }
+
+    // Delete everything inside `dir`, subdirectories included. Deeper than
+    // TMP_MAX_DEPTH is left alone: each level costs a dirent_out on the
+    // kernel stack. Returns the number of entries removed.
+    const uint32_t TMP_MAX_DEPTH = 16;
+
+    uint32_t clear_dir(vnode* dir, uint32_t depth)
+    {
+        uint32_t removed = 0;
+        uint64_t cookie = 0;
+        for (;;)
+        {
+            // FAT marks a deleted entry in place, so the cookie stays valid
+            // across the unlinks below.
+            dirent_out d;
+            bool eof = false;
+            if (dir->ops->readdir(dir, &cookie, &d, &eof) != 0 || eof)
+                break;
+            if (strcmp(d.name, ".") == 0 || strcmp(d.name, "..") == 0)
+                continue;
+
+            sint64_t rc;
+            if (d.type == DT_DIR)
+            {
+                if (depth + 1 >= TMP_MAX_DEPTH)
+                {
+                    uart::printf("boot: /tmp too deep, %s left in place\n", d.name);
+                    continue;
+                }
+                vnode* sub = nullptr;
+                rc = vfs::lookup(d.name, dir, &sub, true);
+                if (rc == 0)
+                {
+                    removed += clear_dir(sub, depth + 1);
+                    vfs::unref(sub);
+                    rc = dir->ops->rmdir(dir, d.name);
+                }
+            }
+            else
+                rc = dir->ops->unlink(dir, d.name);
+
+            if (rc == 0)
+                removed++;
+            else
+                uart::printf("boot: cannot remove %s from /tmp (%d)\n",
+                             d.name, (int)rc);
+        }
+        return removed;
+    }
 }
 
 extern "C" void kmain(uint64_t boot_header_phys)
@@ -339,18 +389,32 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     // The top-level directories come from the disk image (tools/mkimg.py
     // creates them); the ones that are missing are created on the root
-    // volume and flushed right away, so a power cut does not lose them.
+    // volume. /tmp starts empty on every boot. Both are flushed right away,
+    // so a power cut does not undo them.
     if (vfs::root_mount())
     {
         static const char* const dirs[] = { "files", "tmp", "mount" };
-        bool created = false;
+        bool changed = false;
         for (const char* d : dirs)
         {
-            sint64_t rc = ensure_root_dir(d, &created);
+            sint64_t rc = ensure_root_dir(d, &changed);
             if (rc != 0)
                 uart::printf("boot: /%s unavailable (%d)\n", d, (int)rc);
         }
-        if (created)
+
+        vnode* tmp = nullptr;
+        if (vfs::lookup("/tmp", nullptr, &tmp, true) == 0)
+        {
+            uint32_t removed = clear_dir(tmp, 0);
+            vfs::unref(tmp);
+            if (removed)
+            {
+                uart::printf("boot: /tmp cleared, %u entries removed\n", removed);
+                changed = true;
+            }
+        }
+
+        if (changed)
             vfs::sync_all();
     }
 
