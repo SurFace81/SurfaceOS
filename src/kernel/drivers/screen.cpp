@@ -402,13 +402,20 @@ namespace screen
             }
             fmt++;
 
-            // Parse flags
+            // Parse flags: '-' pads on the right, '0' with zeroes.
             char pad_char = ' ';
-            if (*fmt == '0')
+            bool left = false;
+            for (;; fmt++)
             {
-                pad_char = '0';
-                fmt++;
+                if (*fmt == '-')
+                    left = true;
+                else if (*fmt == '0')
+                    pad_char = '0';
+                else
+                    break;
             }
+            if (left)
+                pad_char = ' ';
 
             // Parse width
             uint32_t width = 0;
@@ -426,8 +433,19 @@ namespace screen
             switch (*fmt)
             {
                 case 's':
-                    emit_str(__builtin_va_arg(a, char*));
+                {
+                    const char* s = __builtin_va_arg(a, char*);
+                    uint32_t len = 0;
+                    while (s[len]) len++;
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
+                    emit_str(s);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
+                }
                 case 'c':
                     emit_char((char)__builtin_va_arg(a, int));
                     break;
@@ -439,9 +457,13 @@ namespace screen
                     // Pad if needed
                     uint32_t len = 0;
                     while (buf[len]) len++;
-                    for (uint32_t p = len; p < width; p++)
-                        emit_char(pad_char);
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
                     emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
                 }
                 case 'x':
@@ -451,9 +473,13 @@ namespace screen
                             : __builtin_va_arg(a, uint32_t), buf, 16);
                     uint32_t len = 0;
                     while (buf[len]) len++;
-                    for (uint32_t p = len; p < width; p++)
-                        emit_char(pad_char);
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
                     emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
                 }
                 case '%':

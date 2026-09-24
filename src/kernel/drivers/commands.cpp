@@ -254,7 +254,7 @@ static void cmd_mount(int argc, const char** argv)
     blkdev* dev = block::find(argv[1]);
     if (!dev)
     {
-        screen::printf("\n\rUsage: mount <device>   (lsblk lists devices)");
+        screen::printf("\n\rNo such device: %s   (lsblk lists devices)", argv[1]);
         return;
     }
 
@@ -336,7 +336,7 @@ static void cmd_umount(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\rUsage: umount <device> | umount <dir>");
+        screen::printf("\n\rUsage: umount <device|dir>   e.g. umount usb1, umount /mount/usb1p1");
         return;
     }
 
