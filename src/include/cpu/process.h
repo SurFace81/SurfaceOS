@@ -165,9 +165,11 @@ namespace process
     uint32_t  cur_umask();
     void      set_umask(uint32_t m);
 
-    // Block the current process until input may be available, rewinding RIP
-    // over the `int 0x80` so the syscall re-executes on wake (tty reads).
-    void block_on_input(user_regs* regs, iret_frame* iret);
+    // A syscall slept in the kernel (wait.h) and a signal ended the sleep
+    // before it had a result. Nothing may have been committed yet: the call
+    // is restarted from scratch unless the signal's handler lacks
+    // SA_RESTART, in which case it fails with EINTR. Leaves regs untouched.
+    void syscall_interrupted(user_regs* regs, iret_frame* iret);
 
     // Every timer tick, from any ring: wakes the sleep_until sleepers that
     // are due.

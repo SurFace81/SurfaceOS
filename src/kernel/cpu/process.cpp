@@ -45,7 +45,7 @@ namespace process
     // -----------------------------------------------------------------------
 
     enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
-    enum class Wait  : uint8_t { None, Key, Child, Signal, Queue };
+    enum class Wait  : uint8_t { None, Child, Signal, Queue };
 
     struct Process
     {
@@ -56,7 +56,7 @@ namespace process
         pid_t       pgid;           // process group, for job control
         pid_t       wait_pid;       // Wait::Child: which child (<= 0: any)
         uint64_t    wait_opts;      // Wait::Child: WNOHANG/WUNTRACED/...
-        uint64_t    wake_tick;      // sleep_until: tick to wake at
+        uint64_t    wake_tick;      // Wait::Queue: deadline tick, 0 for none
 
         // Wait::Queue: the queue slept on (null once woken), the next
         // sleeper on it, and whether wake_up ended the sleep.
@@ -849,9 +849,9 @@ namespace process
 
         switch (p->wait)
         {
-            case Wait::Key:    return tty::readable();
             case Wait::Child:  return child_event(p);
-            case Wait::Queue:  return p->woken;
+            case Wait::Queue:  return p->woken ||
+                                      (p->wake_tick && pit::ticks() >= p->wake_tick);
             case Wait::Signal: return false;    // pause/sigsuspend: only a signal
             default:           return true;
         }
@@ -1248,12 +1248,16 @@ namespace process
     // Sleepers of sleep_until, woken by the timer once their tick is due.
     static wait_queue timer_wq;
 
-    static bool queue_sleep(wait_queue* q)
+    // Sleep on q, until wake_up, `tick` (0: no deadline) or a signal. False
+    // only when a signal ended it: a resume after SIGSTOP/SIGCONT, say,
+    // counts as a spurious wakeup and the caller re-checks.
+    static bool queue_sleep(wait_queue* q, uint64_t tick)
     {
         Process* p = current;
 
         uint64_t f = irq_save();
-        p->woken   = false;
+        p->woken     = false;
+        p->wake_tick = tick;
         p->wq      = q;
         p->wq_next = q->head;
         q->head    = p;
@@ -1267,7 +1271,8 @@ namespace process
         unlink_wait(p);
         bool woken = p->woken;
         p->woken = false;
-        return woken;
+        p->wake_tick = 0;
+        return woken || !sig::next_deliverable(&p->sig);
     }
 
     // Wake the sleepers on q that `due` accepts (all when due is null).
@@ -1689,12 +1694,14 @@ namespace process
         return signal_group(pgid, sig);
     }
 
-    void block_on_input(user_regs* regs, iret_frame* iret)
+    void syscall_interrupted(user_regs*, iret_frame* iret)
     {
-        // Rewind RIP over `int 0x80` and mark Wait::Key: on wake the syscall
-        // re-executes with its registers intact. No fd side effect happened
-        // before this point, so the restart is safe.
-        block(Wait::Key, true, regs, iret);
+        // rax still holds the syscall number: rewinding RIP over `int 0x80`
+        // makes the return to ring 3 re-execute the call. push_signal_frame
+        // steps forward again and plants EINTR when the handler has no
+        // SA_RESTART.
+        iret->rip -= INT80_LENGTH;
+        current->rewound = true;
     }
 
     // -----------------------------------------------------------------------
@@ -2346,10 +2353,13 @@ namespace process
         }
 
         keyboard_event_t e;
-        if (!tty::pop_key(&e))
+        while (!tty::pop_key(&e))
         {
-            block(Wait::Key, true, regs, iret);
-            return;
+            if (!tty::wait_key())
+            {
+                syscall_interrupted(regs, iret);
+                return;
+            }
         }
 
         regs->rax = uaccess::copy_to_user(regs->rdi, &e, sizeof(e)) ? 0 : SYSCALL_ERR(EFAULT);
@@ -2584,7 +2594,7 @@ namespace wait
 {
     bool sleep_on(wait_queue* q)
     {
-        return process::queue_sleep(q);
+        return process::queue_sleep(q, 0);
     }
 
     void wake_up(wait_queue* q)
@@ -2595,11 +2605,27 @@ namespace wait
     bool sleep_until(uint64_t tick)
     {
         while (pit::ticks() < tick)
+            if (!process::queue_sleep(&process::timer_wq, tick))
+                return false;
+        return true;
+    }
+
+    bool wait_event(wait_queue* q, bool (*cond)(), uint64_t tick)
+    {
+        for (;;)
         {
-            process::current->wake_tick = tick;
-            if (!process::queue_sleep(&process::timer_wq))
+            uint64_t f = process::irq_save();
+            if (cond() || (tick && pit::ticks() >= tick))
+            {
+                process::irq_restore(f);
+                return true;
+            }
+            // Still with interrupts off: queue_sleep enqueues before any
+            // IRQ can run, and this task keeps IF clear until it resumes.
+            bool ok = process::queue_sleep(q, tick);
+            process::irq_restore(f);
+            if (!ok)
                 return false;
         }
-        return true;
     }
 }

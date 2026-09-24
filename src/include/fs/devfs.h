@@ -15,7 +15,7 @@
 //   console  the same terminal
 //
 // A tty read with no line available returns -EAGAIN; the syscall layer
-// blocks on Wait::Key and restarts (poll_ready tells it when to wake).
+// sleeps in tty::wait_readable and reads again.
 
 namespace devfs
 {

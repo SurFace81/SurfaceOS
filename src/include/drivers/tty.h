@@ -11,11 +11,11 @@
 // One tty exists (/dev/tty == /dev/console).
 //
 // The IRQ-side producer is installed as the keyboard callback while a
-// session runs; the consumer side runs in syscall context. Blocking stays
-// in process.cpp (Wait::Key + syscall restart): the tty never sleeps, it
-// only reports whether input is available and assembles it when read. The
-// partially typed line lives here (not in the Process), so a restarted read
-// syscall keeps editing the same line.
+// session runs; the consumer side runs in syscall context. read() itself
+// never sleeps: it returns -EAGAIN, and the syscall sleeps in wait_readable
+// (or wait_key) and reads again. The partially typed line lives here (not
+// in the Process), so a read restarted after a signal keeps editing the
+// same line.
 //
 // Events, not bytes, sit in the ring. Canonical mode needs to know which
 // key was pressed - an arrow moves the cursor within the line rather than
@@ -62,11 +62,17 @@ namespace tty
     // false when the ring is empty.
     bool pop_key(keyboard_event_t* out);
 
+    // Sleep until read() can make progress (readable(), including the
+    // VTIME deadline) or until pop_key has an event. False when a signal
+    // ended the sleep.
+    bool wait_readable();
+    bool wait_key();
+
     // Read at most n bytes into dst.
     //   > 0   bytes read
     //   0     EOF (Ctrl+D on an empty canonical line), or a raw read that
     //         timed out with nothing pending
-    //   -EAGAIN nothing ready yet (caller blocks and restarts)
+    //   -EAGAIN nothing ready yet (caller sleeps in wait_readable)
     sint64_t read(void* dst, uint64_t n);
 
     // Write raw bytes to the console (screen + uart). Returns n.

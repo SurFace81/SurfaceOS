@@ -89,8 +89,8 @@ struct vnode_ops
 
     // Readiness for blocking syscalls: true when read would not return
     // -EAGAIN right now (a tty line is complete, /dev/null is always
-    // ready). null == always ready. The process layer pairs this with
-    // Wait::Key + syscall restart.
+    // ready). null == always ready. Nothing consults it yet: a tty read
+    // sleeps in tty::wait_readable.
     bool     (*poll_ready)(vnode* v);
 
     // Last reference dropped and the vnode is about to be freed: flush the

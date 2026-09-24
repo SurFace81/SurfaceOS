@@ -5,6 +5,7 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/pit.h"
+#include "../../include/cpu/wait.h"
 #include "../../include/mm/memory.h"
 #include "../../sdk/include/abi/errno.h"
 
@@ -28,9 +29,10 @@ namespace
 
     pid_t fg = 0;                       // foreground process group
 
-    // Line under construction. Survives read-syscall restarts (the wake
-    // model re-executes the syscall; consumed keys are gone from the ring,
-    // so the assembly continues exactly where it stopped).
+    // Line under construction. Survives between reads (the reader sleeps
+    // and reads again, or restarts the syscall after a signal; consumed
+    // keys are gone from the ring, so the assembly continues exactly where
+    // it stopped).
     char     line[LINE_MAX];
     uint32_t line_len_ = 0;         // bytes held
     uint32_t line_cur = 0;          // edit position within them
@@ -57,6 +59,10 @@ namespace
 
     struct termios cur;
     bool csi_u_mode = false;
+
+    // Readers sleeping in wait_readable / wait_key. Woken by every change
+    // that can make input available: a key, a termios change, a reset.
+    wait_queue input_wq;
 
     void default_termios(struct termios* t)
     {
@@ -418,6 +424,7 @@ namespace tty
         read_deadline = 0;
         csi_u_mode = false;
         default_termios(&cur);
+        wait::wake_up(&input_wq);
     }
 
     void on_key(keyboard_event_t e)
@@ -459,6 +466,7 @@ namespace tty
 
         ring[head] = e;
         head = next;
+        wait::wake_up(&input_wq);
     }
 
     bool take_kill()
@@ -499,6 +507,32 @@ namespace tty
         return ring_pop(out);
     }
 
+    static bool key_available()
+    {
+        return !ring_empty();
+    }
+
+    bool wait_key()
+    {
+        return wait::wait_event(&input_wq, key_available, 0);
+    }
+
+    bool wait_readable()
+    {
+        // A raw read with VTIME set a deadline: wake for it even with no key.
+        uint64_t tick = 0;
+        if (read_deadline)
+        {
+            uint64_t now = pit::uptime_ms();
+            uint64_t left = read_deadline > now ? read_deadline - now : 0;
+            uint32_t hz = pit::real_frequency();
+            if (!hz)
+                hz = pit::frequency();
+            tick = pit::ticks() + (left * hz + 999) / 1000 + 1;
+        }
+        return wait::wait_event(&input_wq, readable, tick);
+    }
+
     bool readable()
     {
         if (canonical())
@@ -537,6 +571,7 @@ namespace tty
             raw_short = false;
         }
         read_deadline = 0;
+        wait::wake_up(&input_wq);
     }
 
     void set_csi_u(bool on) { csi_u_mode = on; }
@@ -612,7 +647,7 @@ namespace tty
         }
 
         if (!line_ready)
-            return -EAGAIN;         // caller blocks (Wait::Key) and restarts
+            return -EAGAIN;         // caller sleeps (wait_readable) and reads again
 
         uint64_t count = line_len_;
         if (count > n)
@@ -681,8 +716,8 @@ namespace tty
         {
             // VTIME is in tenths of a second, measured from the first read
             // that found nothing. The deadline lives here rather than in
-            // the caller because the syscall is restarted from scratch on
-            // every wake, so it has nowhere of its own to keep it.
+            // the caller because a read restarted after a signal starts
+            // from scratch and has nowhere of its own to keep it.
             uint64_t now = pit::uptime_ms();
             if (read_deadline == 0)
                 read_deadline = now + (uint64_t)vtime * 100;

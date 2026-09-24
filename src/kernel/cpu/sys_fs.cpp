@@ -7,11 +7,12 @@
 //   3. call the vnode layer;
 //   4. copy results out through uaccess.
 //
-// Blocking: a tty read with no line ready returns -EAGAIN from the vnode;
-// the handler then calls process::block_on_input, which rewinds RIP and
-// re-executes the whole syscall on wake. Nothing touched the fd state
-// before that point (the offset moves only after a successful read), so
-// the restart is side-effect free.
+// Blocking: a tty read with no line ready returns -EAGAIN from the vnode
+// (the tty is the only file that does); the handler then sleeps in the
+// kernel (tty::wait_readable) and reads again. A signal that ends the sleep
+// goes through process::syscall_interrupted: restart or EINTR. Nothing
+// touched the fd state before that point (the offset moves only after a
+// successful read), so the restart is side-effect free.
 //
 // Big transfers go through a 64 KiB bounce buffer in chunks: file data is
 // never kmalloc'ed whole, and short reads/writes are legal.
@@ -23,6 +24,7 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/fs/devfs.h"
+#include "../../include/drivers/tty.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/stdlib/string.h"
@@ -444,14 +446,17 @@ namespace
             return;
         }
 
-        sint64_t n = do_read(f, nullptr, regs->rsi, regs->rdx);
-        if (n == -EAGAIN && !(f->flags & O_NONBLOCK))
+        // A tty read with nothing ready: sleep and read again. O_NONBLOCK
+        // asked for the opposite: hand EAGAIN back instead.
+        sint64_t n;
+        while ((n = do_read(f, nullptr, regs->rsi, regs->rdx)) == -EAGAIN &&
+               !(f->flags & O_NONBLOCK))
         {
-            // Canonical tty read with no line ready: block and restart.
-            // (No fd side effect happened, so the replay is clean.)
-            // O_NONBLOCK asked for the opposite: hand EAGAIN back instead.
-            process::block_on_input(regs, iret);
-            return;
+            if (!tty::wait_readable())
+            {
+                process::syscall_interrupted(regs, iret);
+                return;
+            }
         }
         set(regs, n);
     }
@@ -565,15 +570,19 @@ namespace
                 continue;
 
             sint64_t n = do_read(f, nullptr, v.iov_base, v.iov_len);
-            if (n == -EAGAIN)
+            // Same rule as read(2): sleep only when the caller did not ask
+            // for O_NONBLOCK, and only when nothing was read yet.
+            while (n == -EAGAIN && total == 0 && !(f->flags & O_NONBLOCK))
             {
-                // Same rule as read(2): block only when the caller did not
-                // ask for O_NONBLOCK, and only when nothing was read yet.
-                if (total == 0 && !(f->flags & O_NONBLOCK))
+                if (!tty::wait_readable())
                 {
-                    process::block_on_input(regs, iret);
+                    process::syscall_interrupted(regs, iret);
                     return;
                 }
+                n = do_read(f, nullptr, v.iov_base, v.iov_len);
+            }
+            if (n == -EAGAIN)
+            {
                 if (total == 0)
                 {
                     set(regs, ERR(EAGAIN));
