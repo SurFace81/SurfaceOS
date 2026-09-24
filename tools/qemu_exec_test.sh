@@ -9,6 +9,7 @@
 #   4. memtest.bin                -> all memory checks pass
 #   5. proctest.bin               -> all process/scheduler checks pass
 #   6. uptime                     -> the console still works afterwards
+#   7. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   8. meminfo around a session   -> no leaked frames (per-process kstacks)
 #   9. hi, Ctrl+D                 -> EOF ends a canonical read
 #  10. termtest                   -> CP437 upper half renders
@@ -26,6 +27,8 @@ export LC_ALL=C
 
 cd "$(dirname "$0")/.."
 IMG=test_disk.img
+# Second disk (two FAT32 partitions) for mount/umount: usb1.
+DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
@@ -43,6 +46,7 @@ else
 fi
 
 bash tools/make_test_image.sh "$IMG" "$APPS" "$LAYOUT" "$IMG_SIZE" "$SECTOR"
+bash tools/make_data_disk.sh "$DATA_IMG"
 
 # QEMU device for a non-512 sector size: usb-storage does not forward
 # logical_block_size to its child scsi-hd, so the 4K device is built as
@@ -65,6 +69,8 @@ qemu-system-x86_64 \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
     $USB_DEV \
+    -drive id=data,if=none,format=raw,file="$DATA_IMG" \
+    -device usb-storage,drive=data \
     -display none -no-reboot -no-shutdown \
     -monitor unix:$MON,server,nowait >/dev/null 2>&1 &
 QEMU_PID=$!
@@ -288,6 +294,20 @@ wait_for "caught 2" 20; result $? "^C reaches a handler from ring-3 spin"
 # never makes a syscall. Ctrl+Alt+Backspace is the console's own way out.
 sleep 1; key ctrl-alt-backspace
 wait_session_end $WANT 20; result $? "Ctrl+Alt+Backspace kills a runaway app"
+
+# 12. mount puts every partition of the second disk under /mount; umount
+#    refuses while the FS is in use (the console cwd holds its root), and
+#    succeeds once it is not, removing the mount point.
+type_cmd "mount usb1"; sleep 3
+wait_for "mount: usb1p1 on /mount/usb1p1" 10; result $? "mount usb1 mounts usb1p1"
+wait_for "mount: usb1p2 on /mount/usb1p2" 10; result $? "mount usb1 mounts usb1p2"
+type_cmd "cd /mount/usb1p1"; sleep 2
+type_cmd "umount usb1"; sleep 3
+wait_for "umount: busy usb1p1" 10; result $? "umount refuses a filesystem in use"
+wait_for "umount: ok usb1p2" 10; result $? "umount takes down the idle partition"
+type_cmd "cd /"; sleep 2
+type_cmd "umount usb1"; sleep 3
+wait_for "umount: ok usb1p1" 10; result $? "umount succeeds once nothing holds it"
 
 # 13. per-process kernel stacks are handed back when a session ends: run a
 #    session between two meminfo samples and compare the free-frame counts.

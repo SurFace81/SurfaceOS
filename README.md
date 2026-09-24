@@ -27,7 +27,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Userspace SDK heading towards musl: POSIX fd API (open/read/write/
   lseek/stat/getdents64/opendir...), environ/getenv, heap over brk
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
-  mount/umount, sync, lsblk, exec /apps/<name>, hardware info commands
+  mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
+  lsblk, exec /apps/<name>, hardware info commands
 - Test apps: memtest, proctest, argtest, fstest (fd layer + VFS + FAT32,
   122 checks incl. 3 MiB random-offset I/O and 100 LFN files)
  

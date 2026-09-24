@@ -12,4 +12,5 @@ disk
 *.EFI
 .clang-format
 test_disk.img
+test_data.img
 uart*.log

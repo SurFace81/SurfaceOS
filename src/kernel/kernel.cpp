@@ -312,6 +312,27 @@ namespace
         }
         return removed;
     }
+
+    // Mount points left in /mount by a power cut without umount: remove the
+    // empty directories. A non-empty one is someone's data and stays.
+    uint32_t clear_stale_mount_points(vnode* dir)
+    {
+        uint32_t removed = 0;
+        uint64_t cookie = 0;
+        for (;;)
+        {
+            dirent_out d;
+            bool eof = false;
+            if (dir->ops->readdir(dir, &cookie, &d, &eof) != 0 || eof)
+                break;
+            if (d.type != DT_DIR || strcmp(d.name, ".") == 0 ||
+                strcmp(d.name, "..") == 0)
+                continue;
+            if (dir->ops->rmdir(dir, d.name) == 0)
+                removed++;
+        }
+        return removed;
+    }
 }
 
 extern "C" void kmain(uint64_t boot_header_phys)
@@ -389,8 +410,9 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     // The top-level directories come from the disk image (tools/mkimg.py
     // creates them); the ones that are missing are created on the root
-    // volume. /tmp starts empty on every boot. Both are flushed right away,
-    // so a power cut does not undo them.
+    // volume. /tmp starts empty on every boot, and /mount loses the empty
+    // mount points a power cut left. All of it is flushed right away, so a
+    // power cut does not undo it.
     if (vfs::root_mount())
     {
         static const char* const dirs[] = { "files", "tmp", "mount" };
@@ -410,6 +432,18 @@ extern "C" void kmain(uint64_t boot_header_phys)
             if (removed)
             {
                 uart::printf("boot: /tmp cleared, %u entries removed\n", removed);
+                changed = true;
+            }
+        }
+
+        vnode* mnt = nullptr;
+        if (vfs::lookup("/mount", nullptr, &mnt, true) == 0)
+        {
+            uint32_t removed = clear_stale_mount_points(mnt);
+            vfs::unref(mnt);
+            if (removed)
+            {
+                uart::printf("boot: %u stale mount point(s) removed\n", removed);
                 changed = true;
             }
         }

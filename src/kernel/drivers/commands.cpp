@@ -147,12 +147,92 @@ static void cmd_lspci(int argc, const char** argv)
     }
 }
 
-// mount <device> <dir>: mount a FAT32 volume over an existing directory.
+// Mounts of other volumes live in /mount/<blkdev name>: /mount/usb1p1, or
+// /mount/usb1 for a disk without a partition table. The directory is made
+// by mount and removed again by umount.
+
+// The (non-detached) mount of block device `name`, if any.
+static mount* mount_of_dev(const char* name)
+{
+    for (uint32_t i = 0; vfs::mount_count_get(i); i++)
+    {
+        mount* m = vfs::mount_count_get(i);
+        if (!m->detached && strcmp(m->devname, name) == 0)
+            return m;
+    }
+    return nullptr;
+}
+
+static bool has_partitions(blkdev* disk)
+{
+    for (uint32_t i = 0; block::get(i); i++)
+        if (block::get(i)->parent == disk)
+            return true;
+    return false;
+}
+
+// Remove the empty directory /mount/<name>. 0 or -errno.
+static sint64_t remove_mount_dir(const char* name)
+{
+    vnode* dir = nullptr;
+    sint64_t rc = vfs::lookup("/mount", nullptr, &dir, true);
+    if (rc != 0)
+        return rc;
+    rc = dir->ops->rmdir ? dir->ops->rmdir(dir, name) : -EPERM;
+    vfs::unref(dir);
+    return rc;
+}
+
+// Mount `d` on /mount/<d->name>, creating the directory. 0 or -errno.
+static sint64_t mount_dev(blkdev* d)
+{
+    vnode* dir = nullptr;
+    sint64_t rc = vfs::lookup("/mount", nullptr, &dir, true);
+    if (rc != 0)
+        return rc;
+
+    bool made = false;
+    vnode* point = nullptr;
+    rc = vfs::lookup(d->name, dir, &point, true);
+    if (rc == -ENOENT && dir->ops->mkdir)
+    {
+        rc = dir->ops->mkdir(dir, d->name, 0755);
+        if (rc == 0)
+        {
+            made = true;
+            rc = vfs::lookup(d->name, dir, &point, true);
+        }
+    }
+    vfs::unref(dir);
+    if (rc != 0)
+        return rc;
+
+    rc = vfs::mount_at(point, d->name, &fat32fs::fs, d);   // takes the ref
+    if (rc != 0 && made)
+        remove_mount_dir(d->name);
+    return rc;
+}
+
+static void mount_report(blkdev* d, sint64_t rc)
+{
+    if (rc == 0)
+    {
+        screen::printf("\n\r%s mounted on /mount/%s", d->name, d->name);
+        uart::printf("mount: %s on /mount/%s\n", d->name, d->name);
+    }
+    else
+    {
+        screen::printf("\n\r%s: mount failed (%d), no FAT32 volume?", d->name, (int)rc);
+        uart::printf("mount: %s failed rc=%d\n", d->name, (int)rc);
+    }
+}
+
+// mount              list the mount table
+// mount <device>     mount every partition of a disk (or one partition)
 static void cmd_mount(int argc, const char** argv)
 {
     if (argc == 1)
     {
-        // No arguments: list the mount table.
         screen::printf("\n\r");
         for (uint32_t i = 0; vfs::mount_count_get(i); i++)
         {
@@ -171,40 +251,115 @@ static void cmd_mount(int argc, const char** argv)
         return;
     }
 
-    if (argc < 3)
-    {
-        screen::printf("\n\rUsage: mount <device> <dir>   (lsblk lists devices)");
-        return;
-    }
-
     blkdev* dev = block::find(argv[1]);
     if (!dev)
     {
-        screen::printf("\n\rNo such block device: %s", argv[1]);
+        screen::printf("\n\rUsage: mount <device>   (lsblk lists devices)");
         return;
     }
 
-    vnode* point = nullptr;
-    sint64_t rc = vfs::lookup(argv[2], vfs::cwd(), &point, true);
-    if (rc != 0)
+    // A partition, or a disk that is one volume: just that device.
+    if (dev->parent || !has_partitions(dev))
     {
-        screen::printf("\n\rMount point not found: %s", argv[2]);
+        if (mount_of_dev(dev->name))
+            screen::printf("\n\r%s is already mounted", dev->name);
+        else
+            mount_report(dev, mount_dev(dev));
         return;
     }
 
-    rc = vfs::mount_at(point, dev->name, &fat32fs::fs, dev);  // takes the ref
-    if (rc != 0)
-        screen::printf("\n\rMount failed (%d): no FAT32 volume on %s",
-                       (int)rc, dev->name);
-    else
-        screen::printf("\n\r%s mounted on %s", dev->name, argv[2]);
+    // A partitioned disk: each partition that is not mounted yet (the boot
+    // disk's own root partition, say).
+    uint32_t tried = 0;
+    for (uint32_t i = 0; block::get(i); i++)
+    {
+        blkdev* p = block::get(i);
+        if (p->parent != dev || mount_of_dev(p->name))
+            continue;
+        tried++;
+        mount_report(p, mount_dev(p));
+    }
+    if (tried == 0)
+        screen::printf("\n\rAll partitions of %s are already mounted", dev->name);
 }
 
+// Flush and unmount one mount under /mount, then drop its directory.
+// Returns true when it went away.
+static bool umount_one(mount* m)
+{
+    char name[sizeof(m->devname)];
+    strncpy(name, m->devname, sizeof(name) - 1);
+    name[sizeof(name) - 1] = '\0';
+
+    if (!m->point)
+    {
+        screen::printf("\n\rCannot umount the root filesystem");
+        uart::printf("umount: refused, %s is the root filesystem\n", name);
+        return false;
+    }
+
+    // Only mounts made by `mount <device>` own their directory.
+    char path[PATH_MAX];
+    bool in_mount_dir = vfs::get_path(m->point, path, sizeof(path), nullptr) == 0 &&
+                        strncmp(path, "/mount/", 7) == 0 &&
+                        strcmp(path + 7, name) == 0;
+
+    vnode* root = m->root;
+    sint64_t rc = root->ops->fsync ? root->ops->fsync(root) : 0;
+    if (rc == 0)
+        rc = vfs::umount(m);
+
+    if (rc == 0)
+    {
+        if (in_mount_dir)
+            remove_mount_dir(name);
+        screen::printf("\n\r%s: unmounted", name);
+        uart::printf("umount: ok %s\n", name);
+        return true;
+    }
+    if (rc == -EBUSY)
+    {
+        screen::printf("\n\r%s: busy, something still has it open", name);
+        uart::printf("umount: busy %s\n", name);
+    }
+    else
+    {
+        screen::printf("\n\r%s: unmount failed (%d)", name, (int)rc);
+        uart::printf("umount: failed %s rc=%d\n", name, (int)rc);
+    }
+    return false;
+}
+
+// umount <device>    every mounted partition of a disk (or one partition)
+// umount <dir>       the filesystem mounted there
 static void cmd_umount(int argc, const char** argv)
 {
     if (argc < 2)
     {
-        screen::printf("\n\rUsage: umount <dir>");
+        screen::printf("\n\rUsage: umount <device> | umount <dir>");
+        return;
+    }
+
+    blkdev* dev = block::find(argv[1]);
+    if (dev)
+    {
+        uint32_t found = 0;
+        for (uint32_t i = 0; block::get(i); i++)
+        {
+            blkdev* d = block::get(i);
+            if (d != dev && d->parent != dev)
+                continue;
+            mount* m = mount_of_dev(d->name);
+            if (!m)
+                continue;
+            found++;
+            umount_one(m);
+        }
+        if (found == 0)
+        {
+            screen::printf("\n\rNothing of %s is mounted", dev->name);
+            uart::printf("umount: nothing mounted from %s\n", dev->name);
+        }
         return;
     }
 
@@ -212,7 +367,7 @@ static void cmd_umount(int argc, const char** argv)
     sint64_t rc = vfs::lookup(argv[1], vfs::cwd(), &point, true);
     if (rc != 0)
     {
-        screen::printf("\n\rNot a directory: %s", argv[1]);
+        screen::printf("\n\rNo such device or directory: %s", argv[1]);
         return;
     }
 
@@ -232,35 +387,13 @@ static void cmd_umount(int argc, const char** argv)
     }
     vfs::unref(point);
 
-    if (!found)
+    if (!found || found->detached)
     {
         screen::printf("\n\rNothing is mounted there");
         uart::printf("umount: nothing mounted at %s\n", argv[1]);
         return;
     }
-    if (!found->point)
-    {
-        screen::printf("\n\rCannot umount the root filesystem");
-        uart::printf("umount: refused, %s is the root filesystem\n", argv[1]);
-        return;
-    }
-
-    rc = vfs::umount(found);
-    if (rc == 0)
-    {
-        screen::printf("\n\rUnmounted");
-        uart::printf("umount: ok %s\n", argv[1]);
-    }
-    else if (rc == -EBUSY)
-    {
-        screen::printf("\n\rBusy: something still has it open");
-        uart::printf("umount: busy %s\n", argv[1]);
-    }
-    else
-    {
-        screen::printf("\n\rUnmount failed (%d)", (int)rc);
-        uart::printf("umount: failed %s rc=%d\n", argv[1], (int)rc);
-    }
+    umount_one(found);
 }
 
 static void cmd_sync(int argc, const char** argv)
