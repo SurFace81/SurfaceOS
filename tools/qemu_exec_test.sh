@@ -1,7 +1,7 @@
 #!/bin/bash
 # Full user-space regression test in QEMU. Everything is checked through the
-# serial log: the kernel mirrors app output (SYS_WRITE) and logs every session
-# start/end with its exit status.
+# serial log: the kernel mirrors app output (SYS_WRITE) and the console logs
+# every program start/end with its exit status.
 #
 #   1. hi, Enter                  -> normal exit, status 0
 #   2. hi, Ctrl+C                 -> interrupt while blocked in read(0)
@@ -10,7 +10,7 @@
 #   5. proctest.bin               -> all process/scheduler checks pass
 #   6. uptime                     -> the console still works afterwards
 #   7. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
-#   8. meminfo around a session   -> no leaked frames (per-process kstacks)
+#   8. meminfo around a program   -> no leaked frames (per-process kstacks)
 #   9. hi, Ctrl+D                 -> EOF ends a canonical read
 #  10. termtest                   -> CP437 upper half renders
 #  11. keys                      -> every key reaches the app with its code
@@ -104,7 +104,7 @@ wait_for() {
 # Occurrences, not lines: an app that ends its output without a newline
 # shares a line with the kernel message that follows, and grep -c would
 # count the pair once.
-sessions_ended() { grep -ao "process: session end" "$LOG" 2>/dev/null | wc -l; }
+sessions_ended() { grep -ao "console: program end" "$LOG" 2>/dev/null | wc -l; }
 
 # wait until the N-th session has ended
 wait_session_end() {
@@ -135,7 +135,7 @@ result() {  # result <ok:0/1> "<description>"
     if [ "$1" -eq 0 ]; then echo "PASS  $2"; else echo "FAIL  $2"; FAILS=$((FAILS+1)); fi
 }
 
-last_status() { grep -a "process: session end" "$LOG" | tail -1 | grep -aoE '[0-9]+$'; }
+last_status() { grep -a "console: program end" "$LOG" | tail -1 | grep -aoE '[0-9]+$'; }
 
 wait_for "boot: console ready" "$BOOT_WAIT"; result $? "kernel boots to the console"
 wait_for "boot: root mounted" 10; result $? "root volume automounted at boot"

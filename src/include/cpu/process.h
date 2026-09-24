@@ -57,10 +57,11 @@ struct vnode;
 // user-mode fault - so the drivers (xHCI, FAT32, screen) never see
 // reentrancy.
 //
-// When nothing in the session can run, the idle task takes over: it polls
-// for a process to wake (a key, a timer, a child, a signal) and halts in
-// between. The console runs on the boot task and waits in run() while a
-// session is on; end_session switches back to it.
+// The console is a kernel process of its own (pid 0, no user address
+// space), scheduled like any other: it sleeps until a command line is typed,
+// and while a program it started runs, it sleeps until that program exits.
+// When nothing can run, the idle task - the boot task, once the kernel is
+// up - halts until an interrupt wakes somebody.
 //
 // A syscall that has to wait (a tty read, waitpid, nanosleep, pause) sleeps
 // in the kernel on a wait queue (wait.h) and carries on from where it was
@@ -75,19 +76,26 @@ struct vnode;
 //
 // The stack belongs to the process table *slot*, not to the process:
 // terminate() can free a process while executing on that very stack, so the
-// frames go back to the PMM only at session teardown, from the console
-// stack.
+// frames go back to the PMM later, from another task.
 
 namespace process
 {
-    // Called once at boot, after the FPU is enabled.
+    // Called once at boot, after the FPU is enabled. The running boot
+    // context becomes the idle task.
     void init();
 
-    // Console entry point. Loads `path` as the root process of a new session,
-    // runs the session until every process in it has exited (or Esc is
-    // pressed), then tears it down. argv[0] should be the program name.
-    // Returns false if the program could not be started; otherwise stores the
-    // root process's exit status in *exit_status.
+    // Create the console: a kernel process (pid 0) whose task runs
+    // entry(nullptr). It starts running once the boot code calls idle().
+    void start_console(void (*entry)(void*));
+
+    // The rest of the boot task's life: run whatever can run, halt when
+    // nothing can. Never returns.
+    __attribute__((noreturn)) void idle();
+
+    // Console only. Loads `path` as a new process (ppid 0) and sleeps until
+    // it has exited - its children are not waited for. argv[0] should be
+    // the program name. Returns false if the program could not be started;
+    // otherwise stores its exit status in *exit_status.
     bool run(const char* path, int argc, const char* const* argv, int* exit_status);
 
     // --- Hooks from the trap entry points --------------------------------
@@ -152,7 +160,7 @@ namespace process
     int  signal_pgrp(pid_t pgid, int sig);
 
     // --- Hooks for the file-descriptor syscalls (sys_fs.cpp) ---------------
-    // Valid only while a session runs (syscall context). fd_table and vnode
+    // Valid only in syscall context (a user process is current). fd_table and vnode
     // are declared in fs/file.h and fs/vfs.h; forward-declared here so this
     // header stays independent.
     fd_table* cur_fds();
@@ -178,8 +186,6 @@ namespace process
     // A CPU exception was raised in ring 3.
     void on_user_fault(uint64_t vector, user_regs* regs, iret_frame* iret);
 
-    // True while a session is running (for diagnostics).
-    bool active();
 }
 
 #endif // PROCESS_H

@@ -13,9 +13,9 @@
 // process's own kernel stack, with the trap frame left in place under it.
 //
 // Three kinds of task exist:
-//   * the boot task - kmain's stack, adopted by task::init; the console
-//     runs on it;
-//   * kernel tasks - an entry function on a fresh stack (the idle task);
+//   * the boot task - kmain's stack, adopted by task::init; it becomes the
+//     idle task once the kernel is up;
+//   * kernel tasks - an entry function on a fresh stack (the console);
 //   * process tasks - one per process, whose first switch_to lands in ring 3
 //     through a cpu_context placed at the top of the stack.
 //
@@ -40,8 +40,8 @@ namespace task
     // each task gets its own RFLAGS back.
     void switch_to(Task* next);
 
-    // Make `t` start at entry(arg) on the stack that ends at stack_top
-    // (16-byte aligned). entry must never return.
+    // Make `t` start at entry(arg), interrupts on, on the stack that ends at
+    // stack_top (16-byte aligned). entry must never return.
     void prepare_kernel(Task* t, const char* name, uint64_t stack_top,
                         void (*entry)(void*), void* arg);
 

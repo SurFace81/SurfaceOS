@@ -20,14 +20,19 @@ namespace task
             uint64_t ret;
         };
 
-        const uint64_t RFLAGS_KERNEL = 0x2;     // reserved bit 1, IF clear
+        // A kernel task starts with interrupts on (it runs drivers that
+        // time out by the clock); a process task keeps them off until the
+        // iretq, which takes IF from the user RFLAGS.
+        const uint64_t RFLAGS_KERNEL = 0x202;   // IF + reserved bit 1
+        const uint64_t RFLAGS_ENTRY  = 0x2;     // reserved bit 1, IF clear
 
-        void fill(switch_frame* f, uint64_t ret, uint64_t rbx, uint64_t r12)
+        void fill(switch_frame* f, uint64_t ret, uint64_t rbx, uint64_t r12,
+                  uint64_t rflags)
         {
             f->r15 = f->r14 = f->r13 = f->rbp = 0;
             f->rbx    = rbx;
             f->r12    = r12;
-            f->rflags = RFLAGS_KERNEL;
+            f->rflags = rflags;
             f->ret    = ret;
         }
     }
@@ -59,7 +64,8 @@ namespace task
         // After the pops and the `ret`, rsp is stack_top: aligned for the
         // `call` in task_kernel_start.
         switch_frame* f = (switch_frame*)(stack_top - sizeof(switch_frame));
-        fill(f, (uint64_t)task_kernel_start, (uint64_t)arg, (uint64_t)entry);
+        fill(f, (uint64_t)task_kernel_start, (uint64_t)arg, (uint64_t)entry,
+             RFLAGS_KERNEL);
 
         t->rsp  = (uint64_t)f;
         t->name = name;
@@ -71,9 +77,8 @@ namespace task
         cpu_context* c = (cpu_context*)(stack_top - sizeof(cpu_context));
         *c = *ctx;
 
-        // iretq takes IF from the user RFLAGS.
         switch_frame* f = (switch_frame*)((uint64_t)c - sizeof(switch_frame));
-        fill(f, (uint64_t)task_user_start, 0, 0);
+        fill(f, (uint64_t)task_user_start, 0, 0, RFLAGS_ENTRY);
 
         t->rsp  = (uint64_t)f;
         t->name = name;

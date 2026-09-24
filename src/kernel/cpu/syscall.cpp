@@ -141,7 +141,7 @@ namespace syscall
     }
 
     // Fill the dispatch tables. Called once from kmain before the first
-    // session can run.
+    // program can run.
     void init()
     {
         for (uint32_t i = 0; i < SYSCALL_NR_MAX; i++)

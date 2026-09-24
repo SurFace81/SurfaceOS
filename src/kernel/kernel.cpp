@@ -460,13 +460,10 @@ extern "C" void kmain(uint64_t boot_header_phys)
     process::init();
 
     console::init();
+    process::start_console(console::main);
     uart::printf("boot: console ready\n");
 
-    while (1)
-    {
-        // Execute any command queued by the keyboard handler (e.g. `exec`).
-        // Runs in process context, not in the keyboard IRQ.
-        console::poll();
-        asm volatile("hlt");
-    }
+    // From here on the boot task is the idle task: the console and the
+    // programs it starts run as scheduled tasks.
+    process::idle();
 }

@@ -52,7 +52,7 @@ namespace process
         State       state;
         Wait        wait;
         pid_t       pid;
-        pid_t       ppid;           // 0: parent is the console session
+        pid_t       ppid;           // 0: started by the console, or an orphan
         pid_t       pgid;           // process group, for job control
         pid_t       wait_pid;       // wait4 sleeping: which child (<= 0: any)
         uint64_t    wait_opts;      // wait4 sleeping: WUNTRACED/WCONTINUED/...
@@ -66,6 +66,10 @@ namespace process
 
         // wait4 sleeps here; notify_parent wakes it on every child event.
         wait_queue  child_wq;
+
+        // A kernel process (the console): no user address space, never
+        // signalled or killed, runs kernel code on its task only.
+        bool        kernel;
         int         exit_status;    // valid in Zombie
 
         // Job control: set when the process is stopped, cleared when the
@@ -99,8 +103,8 @@ namespace process
         // Kernel stack for traps taken while this process runs (TSS RSP0),
         // and the task that runs on it. Owned by the table *slot*, not by
         // the process: terminate() can free a process while running on this
-        // very stack, so it is released only at session teardown, from the
-        // console stack.
+        // very stack, so it is released later, from another task
+        // (reclaim_kernel_stacks).
         uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
         Task        task;
 
@@ -116,18 +120,18 @@ namespace process
     static uint32_t last_slot = 0;
     static pid_t    next_pid  = 1;
 
-    // Session state
-    static bool     session_active  = false;
     static volatile bool kill_requested = false;
-    static pid_t    root_pid        = 0;
-    static int      root_status     = 0;
     static uint32_t slice_ticks     = 0;
 
-    // The console runs on the boot task; the idle task runs when a session
-    // has nothing runnable.
-    static Task     console_task;
+    // The console is a kernel process; while it runs a program it sleeps on
+    // its child_wq until that program (fg) exits. The program's ppid stays 0
+    // ("started by the console"); fg is what tells it apart from an orphan.
+    static Process* console_proc    = nullptr;
+    static Process* fg              = nullptr;
+
+    // The boot task becomes the idle task once the kernel is up: it runs
+    // whenever nothing else can.
     static Task     idle_task;
-    const uint64_t  IDLE_STACK_SIZE = 16 * 1024;
 
     const uint64_t KERNEL_STACK_FRAMES = KERNEL_STACK_SIZE / 4096;
 
@@ -146,17 +150,19 @@ namespace process
         return p->kstack + KERNEL_STACK_SIZE;
     }
 
-    // Hand every live slot's kernel stack back. Only safe once nothing runs
-    // on one of them, i.e. once end_session has switched back to the console
-    // task.
-    static void free_kernel_stacks()
+    // Hand the kernel stacks of empty slots back. A process that exits
+    // frees its slot while still running on that stack, so a stack can only
+    // go once some other task runs - the caller's own is never touched.
+    static void reclaim_kernel_stacks()
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
-            if (table[i].kstack)
-            {
-                pmm::free_frames(virt_to_phys((void*)table[i].kstack), KERNEL_STACK_FRAMES);
-                table[i].kstack = 0;
-            }
+        {
+            Process* p = &table[i];
+            if (p->state != State::Unused || !p->kstack || &p->task == task::current())
+                continue;
+            pmm::free_frames(virt_to_phys((void*)p->kstack), KERNEL_STACK_FRAMES);
+            p->kstack = 0;
+        }
     }
 
     static void copy_bytes(uint8_t* dst, const uint8_t* src, uint64_t n)
@@ -245,11 +251,11 @@ namespace process
     // Session keyboard input (the line discipline itself lives in tty.cpp)
     // -----------------------------------------------------------------------
 
-    // Runs in the keyboard IRQ: forwards to the tty ring. The tty decides
-    // what interrupts a session (Ctrl+C, c_cc[VINTR]); Esc used to do it
-    // here, which meant an application could never see Esc or any escape
-    // sequence built on it.
-    static void session_key_handler(keyboard_event_t e)
+    // Runs in the keyboard IRQ while the console runs a program: forwards to
+    // the tty ring. The tty decides what interrupts a program (Ctrl+C,
+    // c_cc[VINTR]); Esc used to do it here, which meant an application could
+    // never see Esc or any escape sequence built on it.
+    static void program_key_handler(keyboard_event_t e)
     {
         tty::on_key(e);
     }
@@ -764,9 +770,9 @@ namespace process
         irq_restore(f);
     }
 
-    // Terminate `p`: release its memory, reparent its children to the session
-    // and leave a zombie for its parent (or nothing, if the parent is the
-    // session itself).
+    // Terminate `p`: release its memory, orphan its children (ppid 0) and
+    // leave a zombie for its parent - the console's program leaves one for
+    // the console, an orphan nothing.
     static void terminate(Process* p, int status)
     {
         unlink_wait(p);
@@ -800,10 +806,8 @@ namespace process
                 q->ppid = 0;
         }
 
-        if (p->pid == root_pid)
-            root_status = status;
-
-        if (p->ppid == 0)
+        // An orphan has nobody to report to; the console's program does.
+        if (p->ppid == 0 && p != fg)
         {
             free_process(p);
         }
@@ -888,39 +892,15 @@ namespace process
         return nullptr;
     }
 
-    // Something that could still be scheduled, as opposed to merely
-    // existing: a session of nothing but stopped processes is stalled.
-    static bool any_runnable()
+    // Ctrl+Alt+Backspace: every user process dies as if by SIGINT, which is
+    // what a terminal interrupt would deliver in Linux. It works when the
+    // program ignores or catches every signal it can.
+    static void kill_user_processes()
     {
-        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
-            if (table[i].state == State::Runnable || table[i].state == State::Blocked)
-                return true;
-        return false;
-    }
-
-    static bool any_live()
-    {
-        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
-            if (alive(&table[i]))
-                return true;
-        return false;
-    }
-
-    // Hand control back to the console, which tears the session down. Only
-    // the idle task ever returns from this, in the next session.
-    static void end_session()
-    {
-        switch_kernel_task(&console_task);
-    }
-
-    static void kill_session()
-    {
-        // Esc ends the session: every process dies as if by SIGINT, which is
-        // what a terminal interrupt would deliver in Linux.
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (alive(p))
+            if (alive(p) && !p->kernel)
                 terminate(p, signal_status(SIGINT));
         }
     }
@@ -951,7 +931,12 @@ namespace process
     static void notify_parent(Process* p)
     {
         if (p->ppid == 0)
-            return;                     // the session is the parent
+        {
+            // Started by the console, which waits for exactly one program.
+            if (p == fg)
+                wait::wake_up(&console_proc->child_wq);
+            return;
+        }
         Process* parent = find_live(p->ppid);
         if (parent)
         {
@@ -962,7 +947,7 @@ namespace process
 
     static void post_signal(Process* p, int n)
     {
-        if (!sig::valid(n) || !alive(p))
+        if (!sig::valid(n) || !alive(p) || p->kernel)
             return;
 
         // SIGCONT resumes before any question of handlers: a stopped
@@ -996,7 +981,7 @@ namespace process
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (!alive(p) || p->pgid != pgid)
+            if (!alive(p) || p->kernel || p->pgid != pgid)
                 continue;
             count++;
             if (n)
@@ -1171,61 +1156,20 @@ namespace process
         return true;
     }
 
-    // The session-wide part of every scheduling decision: act on ^C / kill
-    // requests and on signals that need no user code, end the session when
-    // nobody is left, then pick a process that can run (nullptr: none).
+    // The system-wide part of every scheduling decision: act on ^C and the
+    // kill key and on signals that need no user code, then pick a process
+    // that can run (nullptr: none).
     static Process* choose_next()
     {
-        for (;;)
+        tty_signals();
+        if (kill_requested)
         {
-            if (kill_requested)
-            {
-                screen::printf("\n[interrupted]\n");
-                kill_session();
-                end_session();
-                continue;
-            }
-
-            tty_signals();
-            service_signals();
-
-            if (!any_live())
-            {
-                end_session();
-                continue;
-            }
-
-            return pick_next();
+            kill_requested = false;
+            screen::printf("\n[interrupted]\n");
+            kill_user_processes();
         }
-    }
-
-    // The idle task: runs whenever a session has nothing runnable, polls
-    // for a process to wake and halts in between. Interrupts arriving here
-    // come from ring 0, so they never re-enter the scheduler.
-    static void idle_loop(void*)
-    {
-        bool stall_reported = false;
-        for (;;)
-        {
-            Process* next = choose_next();
-            if (next)
-            {
-                stall_reported = false;
-                switch_process(next);
-                continue;
-            }
-
-            if (!stall_reported && !any_runnable())
-            {
-                // Every process is stopped and nothing in the session can
-                // send SIGCONT, because the console is not running while a
-                // session is.
-                stall_reported = true;
-                screen::printf("\n[stopped - press Ctrl+Alt+Backspace to end the session]\n");
-            }
-
-            asm volatile("sti; hlt");
-        }
+        service_signals();
+        return pick_next();
     }
 
     // Switch away from the current process (which may be blocked, stopped
@@ -1371,17 +1315,7 @@ namespace process
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
 
-        task::init(&console_task, "console");
-        uint64_t idle_frames = pmm::alloc_frames(IDLE_STACK_SIZE / 4096);
-        if (!idle_frames)
-        {
-            uart::printf("process: no memory for the idle stack\n");
-            screen::printf("\n\rprocess: no memory for the idle stack");
-            for (;;)
-                asm volatile("cli; hlt");
-        }
-        uint64_t idle_top = (uint64_t)phys_to_virt(idle_frames) + IDLE_STACK_SIZE;
-        task::prepare_kernel(&idle_task, "idle", idle_top, idle_loop, nullptr);
+        task::init(&idle_task, "idle");
 
         asm volatile("fninit");
         fpu_save(fpu_template);
@@ -1390,13 +1324,52 @@ namespace process
         copy_bytes(fpu_template + 24, (const uint8_t*)&mxcsr, sizeof(mxcsr));
     }
 
-    bool active()
+    void start_console(void (*entry)(void*))
     {
-        return session_active;
+        Process* p = alloc_process();
+        if (!p)
+        {
+            uart::printf("process: no memory for the console\n");
+            screen::printf("\n\rprocess: no memory for the console");
+            for (;;)
+                asm volatile("cli; hlt");
+        }
+
+        // pid 0: the value every program it starts sees as its ppid. The
+        // console works in the system cwd, not a per-process one.
+        p->pid    = 0;
+        p->pgid   = 0;
+        p->kernel = true;
+        p->cr3    = paging::kernel_pml4();
+        copy_name(p->name, "console");
+        if (p->cwd)
+        {
+            vfs::unref(p->cwd);
+            p->cwd = nullptr;
+        }
+        copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
+
+        task::prepare_kernel(&p->task, "console", kstack_top(p), entry, nullptr);
+        p->state = State::Runnable;
+        console_proc = p;
+    }
+
+    void idle()
+    {
+        // Interrupts arriving here come from ring 0, so they never re-enter
+        // the scheduler; after each one, see whether somebody can run.
+        for (;;)
+        {
+            Process* next = choose_next();
+            if (next)
+                switch_process(next);
+            else
+                asm volatile("sti; hlt");
+        }
     }
 
     // stdin/stdout/stderr: one devfs tty opened once and dup'ed onto fds
-    // 0, 1 and 2 of the session's root process (children inherit through
+    // 0, 1 and 2 of a program the console starts (children inherit through
     // the fd-table fork).
     static void open_std_fds(Process* p)
     {
@@ -1475,9 +1448,15 @@ namespace process
         return ae->push_kstr(true, pwdbuf);
     }
 
+    // Wakes the console: its program exited or stopped.
+    static bool fg_event()
+    {
+        return fg->state == State::Zombie || fg->stop_pending;
+    }
+
     bool run(const char* path, int argc, const char* const* argv, int* exit_status)
     {
-        if (session_active)
+        if (current != console_proc || fg)
             return false;
 
         ArgEnv ae;
@@ -1502,20 +1481,17 @@ namespace process
 
         p->ppid = 0;
         open_std_fds(p);
+        task::prepare_user(&p->task, p->name, kstack_top(p), &p->ctx);
 
-        root_pid       = p->pid;
-        root_status    = 0;
+        fg             = p;
         kill_requested = false;
-        session_active = true;
-        slice_ticks    = 0;
-        last_slot      = (uint32_t)(p - table);
 
         tty::reset();
-        // The root process starts in the foreground: ^C goes to its group,
-        // and it is the one allowed to read the keyboard.
+        // The program starts in the foreground: ^C goes to its group, and
+        // it is the one allowed to read the keyboard.
         tty::set_fg_pgrp(p->pgid);
         keyboard_callback_t prev_callback = keyboard::get_callback();
-        keyboard::set_keyboard_callback(session_key_handler);
+        keyboard::set_keyboard_callback(program_key_handler);
 
         screen::hide_cursor();
         screen::clear();
@@ -1524,37 +1500,36 @@ namespace process
         screen::push_viewport(screen::vp_x(), screen::vp_y() + bar_h,
                               screen::vp_w(), screen::vp_h() - bar_h);
 
-        uart::printf("process: session start, pid %u %s entry=%llx\n",
+        uart::printf("console: program start, pid %u %s entry=%llx\n",
                      (uint32_t)p->pid, p->name, p->ctx.iret.rip);
 
-        // The console task waits here until end_session switches back.
-        task::prepare_user(&p->task, p->name, kstack_top(p), &p->ctx);
-        switch_process(p);
-
-        // --- the session is over ---
-        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        // The program is runnable now; sleep until it has exited. Its
+        // children are not waited for: an orphan keeps running on its own.
+        for (;;)
         {
-            Process* q = &table[i];
-            if (q->state == State::Unused)
-                continue;
-            if (q->cr3)
-                paging::destroy_address_space(q->cr3);
-            free_process(q);
+            wait::wait_event(&console_proc->child_wq, fg_event, 0);
+            if (p->state == State::Zombie)
+                break;
+
+            // Stopped (^Z with the default action). Nothing can continue it
+            // yet: there is no fg command.
+            p->stop_pending = false;
+            screen::printf("\n[stopped - press Ctrl+Alt+Backspace to end it]\n");
         }
 
-        current = nullptr;
-        session_active = false;
-        tss::set_kernel_stack(0);
-        free_kernel_stacks();   // we are back on the console stack
+        int status = p->exit_status;
+        free_process(p);
+        fg = nullptr;
+        reclaim_kernel_stacks();
 
-        uart::printf("process: session end, status %u\n", (uint32_t)root_status);
+        uart::printf("console: program end, status %u\n", (uint32_t)status);
 
         screen::pop_viewport();
         screen::clear();
         screen::show_cursor();
         keyboard::set_keyboard_callback(prev_callback);
 
-        *exit_status = root_status;
+        *exit_status = status;
         return true;
     }
 
@@ -1564,7 +1539,7 @@ namespace process
 
     void on_user_interrupt(uint8_t irq, user_regs* regs, iret_frame* iret)
     {
-        if (!session_active || !current)
+        if (!current)
             return;
 
         if (kill_requested)
@@ -1688,10 +1663,10 @@ namespace process
     // foreground job is waiting for.
     bool in_foreground()
     {
-        if (!current)
-            return true;                // no session: the console owns the tty
-        pid_t fg = tty::fg_pgrp();
-        return fg == 0 || fg == current->pgid;
+        if (!current || current->kernel)
+            return true;                // the console owns the tty
+        pid_t fgp = tty::fg_pgrp();
+        return fgp == 0 || fgp == current->pgid;
     }
 
     pid_t cur_pgrp()
@@ -2095,7 +2070,7 @@ namespace process
         if (pid > 0)
         {
             Process* t = find_live(pid);
-            if (t)
+            if (t && !t->kernel)
             {
                 count = 1;
                 if (n)
@@ -2108,12 +2083,12 @@ namespace process
         }
         else if (pid == -1)
         {
-            // Every process we may signal, which here means the session
-            // apart from the caller.
+            // Every process we may signal: all user processes but the
+            // caller.
             for (uint32_t i = 0; i < MAX_PROCESSES; i++)
             {
                 Process* p = &table[i];
-                if (!alive(p) || p == current)
+                if (!alive(p) || p->kernel || p == current)
                     continue;
                 count++;
                 if (n)
@@ -2364,7 +2339,7 @@ namespace process
         regs->rax = (uint64_t)current->pgid;
     }
 
-    // There is one session (the console runs one program at a time), so
+    // There are no sessions (the console runs one program at a time), so
     // setsid only detaches the caller into a group of its own.
     void sys_setsid(user_regs* regs, iret_frame*)
     {

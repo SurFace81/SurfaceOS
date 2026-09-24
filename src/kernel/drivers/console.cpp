@@ -3,6 +3,7 @@
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/commands.h"
 #include "../../include/fs/vfs.h"
+#include "../../include/cpu/wait.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 64
@@ -31,6 +32,8 @@ static char* argv_buf[CONSOLE_MAX_ARGS];
 // and could lose the PIC EOI.
 static char pending_line[CONSOLE_INPUT_MAX];
 static volatile bool pending_valid = false;
+// The console task sleeps here until on_key has a line for it.
+static wait_queue line_wq;
 
 // Command history
 static char history[HISTORY_SIZE][CONSOLE_INPUT_MAX];
@@ -219,7 +222,7 @@ static void on_key(keyboard_event_t e)
         history_push(cmd_line);
         history_browse = -1;
 
-        // Defer execution to the main loop. Running `exec` (and other
+        // Defer execution to the console task. Running `exec` (and other
         // heavy commands) here would execute inside the keyboard IRQ.
         // The prompt is printed by poll() after the command finishes.
         if (!pending_valid)
@@ -230,6 +233,7 @@ static void on_key(keyboard_event_t e)
             memcpy(pending_line, cmd_line, len);
             pending_line[len] = '\0';
             pending_valid = true;
+            wait::wake_up(&line_wq);
         }
 
         list::clear(input_buf);
@@ -456,6 +460,20 @@ namespace console
         cmd_table[cmd_count].name = name;
         cmd_table[cmd_count].handler = handler;
         cmd_count++;
+    }
+
+    static bool line_pending()
+    {
+        return pending_valid;
+    }
+
+    void main(void*)
+    {
+        for (;;)
+        {
+            wait::wait_event(&line_wq, line_pending, 0);
+            poll();
+        }
     }
 
     void poll()
