@@ -22,8 +22,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   unlink of open files, volume dirty bit
 - Per-process fd table (POSIX dup/fork/exec semantics, O_CLOEXEC),
   open file descriptions with shared offsets
-- devfs: /dev/null, /dev/zero, /dev/tty, /dev/console; canonical-mode
-  terminal with echo; stdin/stdout/stderr are fds 0/1/2
+- devfs (outside the directory tree, no /dev): null, zero, tty, console;
+  canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
 - Userspace SDK heading towards musl: POSIX fd API (open/read/write/
   lseek/stat/getdents64/opendir...), environ/getenv, heap over brk
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,

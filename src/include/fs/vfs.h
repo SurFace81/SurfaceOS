@@ -135,6 +135,9 @@ struct mount
     // "is this the same file?" checks across mounts go wrong.
     uint32_t dev_id;
     bool    active;
+    // Not part of the directory tree (devfs): no path reaches it, only
+    // the vnodes its driver hands out. point is null, but it is not /.
+    bool    detached;
 };
 
 // One filesystem driver.
@@ -186,6 +189,8 @@ namespace vfs
     // nullptr for the root mount. arg goes to fs->mount_fs.
     sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs,
                       void* arg);
+    // Mount a filesystem outside the directory tree (see mount::detached).
+    sint64_t mount_detached(const char* devname, vfs_fs* fs, void* arg);
     // umount must refuse while a process still has the filesystem open, but
     // the VFS cannot see fd tables or process cwds from down here, and a
     // plain refcount test cannot either: drivers legitimately pin their own

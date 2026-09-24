@@ -21,6 +21,7 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/fs/devfs.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/time.h"
 #include "../../sdk/include/abi/auxv.h"
@@ -1227,13 +1228,13 @@ namespace process
         return session_active;
     }
 
-    // stdin/stdout/stderr: one /dev/tty opened once and dup'ed onto fds
+    // stdin/stdout/stderr: one devfs tty opened once and dup'ed onto fds
     // 0, 1 and 2 of the session's root process (children inherit through
     // the fd-table fork).
     static void open_std_fds(Process* p)
     {
         vnode* tty_vn = nullptr;
-        if (vfs::lookup("/dev/tty", nullptr, &tty_vn, false) != 0)
+        if (devfs::open("tty", &tty_vn) != 0)
             return;             // no devfs yet: syscalls will fail EBADF
 
         file* f = filesys::file_open(tty_vn, O_RDWR);   // takes the ref

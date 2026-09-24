@@ -1,6 +1,6 @@
 // fstest: exercises the fd layer, the VFS and the FAT32 driver (stage 3).
 //
-//   fstest          run the suite against /test/fstest.d (created fresh)
+//   fstest          run the suite against /files/fstest/fstest.d (created fresh)
 //   fstest verify   read back what the previous run left (persistence after
 //                   a QEMU restart with the same image)
 //
@@ -41,7 +41,9 @@ static void section(const char* name)
     print("\n");
 }
 
-static const char* D = "/test/fstest.d";
+// T holds the test tree from the image (hello.txt); D is made per run.
+static const char* T = "/files/fstest";
+static const char* D = "/files/fstest/fstest.d";
 
 static uint8_t byte_of(uint32_t i)
 {
@@ -367,9 +369,11 @@ static void test_dup_fcntl_regressions()
 
     // O_NONBLOCK on the tty: read must report EAGAIN instead of blocking.
     // (If this regresses, the test hangs rather than fails - the harness
-    // timeout is the backstop.)
-    int tty = open("/dev/tty", O_RDONLY | O_NONBLOCK);
-    check("open /dev/tty O_NONBLOCK", tty >= 3);
+    // timeout is the backstop.) The dup shares fd 0's open file description,
+    // so the flag is cleared again below.
+    int tty = dup(0);
+    check("dup of the tty", tty >= 3);
+    fcntl(tty, F_SETFL, O_NONBLOCK);
     check("F_GETFL reports O_NONBLOCK",
           (fcntl(tty, F_GETFL, 0) & O_NONBLOCK) != 0);
     char c = 0;
@@ -675,7 +679,7 @@ static void test_dirs()
 
 static void test_cwd()
 {
-    section("getcwd / chdir / relative paths / .. over /dev / openat");
+    section("getcwd / chdir / relative paths / .. of / / openat");
 
     char cwd[PATH_MAX_TEST];
     check("getcwd starts at the test dir or root", getcwd(cwd, sizeof(cwd)) != NULL);
@@ -689,17 +693,14 @@ static void test_cwd()
     check("relative open after chdir", fd >= 3);
     if (fd >= 3) close(fd);
 
-    // .. through the /dev mount point: chdir /dev, then ".." lands in /.
-    check("chdir /dev", chdir("/dev") == 0);
-    check("chdir .. from /dev lands in /", chdir("..") == 0);
-    check("getcwd is /", getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/") == 0);
     // ".." of / stays /.
+    check("chdir /", chdir("/") == 0);
     check("chdir .. from / stays at /", chdir("..") == 0 &&
           getcwd(cwd, sizeof(cwd)) != NULL && strcmp(cwd, "/") == 0);
 
     // openat with a dirfd.
-    int dirfd = open("/test", O_RDONLY | O_DIRECTORY);
-    check("open(/test, O_DIRECTORY)", dirfd >= 3);
+    int dirfd = open(T, O_RDONLY | O_DIRECTORY);
+    check("open(T, O_DIRECTORY)", dirfd >= 3);
     fd = openat(dirfd, "hello.txt", O_RDONLY);
     check("openat(dirfd, 'hello.txt')", fd >= 3);
     if (fd >= 3) close(fd);
@@ -707,9 +708,9 @@ static void test_cwd()
 
     // Trailing slash requires a directory; duplicate slashes are fine.
     errno = 0;
-    fd = open("/test//hello.txt/", O_RDONLY);
+    fd = open("/files//fstest//hello.txt/", O_RDONLY);
     check("trailing slash on a file -> ENOTDIR", fd == -1 && errno == ENOTDIR);
-    fd = open("/test//hello.txt", O_RDONLY);
+    fd = open("/files//fstest//hello.txt", O_RDONLY);
     check("duplicate slashes work", fd >= 3);
     if (fd >= 3) close(fd);
 
@@ -739,15 +740,15 @@ static void test_stat()
 
     // st_dev must tell the volumes apart: (st_dev, st_ino) is what "is this
     // the same file?" is built on, and devfs used to share a constant with
-    // the FAT root.
+    // the FAT root. The tty on fd 0 lives on devfs.
     struct stat rootst, devst;
-    check("stat / and /dev both succeed",
-          stat("/", &rootst) == 0 && stat("/dev", &devst) == 0);
+    check("stat / and fstat of the tty both succeed",
+          stat("/", &rootst) == 0 && fstat(0, &devst) == 0);
     check("st_dev differs between the root volume and devfs",
           rootst.st_dev != devst.st_dev);
     check("st_dev is non-zero on both", rootst.st_dev != 0 && devst.st_dev != 0);
-    check("stat of /dev/tty is a chrdev",
-          stat("/dev/tty", &a) == 0 && S_ISCHR(a.st_mode));
+    check("fstat of the tty is a chrdev",
+          fstat(0, &a) == 0 && S_ISCHR(a.st_mode));
     check("st_ino is non-zero", a.st_ino != 0);
 
     // Two opens of one file see one size through the shared vnode.
@@ -776,16 +777,16 @@ static void test_errors()
 
     errno = 0;
     check("ENOTDIR when a component is a file",
-          stat("/test/hello.txt/x", &st) == -1 && errno == ENOTDIR);
+          stat("/files/fstest/hello.txt/x", &st) == -1 && errno == ENOTDIR);
 
     errno = 0;
-    int fd = open("/test", O_RDONLY);
+    int fd = open(T, O_RDONLY);
     char buf[8];
     check("read of a directory fd -> EISDIR",
           fd >= 3 && read(fd, buf, 8) == -1 && errno == EISDIR);
     if (fd >= 3) close(fd);
 
-    fd = open("/test", O_RDONLY);
+    fd = open(T, O_RDONLY);
     errno = 0;
     check("write to an O_RDONLY fd -> EBADF",
           fd >= 3 && write(fd, buf, 1) == -1 && errno == EBADF);
@@ -796,7 +797,7 @@ static void test_errors()
 
     errno = 0;
     check("EFAULT: stat into kernel memory",
-          syscall(SYS_STAT, (uint64_t)"/test/hello.txt", 0x200000) == -EFAULT);
+          syscall(SYS_STAT, (uint64_t)"/files/fstest/hello.txt", 0x200000) == -EFAULT);
 
     // ENAMETOOLONG: a 300-char component.
     char longp[400];
@@ -816,13 +817,13 @@ static void test_errors()
 
     // open("dir/", O_CREAT) -> EISDIR.
     errno = 0;
-    fd = open("/test/newdir/", O_CREAT | O_WRONLY, 0755);
+    fd = open("/files/fstest/newdir/", O_CREAT | O_WRONLY, 0755);
     check("open('dir/', O_CREAT) -> EISDIR", fd == -1 && errno == EISDIR);
 
     // unlink of a directory -> EISDIR.
     errno = 0;
     check("unlink of a directory -> EISDIR",
-          unlink("/test") == -1 && errno == EISDIR);
+          unlink(T) == -1 && errno == EISDIR);
 }
 
 static void test_mfile()
@@ -858,30 +859,12 @@ static void test_mfile()
 
 static void test_dev()
 {
-    section("/dev/null, /dev/zero, isatty");
-
-    char buf[16];
-
-    int fd = open("/dev/null", O_RDWR);
-    check("open /dev/null", fd >= 3);
-    check("read /dev/null -> 0 (EOF)", read(fd, buf, 16) == 0);
-    check("write /dev/null is swallowed", write(fd, "abc", 3) == 3);
-    check("/dev/null is not a tty", isatty(fd) == 0);
-    close(fd);
-
-    fd = open("/dev/zero", O_RDONLY);
-    check("open /dev/zero", fd >= 3);
-    ssize_t r = read(fd, buf, 16);
-    bool zero = r == 16;
-    for (int i = 0; zero && i < 16; i++)
-        if (buf[i] != 0) zero = false;
-    check("read /dev/zero -> 16 zero bytes", zero);
-    close(fd);
+    section("isatty, TCGETS");
 
     check("isatty(0) == 1", isatty(0) == 1);
     check("isatty(1) == 1", isatty(1) == 1);
 
-    fd = open("/test/hello.txt", O_RDONLY);
+    int fd = open("/files/fstest/hello.txt", O_RDONLY);
     check("isatty of a file fd == 0", fd >= 3 && isatty(fd) == 0);
     if (fd >= 3) close(fd);
 
@@ -891,11 +874,11 @@ static void test_dev()
           syscall(SYS_IOCTL, 0, (uint64_t)TCGETS, (uint64_t)&t) == 0);
     check("termios says ICANON|ECHO",
           (t.c_lflag & ICANON) != 0 && (t.c_lflag & ECHO) != 0);
-    int nfd = open("/dev/null", O_RDWR);
+    int nfd = open("/files/fstest/hello.txt", O_RDONLY);
     errno = 0;
     sint64_t rc = syscall(SYS_IOCTL, (uint64_t)nfd, (uint64_t)TCGETS,
                           (uint64_t)&t);
-    check("TCGETS on /dev/null -> ENOTTY", rc == -ENOTTY);
+    check("TCGETS on a file -> ENOTTY", nfd >= 3 && rc == -ENOTTY);
     close(nfd);
 }
 
@@ -1059,7 +1042,7 @@ int main(int argc, char** argv)
     print("fstest - fd layer, VFS and FAT32 checks\n");
 
     // Fresh test directory on every run.
-    mkdir("/test", 0755);
+    mkdir(T, 0755);
     mkdir(D, 0755);
 
     test_basic_rw();

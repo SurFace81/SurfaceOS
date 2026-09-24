@@ -367,5 +367,20 @@ namespace devfs
         dev_mount_fs,
         dev_umount_fs,
     };
+
+    sint64_t init()
+    {
+        sint64_t rc = vfs::mount_detached("devfs", &fs, nullptr);
+        if (rc != 0)
+            uart::printf("boot: devfs mount failed (%d)\n", (int)rc);
+        return rc;
+    }
+
+    sint64_t open(const char* name, vnode** out)
+    {
+        if (!root_vn)
+            return -ENODEV;
+        return dev_lookup(root_vn, name, out);
+    }
 }
 

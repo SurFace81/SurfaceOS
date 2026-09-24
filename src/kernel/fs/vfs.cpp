@@ -280,7 +280,8 @@ namespace vfs
     // mount table
     // -----------------------------------------------------------------------
 
-    sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs, void* arg)
+    static sint64_t do_mount(vnode* point_dir, const char* devname, vfs_fs* fs,
+                             void* arg, bool detached)
     {
         if (mount_cnt >= MAX_MOUNTS)
             return -ENFILE;
@@ -303,6 +304,7 @@ namespace vfs
         m->dev_id = next_dev_id++;  // never reused: a stale st_dev must not
                                     // start matching a later mount
         m->active = true;
+        m->detached = detached;
         strncpy(m->devname, devname, sizeof(m->devname) - 1);
         if (point_dir)
             ref(point_dir);         // the mount holds a reference
@@ -322,8 +324,18 @@ namespace vfs
         mount_cnt++;
 
         uart::printf("vfs: %s mounted%s\n", devname,
-                     point_dir ? "" : " as root");
+                     point_dir ? "" : detached ? " detached" : " as root");
         return 0;
+    }
+
+    sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs, void* arg)
+    {
+        return do_mount(point_dir, devname, fs, arg, false);
+    }
+
+    sint64_t mount_detached(const char* devname, vfs_fs* fs, void* arg)
+    {
+        return do_mount(nullptr, devname, fs, arg, true);
     }
 
     // The mount whose point is `dir` (a directory being stepped into).
@@ -451,7 +463,8 @@ namespace vfs
     mount* root_mount()
     {
         for (uint32_t i = 0; i < MAX_MOUNTS; i++)
-            if (mounts[i].active && mounts[i].point == nullptr)
+            if (mounts[i].active && mounts[i].point == nullptr &&
+                !mounts[i].detached)
                 return &mounts[i];
         return nullptr;
     }

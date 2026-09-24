@@ -157,6 +157,8 @@ static void cmd_mount(int argc, const char** argv)
         for (uint32_t i = 0; vfs::mount_count_get(i); i++)
         {
             mount* m = vfs::mount_count_get(i);
+            if (m->detached)
+                continue;
             if (m->point)
             {
                 char buf[PATH_MAX];
@@ -215,7 +217,7 @@ static void cmd_umount(int argc, const char** argv)
     }
 
     // namei descends *into* a mount when it walks onto its point, so the
-    // vnode we get back for "/dev" is the mounted FS's root, not the
+    // vnode we get back for "/mount/usb0p1" is the mounted FS's root, not the
     // directory it covers. Match on the root; keep the point comparison as
     // a fallback for the case where the lookup did not cross (no mount).
     mount* found = nullptr;

@@ -229,9 +229,8 @@ namespace
 
     // Look up the top-level directory /<name>, creating it on the root
     // volume when it is missing (an image made by hand, or an older mkimg).
-    // On success *out holds a reference when out is not null; *created is
-    // set when the directory had to be made.
-    sint64_t ensure_root_dir(const char* name, vnode** out, bool* created)
+    // *created is set when the directory had to be made.
+    sint64_t ensure_root_dir(const char* name, bool* created)
     {
         char path[16];
         path[0] = '/';
@@ -253,16 +252,13 @@ namespace
                 {
                     uart::printf("boot: created %s\n", path);
                     *created = true;
-                    rc = vfs::lookup(path, nullptr, &dir, true);
                 }
             }
             if (root)
                 vfs::unref(root);
         }
 
-        if (rc == 0 && out)
-            *out = dir;
-        else if (dir)
+        if (dir)
             vfs::unref(dir);
         return rc;
     }
@@ -346,11 +342,11 @@ extern "C" void kmain(uint64_t boot_header_phys)
     // volume and flushed right away, so a power cut does not lose them.
     if (vfs::root_mount())
     {
-        static const char* const dirs[] = { "dev", "files", "tmp", "mount" };
+        static const char* const dirs[] = { "files", "tmp", "mount" };
         bool created = false;
         for (const char* d : dirs)
         {
-            sint64_t rc = ensure_root_dir(d, nullptr, &created);
+            sint64_t rc = ensure_root_dir(d, &created);
             if (rc != 0)
                 uart::printf("boot: /%s unavailable (%d)\n", d, (int)rc);
         }
@@ -358,24 +354,9 @@ extern "C" void kmain(uint64_t boot_header_phys)
             vfs::sync_all();
     }
 
-    // Mount devfs over /dev.
-    {
-        vnode* dev_dir = nullptr;
-        sint64_t rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
-        if (rc == 0 && dev_dir)
-        {
-            rc = vfs::mount_at(dev_dir, "devfs", &devfs::fs, nullptr);
-            if (rc != 0)
-            {
-                uart::printf("boot: devfs mount failed (%d)\n", (int)rc);
-                vfs::unref(dev_dir);
-            }
-            else
-                uart::printf("boot: devfs mounted on /dev\n");
-        }
-        else if (dev_dir)
-            vfs::unref(dev_dir);
-    }
+    // devfs lives outside the tree: processes get the tty through it.
+    if (devfs::init() == 0)
+        uart::printf("boot: devfs mounted\n");
 
     syscall::init();
     process::init();

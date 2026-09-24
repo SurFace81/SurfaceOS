@@ -9,7 +9,6 @@
 #   4. memtest.bin                -> all memory checks pass
 #   5. proctest.bin               -> all process/scheduler checks pass
 #   6. uptime                     -> the console still works afterwards
-#   7. umount /dev busy vs free   -> EBUSY while the cwd is inside it
 #   8. meminfo around a session   -> no leaked frames (per-process kstacks)
 #   9. hi, Ctrl+D                 -> EOF ends a canonical read
 #  10. termtest                   -> CP437 upper half renders
@@ -190,7 +189,7 @@ wait_for "argtest: " 240; result $? "argtest finished"
 grep -aq "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
 wait_session_end $WANT 20; result $? "argtest exits"
 
-# 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, /dev)
+# 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, tty)
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "exec fstest"
 wait_for "fstest: " 600; result $? "fstest finished"
@@ -289,16 +288,6 @@ wait_for "caught 2" 20; result $? "^C reaches a handler from ring-3 spin"
 # never makes a syscall. Ctrl+Alt+Backspace is the console's own way out.
 sleep 1; key ctrl-alt-backspace
 wait_session_end $WANT 20; result $? "Ctrl+Alt+Backspace kills a runaway app"
-
-# 12. umount refuses while the FS is in use, and succeeds once it is not.
-#    Standing in /dev gives the console cwd a reference on the devfs root;
-#    before the stage-3 cleanup umount freed those vnodes anyway.
-type_cmd "cd /dev"; sleep 2
-type_cmd "umount /dev"; sleep 3
-wait_for "umount: busy /dev" 10; result $? "umount refuses a filesystem in use"
-type_cmd "cd /"; sleep 2
-type_cmd "umount /dev"; sleep 3
-wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
 
 # 13. per-process kernel stacks are handed back when a session ends: run a
 #    session between two meminfo samples and compare the free-frame counts.

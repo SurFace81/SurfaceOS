@@ -20,8 +20,8 @@ The image is created from scratch:
 Applications land in /apps/<lowercase name> without an extension, through
 LFN; the boot files are /EFI/Boot/BOOTX64.EFI, and /sfos/KERNEL.BIN and
 /sfos/FONT.FNT (the UEFI loader and the kernel expect them there). The
-top-level /files, /tmp and /mount and the test tree /test/long directory
-name/ are created too.
+top-level /files, /tmp and /mount are created too, with fstest's test tree
+in /files/fstest/.
 
 Requires: mkfs.fat, and sfdisk (mbr) / sgdisk (gpt) on PATH; pyfatfs.
 """
@@ -104,8 +104,8 @@ def build_gpt(image, size_mib):
 def populate(image, off_bytes, efi, kernel, font, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
-    for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/dev", "/files",
-              "/tmp", "/mount", "/test", "/test/long directory name"):
+    for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/files", "/tmp",
+              "/mount", "/files/fstest", "/files/fstest/long directory name"):
         try:
             fs.makedir(d)
         except Exception:
@@ -130,9 +130,9 @@ def populate(image, off_bytes, efi, kernel, font, apps):
             put("/apps/" + base.lower(), f.read())
 
     # A test tree exercising LFN, spaces and nesting (fstest reads these).
-    put("/test/long directory name/file with spaces.txt",
+    put("/files/fstest/long directory name/file with spaces.txt",
         b"a file inside a long directory name, with spaces\n")
-    put("/test/hello.txt", b"hello from the test tree\n")
+    put("/files/fstest/hello.txt", b"hello from the test tree\n")
 
     fs.close()
 
