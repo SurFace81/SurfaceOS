@@ -9,6 +9,7 @@
 #include "../../include/cpu/signal.h"
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/task.h"
+#include "../../include/cpu/wait.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/cpu/irq.h"
@@ -44,7 +45,7 @@ namespace process
     // -----------------------------------------------------------------------
 
     enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
-    enum class Wait  : uint8_t { None, Key, Child, Sleep, Signal };
+    enum class Wait  : uint8_t { None, Key, Child, Signal, Queue };
 
     struct Process
     {
@@ -55,7 +56,13 @@ namespace process
         pid_t       pgid;           // process group, for job control
         pid_t       wait_pid;       // Wait::Child: which child (<= 0: any)
         uint64_t    wait_opts;      // Wait::Child: WNOHANG/WUNTRACED/...
-        uint64_t    wake_tick;      // Wait::Sleep
+        uint64_t    wake_tick;      // sleep_until: tick to wake at
+
+        // Wait::Queue: the queue slept on (null once woken), the next
+        // sleeper on it, and whether wake_up ended the sleep.
+        wait_queue* wq;
+        Process*    wq_next;
+        bool        woken;
         int         exit_status;    // valid in Zombie
 
         // Job control: set when the process is stopped, cleared when the
@@ -723,11 +730,44 @@ namespace process
     // machinery, below).
     static void notify_parent(Process* p);
 
+    // Wait queues are touched from IRQs (wake_up from the timer, the
+    // keyboard), so every list change runs with interrupts off.
+    static inline uint64_t irq_save()
+    {
+        uint64_t f;
+        asm volatile("pushfq; pop %0; cli" : "=r"(f) :: "memory");
+        return f;
+    }
+
+    static inline void irq_restore(uint64_t f)
+    {
+        asm volatile("push %0; popfq" :: "r"(f) : "memory", "cc");
+    }
+
+    // Take p off the queue it sleeps on, if any.
+    static void unlink_wait(Process* p)
+    {
+        uint64_t f = irq_save();
+        if (p->wq)
+        {
+            Process** link = &p->wq->head;
+            while (*link && *link != p)
+                link = &(*link)->wq_next;
+            if (*link)
+                *link = p->wq_next;
+            p->wq = nullptr;
+            p->wq_next = nullptr;
+        }
+        irq_restore(f);
+    }
+
     // Terminate `p`: release its memory, reparent its children to the session
     // and leave a zombie for its parent (or nothing, if the parent is the
     // session itself).
     static void terminate(Process* p, int status)
     {
+        unlink_wait(p);
+
         if (p->cr3)
         {
             if (read_cr3() == p->cr3)
@@ -811,7 +851,7 @@ namespace process
         {
             case Wait::Key:    return tty::readable();
             case Wait::Child:  return child_event(p);
-            case Wait::Sleep:  return pit::ticks() >= p->wake_tick;
+            case Wait::Queue:  return p->woken;
             case Wait::Signal: return false;    // pause/sigsuspend: only a signal
             default:           return true;
         }
@@ -1174,25 +1214,92 @@ namespace process
 
     // Switch away from the current process (which may be blocked, stopped
     // or already terminated) to whatever should run next, the idle task if
-    // nothing can. Returns once the process is resumed, with the signals
-    // it has to handle delivered into its trap frame `regs`/`iret`. A
-    // terminated process never returns from here.
+    // nothing can. Returns once the process is resumed; a terminated process
+    // never returns from here.
+    static void schedule()
+    {
+        Process* next = choose_next();
+        if (!next)
+            switch_kernel_task(&idle_task);
+        else if (next != current)
+            switch_process(next);
+
+        // Running again: whoever switched to us made us current.
+        slice_ticks = 0;
+    }
+
+    // schedule(), then deliver the signals the resumed process has to
+    // handle into its trap frame `regs`/`iret`.
     static void reschedule(user_regs* regs, iret_frame* iret)
     {
         for (;;)
         {
-            Process* next = choose_next();
-            if (!next)
-                switch_kernel_task(&idle_task);
-            else if (next != current)
-                switch_process(next);
-
-            // Running again: whoever switched to us made us current.
-            slice_ticks = 0;
+            schedule();
             if (deliver_signals(current, regs, iret))
                 continue;               // killed instead: pick again
             return;
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Wait queues (wait.h)
+    // -----------------------------------------------------------------------
+
+    // Sleepers of sleep_until, woken by the timer once their tick is due.
+    static wait_queue timer_wq;
+
+    static bool queue_sleep(wait_queue* q)
+    {
+        Process* p = current;
+
+        uint64_t f = irq_save();
+        p->woken   = false;
+        p->wq      = q;
+        p->wq_next = q->head;
+        q->head    = p;
+        p->state   = State::Blocked;
+        p->wait    = Wait::Queue;
+        irq_restore(f);
+
+        schedule();
+
+        // A signal ended the sleep: still on the queue.
+        unlink_wait(p);
+        bool woken = p->woken;
+        p->woken = false;
+        return woken;
+    }
+
+    // Wake the sleepers on q that `due` accepts (all when due is null).
+    static void queue_wake(wait_queue* q, bool (*due)(const Process*))
+    {
+        uint64_t f = irq_save();
+        Process** link = &q->head;
+        while (*link)
+        {
+            Process* p = *link;
+            if (due && !due(p))
+            {
+                link = &p->wq_next;
+                continue;
+            }
+            *link = p->wq_next;
+            p->wq = nullptr;
+            p->wq_next = nullptr;
+            p->woken = true;    // pick_next makes it runnable
+        }
+        irq_restore(f);
+    }
+
+    static bool tick_due(const Process* p)
+    {
+        return pit::ticks() >= p->wake_tick;
+    }
+
+    void on_timer_tick()
+    {
+        if (timer_wq.head)
+            queue_wake(&timer_wq, tick_due);
     }
 
     // Everything that has to happen on the way back to ring 3 when the
@@ -1623,11 +1730,9 @@ namespace process
         reschedule(regs, iret);
     }
 
-    // nanosleep(req, rem): req/rem are user `struct timespec`. With no
-    // signals rem is always zero; it must be written before blocking - the
-    // wake path resumes the user process from the saved context, kernel C
-    // code after block() does not re-run on a normal wake.
-    void sys_nanosleep(user_regs* regs, iret_frame* iret)
+    // nanosleep(req, rem): req/rem are user `struct timespec`. rem is always
+    // zero for now. Sleeps in the kernel (wait::sleep_until).
+    void sys_nanosleep(user_regs* regs, iret_frame*)
     {
         timespec req;
         if (!uaccess::copy_from_user(&req, regs->rdi, sizeof(req)))
@@ -1665,10 +1770,10 @@ namespace process
         if (!hz)
             hz = pit::frequency();
         uint64_t ticks = (ms * hz + 999) / 1000;
-        current->wake_tick = pit::ticks() + (ticks ? ticks : 1);
-
         regs->rax = 0;
-        block(Wait::Sleep, false, regs, iret);
+        // A signal ends the sleep early; the call still reports success
+        // (EINTR comes with the rest of the in-kernel sleeping).
+        wait::sleep_until(pit::ticks() + (ticks ? ticks : 1));
     }
 
     void sys_fork(user_regs* regs, iret_frame* iret)
@@ -2474,3 +2579,27 @@ namespace process
         regs->rax = 0;
     }
 } // namespace process
+
+namespace wait
+{
+    bool sleep_on(wait_queue* q)
+    {
+        return process::queue_sleep(q);
+    }
+
+    void wake_up(wait_queue* q)
+    {
+        process::queue_wake(q, nullptr);
+    }
+
+    bool sleep_until(uint64_t tick)
+    {
+        while (pit::ticks() < tick)
+        {
+            process::current->wake_tick = tick;
+            if (!process::queue_sleep(&process::timer_wq))
+                return false;
+        }
+        return true;
+    }
+}

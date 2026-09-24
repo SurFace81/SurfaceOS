@@ -169,6 +169,10 @@ namespace process
     // over the `int 0x80` so the syscall re-executes on wake (tty reads).
     void block_on_input(user_regs* regs, iret_frame* iret);
 
+    // Every timer tick, from any ring: wakes the sleep_until sleepers that
+    // are due.
+    void on_timer_tick();
+
     // An IRQ arrived while ring 3 was running (EOI already sent).
     void on_user_interrupt(uint8_t irq, user_regs* regs, iret_frame* iret);
 

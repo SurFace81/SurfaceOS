@@ -173,6 +173,9 @@ void irq_handler(struct interrupt_frame *frame) {
 
     irq::pic_send_eoi(irq_line);
 
+    if (irq_line == IRQ0_TIMER)
+        process::on_timer_tick();
+
     // Interrupted user code: this is a return-to-ring-3 point, where the
     // scheduler may preempt the process or act on Esc. The EOI is already
     // out, so switching away (or abandoning the frame) is safe.
