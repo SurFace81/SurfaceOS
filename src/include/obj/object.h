@@ -28,12 +28,21 @@ enum class obj_type : uint8_t
 };
 
 struct kobject;
+struct wait_queue;
 
 struct kobject_ops
 {
     obj_type    type;
     const char* name;                   // "file", ... for diagnostics
     void      (*destroy)(kobject* o);   // the last reference is gone
+
+    // Waitable objects (obj/event.h: objects::wait). signaled() says whether
+    // a wait on the object ends now, waitq() is where waiters sleep until it
+    // does, and consume() - optional - runs once a wait has succeeded (an
+    // auto-reset event clears itself there). All null: not waitable.
+    bool        (*signaled)(kobject* o);
+    wait_queue* (*waitq)(kobject* o);
+    void        (*consume)(kobject* o);
 };
 
 struct kobject

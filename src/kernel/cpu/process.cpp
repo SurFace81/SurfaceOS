@@ -19,6 +19,7 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/obj/object.h"
+#include "../../include/obj/event.h"
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/tty.h"
 #include "../../include/drivers/screen.h"
@@ -155,7 +156,22 @@ namespace process
         ((proc_obj*)o)->used = false;
     }
 
-    static const kobject_ops proc_obj_ops = { obj_type::Process, "process", proc_obj_destroy };
+    // Waitable: signaled once the process has exited.
+    static bool proc_obj_signaled(kobject* o)
+    {
+        return ((proc_obj*)o)->exited;
+    }
+
+    static wait_queue* proc_obj_waitq(kobject* o)
+    {
+        return &((proc_obj*)o)->changed;
+    }
+
+    static const kobject_ops proc_obj_ops =
+    {
+        obj_type::Process, "process", proc_obj_destroy,
+        proc_obj_signaled, proc_obj_waitq, nullptr,
+    };
 
     // A new object for process `pid`; the caller holds its reference.
     static proc_obj* proc_obj_new(pid_t pid)
@@ -1569,13 +1585,21 @@ namespace process
         if (!o)
             return rc;
 
+        if (!stopped)
+        {
+            // Just the exit: the generic wait on a waitable object.
+            rc = objects::wait_handle(t, h, 0);
+            if (rc == 0)
+                *status = o->status;
+            return rc;
+        }
+
         // The handle keeps the object alive while this sleeps.
-        wait_req r = { o, stopped != nullptr };
+        wait_req r = { o, true };
         if (!wait::wait_event(&o->changed, proc_changed, &r, 0))
             return -EINTR;
 
-        if (stopped)
-            *stopped = !o->exited;
+        *stopped = !o->exited;
         if (o->exited)
         {
             *status = o->status;

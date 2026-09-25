@@ -37,7 +37,11 @@ namespace
         f->used = false;
     }
 
-    const kobject_ops file_ops = { obj_type::File, "file", file_destroy };
+    const kobject_ops file_ops =
+    {
+        obj_type::File, "file", file_destroy,
+        nullptr, nullptr, nullptr,      // not waitable
+    };
 }
 
 namespace filesys

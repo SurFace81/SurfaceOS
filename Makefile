@@ -81,6 +81,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/uaccess.o \
 				bin/kernel/acpi/acpi.o \
 				bin/kernel/obj/object.o \
+				bin/kernel/obj/event.o \
 
 # SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter

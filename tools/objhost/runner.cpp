@@ -31,8 +31,10 @@ static void test_destroy(kobject* o)
     ((test_obj*)o)->destroyed++;
 }
 
-static const kobject_ops file_ops  = { obj_type::File,  "file",  test_destroy };
-static const kobject_ops event_ops = { obj_type::Event, "event", test_destroy };
+static const kobject_ops file_ops  = { obj_type::File,  "file",  test_destroy,
+                                       nullptr, nullptr, nullptr };
+static const kobject_ops event_ops = { obj_type::Event, "event", test_destroy,
+                                       nullptr, nullptr, nullptr };
 
 static void make(test_obj* t, const kobject_ops* ops)
 {

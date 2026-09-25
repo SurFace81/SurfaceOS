@@ -4,6 +4,8 @@
 #include "../../include/drivers/commands.h"
 #include "../../include/fs/vfs.h"
 #include "../../include/cpu/wait.h"
+#include "../../include/cpu/process.h"
+#include "../../include/obj/event.h"
 #include "../version.h"
 
 #define MAX_COMMANDS 64
@@ -32,8 +34,9 @@ static char* argv_buf[CONSOLE_MAX_ARGS];
 // and could lose the PIC EOI.
 static char pending_line[CONSOLE_INPUT_MAX];
 static volatile bool pending_valid = false;
-// The console task sleeps here until on_key has a line for it.
-static wait_queue line_wq;
+// An auto-reset event: on_key sets it when a line is pending, the console
+// task waits on it through a handle.
+static kobject* line_event = nullptr;
 
 // Command history
 static char history[HISTORY_SIZE][CONSOLE_INPUT_MAX];
@@ -233,7 +236,8 @@ static void on_key(keyboard_event_t e)
             memcpy(pending_line, cmd_line, len);
             pending_line[len] = '\0';
             pending_valid = true;
-            wait::wake_up(&line_wq);
+            if (line_event)
+                event::set(line_event);
         }
 
         list::clear(input_buf);
@@ -462,16 +466,22 @@ namespace console
         cmd_count++;
     }
 
-    static bool line_pending(void*)
-    {
-        return pending_valid;
-    }
-
     void main(void*)
     {
+        // The console is a process of its own: the event gets a handle in
+        // its table like any object a process waits on.
+        sint32_t h = -1;
+        if (!line_event ||
+            handles::install(process::cur_handles(), line_event, 0, 0, &h) != 0)
+        {
+            uart::printf("console: no line event, input is ignored\n");
+            for (;;)
+                wait::sleep_until(~0ULL);
+        }
+
         for (;;)
         {
-            wait::wait_event(&line_wq, line_pending, nullptr, 0);
+            objects::wait_handle(process::cur_handles(), h, 0);
             poll();
         }
     }
@@ -511,6 +521,7 @@ namespace console
         history_browse = -1;
         input_pos = 0;
         input_buf = list::create<char>();
+        line_event = event::create(true);
 
         commands::init();
 
