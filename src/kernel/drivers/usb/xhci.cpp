@@ -296,6 +296,9 @@ struct usb_mass_storage_dev
     xhci_transfer_ring bulk_out_ring;
     bool configured;
     bool found;
+    // SYNCHRONIZE CACHE was rejected as an unknown command: the device has
+    // no cache it lets us flush, so flushes are skipped from then on.
+    bool no_sync_cache;
 };
 
 // Driver state
@@ -1042,13 +1045,51 @@ static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sect
     return result == 0;
 }
 
+// Fetch the sense data of the command that just failed. Returns the sense
+// key, or -1 when even that did not work.
+static sint32_t scsi_request_sense(usb_mass_storage_dev* msd)
+{
+    const uint32_t len = 18;            // fixed-format sense data
+    uint8_t* data = (uint8_t*)alloc_xhci_memory(len, 64, 4096);
+    if (!data)
+        return -1;
+    memory::memset(data, 0, len);
+
+    uint8_t cmd[6];
+    memory::memset(cmd, 0, 6);
+    cmd[0] = SCSI_REQUEST_SENSE;
+    cmd[4] = (uint8_t)len;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 6, data, xhci_virt_to_phys(data),
+                                       len, USB_CBW_FLAG_IN);
+    sint32_t key = result == 0 ? (sint32_t)(data[2] & 0x0F) : -1;
+    free_xhci_memory(data);
+    return key;
+}
+
 static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
 {
+    if (msd->no_sync_cache)
+        return true;
+
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
     cmd[0] = SCSI_SYNCHRONIZE_CACHE;    // whole LBA range, no data phase
     sint32_t result = bot_scsi_command(msd, cmd, 10, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-    return result == 0;
+    if (result == 0)
+        return true;
+
+    // Plenty of USB sticks do not implement SYNCHRONIZE CACHE and answer
+    // with ILLEGAL REQUEST. They write through (or manage their cache on
+    // their own), so there is nothing to flush - Linux treats it the same
+    // way. Anything else is a real failure.
+    if (result == 1 && scsi_request_sense(msd) == SCSI_SENSE_ILLEGAL_REQUEST)
+    {
+        uart::printf("scsi: SYNCHRONIZE CACHE not supported, flushes skipped\n");
+        msd->no_sync_cache = true;
+        return true;
+    }
+    return false;
 }
 
 // Allocate (once) the reusable per-device DMA bounce buffer.

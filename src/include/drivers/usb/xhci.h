@@ -474,11 +474,15 @@ struct usb_csw {
 
 // SCSI opcodes
 #define SCSI_TEST_UNIT_READY    0x00
+#define SCSI_REQUEST_SENSE      0x03
 #define SCSI_INQUIRY            0x12
 #define SCSI_READ_CAPACITY_10   0x25
 #define SCSI_READ_10            0x28
 #define SCSI_WRITE_10           0x2A
 #define SCSI_SYNCHRONIZE_CACHE  0x35
+
+// Sense keys (REQUEST SENSE, fixed format byte 2)
+#define SCSI_SENSE_ILLEGAL_REQUEST  0x05
 
 // Max USB3 ports we track
 #define XHCI_MAX_USB3_PORTS 32

@@ -449,8 +449,27 @@ namespace screen
                 case 'c':
                     emit_char((char)__builtin_va_arg(a, int));
                     break;
-                case 'u':
+                case 'd':
                 case 'i':
+                {
+                    sint64_t v = ll ? __builtin_va_arg(a, sint64_t)
+                                    : (sint64_t)__builtin_va_arg(a, int);
+                    uint32_t start = 0;
+                    if (v < 0)
+                        buf[start++] = '-';
+                    utoa(v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v, buf + start, 10);
+                    uint32_t len = 0;
+                    while (buf[len]) len++;
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
+                    emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
+                    break;
+                }
+                case 'u':
                 {
                     utoa(ll ? __builtin_va_arg(a, uint64_t)
                             : __builtin_va_arg(a, uint32_t), buf, 10);
