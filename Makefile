@@ -71,6 +71,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/rtc.o \
 				bin/kernel/cpu/syscall.o \
 				bin/kernel/cpu/sfcall.o \
+				bin/kernel/cpu/sdkpage.o \
+				bin/kernel/cpu/sdkpage.asm.o \
 				bin/kernel/cpu/sys_fs.o \
 				bin/kernel/cpu/tss.o \
 				bin/kernel/cpu/signal.o \
@@ -108,6 +110,14 @@ bin/sdk/crt0.o: src/sdk/libc/crt0.S
 # Apps: every .cpp in src/apps/ becomes a .bin
 APP_SRC		= $(wildcard src/apps/*.cpp)
 APP_BINS	= $(patsubst src/apps/%.cpp, bin/apps/%.bin, $(APP_SRC))
+
+# SurfaceOS programs (<sfos.h>): src/apps/sfos/*.cpp. No libc and no
+# start-up code: the kernel starts them through the SDK code page, which
+# calls SfMain. The note object marks them as such (src/sdk/sfos/note.S).
+SFOS_NOTE	= bin/sdk/sfos_note.o
+SFOS_APP_SRC	= $(wildcard src/apps/sfos/*.cpp)
+SFOS_APP_BINS	= $(patsubst src/apps/sfos/%.cpp, bin/apps/%.bin, $(SFOS_APP_SRC))
+APP_BINS	+= $(SFOS_APP_BINS)
 
 .PHONY: run clean create_disk version usb
 
@@ -199,6 +209,18 @@ bin/apps/%.bin: src/apps/%.cpp src/sdk/linker.ld $(SDK_ENTRY) $(SDK_LIB)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -MT $@ -MF bin/apps/$*.d -c -o bin/apps/$*.o $<
 	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/linker.ld -nostdlib -o $@ \
 		$(SDK_ENTRY) bin/apps/$*.o -Lbin/sdk -lsfos
+
+
+# SurfaceOS programs
+$(SFOS_NOTE): src/sdk/sfos/note.S
+	mkdir -p $(dir $@)
+	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
+
+$(SFOS_APP_BINS): bin/apps/%.bin: src/apps/sfos/%.cpp src/sdk/sfos.ld $(SFOS_NOTE)
+	mkdir -p $(dir $@)
+	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -MT $@ -MF bin/apps/$*.d -c -o bin/apps/$*.o $<
+	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib -o $@ \
+		$(SFOS_NOTE) bin/apps/$*.o
 
 
 # Generating version

@@ -20,6 +20,9 @@ struct vnode;
 //   image_end           heap, grows up via SYS_BRK          (up to USER_MMAP_BASE)
 //   0x0000000010000000  anonymous mmap window               (USER_MMAP_SIZE)
 //   ...                 unused
+//   0x00007FFF00000000  SDK code page, R+X  (SurfaceOS programs only, sdkpage.h)
+//   0x00007FFF00001000  SDK data page, R    (the tables SfMain gets)
+//   ...                 unused
 //   stack bottom        stack, grows down, NX               (USER_STACK_SIZE)
 //   0x00007FFFFFFFF000  USER_STACK_TOP; one unmapped guard page above it
 //
@@ -29,9 +32,10 @@ struct vnode;
 // stack sits at the top of the half so either can grow without moving the
 // other. paging::map_user_page enforces [USER_MIN, USER_LIMIT).
 //
-// The argv/envp/auxv block execve() builds lives at the top of this same
-// stack (the SysV ABI initial-process-stack layout), so there is no separate
-// args region any more.
+// For an old-ABI program the argv/envp/auxv block execve() builds lives at
+// the top of this same stack (the SysV ABI initial-process-stack layout). A
+// SurfaceOS program gets its tables in the SDK data page instead and starts
+// with an empty stack.
 #define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/linker.ld
 #define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
 #define USER_MMAP_BASE      0x10000000ULL
@@ -39,6 +43,8 @@ struct vnode;
 #define USER_MMAP_LIMIT     (USER_MMAP_BASE + USER_MMAP_SIZE)
 #define USER_STACK_SIZE     (1024 * 1024)           // 1 MiB: args + program stack
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
+#define USER_SDK_CODE       0x00007FFF00000000ULL
+#define USER_SDK_DATA       (USER_SDK_CODE + PAGE_SIZE_4K)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
@@ -117,6 +123,8 @@ namespace process
     // success, -errno on failure. Each may switch to another process by
     // rewriting regs/iret; they always return normally to the dispatcher.
     void sys_exit      (user_regs* regs, iret_frame* iret);
+    // SFCALL_EXIT (SfStatus): the SurfaceOS ABI's exit.
+    void sf_exit       (user_regs* regs, iret_frame* iret);
     void sys_exit_group(user_regs* regs, iret_frame* iret);
     void sys_read_key  (user_regs* regs, iret_frame* iret);
     void sys_brk       (user_regs* regs, iret_frame* iret);

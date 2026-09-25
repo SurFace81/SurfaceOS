@@ -28,7 +28,17 @@
 #define SF_ALREADY_EXISTS       (SF_ERROR_BIT | 10)
 #define SF_DEVICE_ERROR         (SF_ERROR_BIT | 11)
 
-// Call numbers: none yet. The table grows from 0.
-#define SFCALL_COUNT        0
+// Call numbers. The table grows from 0; the SDK code page makes these
+// calls, programs never do directly.
+#define SFCALL_EXIT             0   // (SfStatus) - does not return
+#define SFCALL_CONSOLE_PRINT    1   // (const char* Text)
+#define SFCALL_CONSOLE_READLINE 2   // (char* Buffer, uint64_t Size, uint64_t* Length)
+#define SFCALL_COUNT            3
+
+// The ELF note that marks a SurfaceOS program (src/sdk/sfos/note.S): name
+// "SFOS", type SFOS_NOTE_ABI, a 4-byte descriptor with the SfSystem
+// revision the program was built against.
+#define SFOS_NOTE_NAME          "SFOS"
+#define SFOS_NOTE_ABI           1
 
 #endif // ABI_SFCALL_H

@@ -9,6 +9,8 @@
 #include "../../include/cpu/signal.h"
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/task.h"
+#include "../../include/cpu/sdkpage.h"
+#include "../../sdk/include/sfos/status.h"
 #include "../../include/cpu/wait.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
@@ -569,7 +571,11 @@ namespace process
         uint64_t cr3;
         uint64_t entry;
         uint64_t image_end;
-        uint64_t rsp;           // initial stack pointer (points at argc)
+        uint64_t rsp;           // initial stack pointer (old ABI: at argc)
+
+        // A SurfaceOS program starts in the SDK code page, with its tables.
+        bool          sfos;
+        sdkpage::Entry sdk;
     };
 
     // Map [vaddr, vaddr+size) with zeroed 4 KiB user pages (active space).
@@ -794,7 +800,20 @@ namespace process
         }
 
         uint64_t rsp = 0;
-        if (ok)
+        sdkpage::Entry sdk = { 0, 0, 0 };
+        if (ok && lr.sfos)
+        {
+            // Its tables replace argv: an empty, 16-byte aligned stack.
+            char name[sizeof(Process::name)];
+            copy_name(name, path);
+            rsp = USER_STACK_TOP;
+            if (!sdkpage::install(name, &sdk))
+            {
+                err = ENOMEM;
+                ok = false;
+            }
+        }
+        else if (ok)
         {
             sint64_t rc = build_initial_stack(ae, &lr, &rsp);
             if (rc < 0)
@@ -817,6 +836,8 @@ namespace process
         out->entry     = lr.entry;
         out->image_end = lr.image_end;
         out->rsp       = rsp;
+        out->sfos      = lr.sfos;
+        out->sdk       = sdk;
         return 0;
     }
 
@@ -827,7 +848,16 @@ namespace process
         p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
         copy_name(p->name, path);
-        initial_context(&p->ctx, img->entry, img->rsp);
+        if (img->sfos)
+        {
+            // sdk_start(App, Sys, SfMain): see sdkpage.asm.
+            initial_context(&p->ctx, img->sdk.start, img->rsp);
+            p->ctx.regs.rdi = img->sdk.app;
+            p->ctx.regs.rsi = img->sdk.sys;
+            p->ctx.regs.rdx = img->entry;
+        }
+        else
+            initial_context(&p->ctx, img->entry, img->rsp);
         copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
     }
 
@@ -1859,6 +1889,18 @@ namespace process
     {
         // exit(code): the wait status carries (code & 0xff) << 8.
         terminate(current, exit_code_status((int)(sint32_t)regs->rdi));
+        reschedule(regs, iret);
+    }
+
+    void sf_exit(user_regs* regs, iret_frame* iret)
+    {
+        // The exit code a parent's wait sees: 0 for success, else the low
+        // byte of the status (never 0 for an error).
+        uint64_t s = regs->rdi;
+        int code = 0;
+        if (SF_ERROR(s))
+            code = (s & 0xFF) ? (int)(s & 0xFF) : 1;
+        terminate(current, exit_code_status(code));
         reschedule(regs, iret);
     }
 

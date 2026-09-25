@@ -251,8 +251,12 @@ static void test_sfcall()
 {
     section("syscall instruction (SurfaceOS ABI)");
 
+    // Numbers well past the calls there are (SFCALL_COUNT), so none of
+    // them does anything.
+    const uint64_t unused = 40;
+
     uint64_t st = 0;
-    bool kept = sf_regs_survive(0, &st);
+    bool kept = sf_regs_survive(unused, &st);
     check("an unknown call returns SF_UNSUPPORTED", st == SF_UNSUPPORTED);
     check("every register but rax/rcx/r11 survives", kept);
 
@@ -268,7 +272,7 @@ static void test_sfcall()
     int n = 0;
     while (now_ms() - t0 < 300)
     {
-        if (!sf_regs_survive((uint64_t)n & 7, &st) || st != SF_UNSUPPORTED)
+        if (!sf_regs_survive(unused + ((uint64_t)n & 7), &st) || st != SF_UNSUPPORTED)
             all = false;
         n++;
     }
@@ -279,6 +283,21 @@ static void test_sfcall()
     waitpid(child, &status, 0);
     check("300 ms of calls from two processes at once come back intact",
           all && n > 100 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    // execve of a SurfaceOS program: it starts through the SDK code page
+    // and its SfStatus comes back as the exit status (0: all its checks
+    // passed).
+    child = fork();
+    if (child == 0)
+    {
+        const char* av[] = { "sdkcheck", nullptr };
+        execv("/apps/sdkcheck", (char* const*)av);
+        exit(99);
+    }
+    status = -1;
+    waitpid(child, &status, 0);
+    check("execve of a SurfaceOS program runs it (sdkcheck: 0 failed)",
+          WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 int main(int argc, char** argv)

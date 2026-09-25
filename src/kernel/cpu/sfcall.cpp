@@ -2,6 +2,7 @@
 
 #include "../../include/cpu/sfcall.h"
 #include "../../include/cpu/process.h"
+#include "../../include/cpu/sdkpage.h"
 #include "../../include/drivers/uart.h"
 
 namespace
@@ -48,6 +49,9 @@ namespace sfcall
         wrmsr(MSR_LSTAR, (uint64_t)sfcall_entry);
         wrmsr(MSR_SFMASK, RFLAGS_TF | RFLAGS_IF | RFLAGS_DF | RFLAGS_AC);
         wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
+
+        set_handler(SFCALL_EXIT, process::sf_exit);
+        set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);
         uart::printf("boot: syscall instruction enabled\n");
     }
 

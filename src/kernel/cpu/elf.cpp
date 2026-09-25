@@ -18,6 +18,7 @@
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
+#include "../../sdk/include/abi/sfcall.h"
 
 namespace elf
 {
@@ -76,6 +77,34 @@ namespace elf
 
     // Read `len` bytes of the file at `off` into `dst`. Returns the number
     // of bytes read (short reads are legal near EOF), or -errno.
+    // Walk the note records in `buf` looking for the SurfaceOS one.
+    static void find_sfos_note(const uint8_t* buf, uint64_t len, LoadResult* r)
+    {
+        const char name[] = SFOS_NOTE_NAME;
+        const uint32_t name_len = sizeof(name);             // with the NUL
+
+        uint64_t off = 0;
+        while (off + sizeof(Elf64_Nhdr) <= len)
+        {
+            const Elf64_Nhdr* n = (const Elf64_Nhdr*)(buf + off);
+            uint64_t name_off = off + sizeof(Elf64_Nhdr);
+            uint64_t desc_off = name_off + (((uint64_t)n->n_namesz + 3) & ~3ULL);
+            uint64_t next     = desc_off + (((uint64_t)n->n_descsz + 3) & ~3ULL);
+            if (next > len)
+                return;
+
+            if (n->n_type == SFOS_NOTE_ABI && n->n_namesz == name_len &&
+                n->n_descsz >= 4 &&
+                memory::memcmp(buf + name_off, (const uint8_t*)name, name_len) == 0)
+            {
+                r->sfos = true;
+                r->sfos_revision = *(const uint32_t*)(buf + desc_off);
+                return;
+            }
+            off = next;
+        }
+    }
+
     static sint64_t read_at(vnode* v, uint64_t off, void* dst, uint64_t len)
     {
         uint64_t done = 0;
@@ -257,6 +286,19 @@ namespace elf
         {
             *out_rc = -ENOEXEC;
             goto fail;
+        }
+
+        // The SurfaceOS note, if the file has one.
+        for (uint16_t i = 0; i < ehdr->e_phnum && !result.sfos; i++)
+        {
+            const Elf64_Phdr* phdr =
+                (const Elf64_Phdr*)((const uint8_t*)phdrs + (uint64_t)i * ehdr->e_phentsize);
+            if (phdr->p_type != PT_NOTE || phdr->p_filesz == 0 ||
+                phdr->p_filesz > PAGE_SIZE_4K || phdr->p_offset + phdr->p_filesz > file_size)
+                continue;
+            if (read_at(v, phdr->p_offset, chunk, phdr->p_filesz) != (sint64_t)phdr->p_filesz)
+                continue;
+            find_sfos_note(chunk, phdr->p_filesz, &result);
         }
 
         // AT_PHDR: does a PT_LOAD segment carry the program header table?
