@@ -46,4 +46,19 @@
 #define RENAME_NOREPLACE 1
 #define RENAME_EXCHANGE  2
 
+// openat2(dirfd, path, &how, sizeof how)
+struct open_how
+{
+    unsigned long long flags;       // O_* as for openat
+    unsigned long long mode;        // with O_CREAT only
+    unsigned long long resolve;     // RESOLVE_*
+};
+
+#define RESOLVE_NO_XDEV       0x01  // not supported: EINVAL
+#define RESOLVE_NO_MAGICLINKS 0x02  // accepted: there are no magic links
+#define RESOLVE_NO_SYMLINKS   0x04  // accepted: there are no symlinks
+#define RESOLVE_BENEATH       0x08  // stay below dirfd: else EXDEV
+#define RESOLVE_IN_ROOT       0x10  // not supported: EINVAL
+#define RESOLVE_CACHED        0x20  // not supported: EINVAL
+
 #endif // ABI_FCNTL_H

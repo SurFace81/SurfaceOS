@@ -717,6 +717,101 @@ static void test_cwd()
     chdir("/");
 }
 
+static int open_beneath(int dirfd, const char* path, int flags, unsigned mode = 0)
+{
+    struct open_how how;
+    how.flags   = (unsigned long long)flags;
+    how.mode    = mode;
+    how.resolve = RESOLVE_BENEATH;
+    return openat2(dirfd, path, &how, sizeof(how));
+}
+
+// openat2 with RESOLVE_BENEATH: a directory handle confines the lookup to
+// what lies below it (the base of the SDK's data:/ and tmp:/ roots).
+static void test_beneath()
+{
+    section("openat2 RESOLVE_BENEATH");
+
+    int dir = open(T, O_RDONLY | O_DIRECTORY);
+    check("open a directory handle", dir >= 3);
+
+    int fd = open_beneath(dir, "hello.txt", O_RDONLY);
+    check("a file below the handle opens", fd >= 3);
+    if (fd >= 3) close(fd);
+
+    fd = open_beneath(dir, "./fstest.d/./basic.txt", O_RDONLY);
+    check("'.' components are fine", fd >= 3);
+    if (fd >= 3) close(fd);
+
+    fd = open_beneath(dir, "fstest.d/../hello.txt", O_RDONLY);
+    check("down and back up again stays inside", fd >= 3);
+    if (fd >= 3) close(fd);
+
+    fd = open_beneath(dir, "fstest.d/..", O_RDONLY | O_DIRECTORY);
+    check("a trailing .. back to the handle itself is allowed", fd >= 3);
+    if (fd >= 3) close(fd);
+
+    errno = 0;
+    check("a .. above the handle fails EXDEV",
+          open_beneath(dir, "../fstest/hello.txt", O_RDONLY) == -1 && errno == EXDEV);
+    errno = 0;
+    check("so does a bare ..",
+          open_beneath(dir, "..", O_RDONLY | O_DIRECTORY) == -1 && errno == EXDEV);
+    errno = 0;
+    check("and one that climbs out further down the path",
+          open_beneath(dir, "fstest.d/../../fstest/hello.txt", O_RDONLY) == -1 &&
+          errno == EXDEV);
+    errno = 0;
+    check("an absolute path fails EXDEV",
+          open_beneath(dir, "/files/fstest/hello.txt", O_RDONLY) == -1 && errno == EXDEV);
+
+    fd = open_beneath(dir, "fstest.d/beneath.txt", O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    check("O_CREAT below the handle works", fd >= 3);
+    if (fd >= 3) close(fd);
+    char path[256];
+    strcpy(path, D);
+    strcat(path, "/beneath.txt");
+    unlink(path);
+
+    errno = 0;
+    check("O_CREAT above the handle fails EXDEV",
+          open_beneath(dir, "../escape.txt", O_CREAT | O_WRONLY, 0644) == -1 &&
+          errno == EXDEV);
+    struct stat st;
+    check("... and creates nothing", stat("/files/escape.txt", &st) == -1);
+    errno = 0;
+    check("O_CREAT of a bare .. fails EXDEV",
+          open_beneath(dir, "..", O_CREAT | O_WRONLY, 0644) == -1 && errno == EXDEV);
+
+    fd = openat(dir, "../fstest/hello.txt", O_RDONLY);
+    check("plain openat still follows .. upwards", fd >= 3);
+    if (fd >= 3) close(fd);
+
+    int file = open("/files/fstest/hello.txt", O_RDONLY);
+    errno = 0;
+    check("a file handle as dirfd fails ENOTDIR",
+          open_beneath(file, "x", O_RDONLY) == -1 && errno == ENOTDIR);
+    close(file);
+
+    struct open_how how;
+    how.flags = O_RDONLY;
+    how.mode = 0;
+    how.resolve = RESOLVE_IN_ROOT;
+    errno = 0;
+    check("an unsupported resolve flag fails EINVAL",
+          openat2(dir, "hello.txt", &how, sizeof(how)) == -1 && errno == EINVAL);
+    how.resolve = RESOLVE_BENEATH;
+    errno = 0;
+    check("a short struct fails EINVAL",
+          openat2(dir, "hello.txt", &how, sizeof(how) - 8) == -1 && errno == EINVAL);
+    how.mode = 0644;
+    errno = 0;
+    check("a mode without O_CREAT fails EINVAL",
+          openat2(dir, "hello.txt", &how, sizeof(how)) == -1 && errno == EINVAL);
+
+    close(dir);
+}
+
 static void test_stat()
 {
     section("stat / fstat consistency");
@@ -1053,6 +1148,7 @@ int main(int argc, char** argv)
     test_lfn();
     test_dirs();
     test_cwd();
+    test_beneath();
     test_stat();
     test_errors();
     test_mfile();

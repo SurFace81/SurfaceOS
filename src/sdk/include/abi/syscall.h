@@ -87,6 +87,7 @@
 #define SYS_UTIMENSAT       280
 #define SYS_DUP3            292
 #define SYS_RENAMEAT2       316
+#define SYS_OPENAT2         437
 
 // Reserved for stage 6 (musl); the dispatcher returns -ENOSYS until then.
 #define SYS_RT_SIGALTSTACK  131

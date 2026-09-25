@@ -154,9 +154,9 @@ namespace
     // open / creat / close
     // -----------------------------------------------------------------------
 
-    // Core of open(2) and openat(2).
+    // Core of open(2), openat(2) and openat2(2). lflags: vfs LOOKUP_*.
     sint64_t do_openat(vnode* base, const char* path, sint32_t flags,
-                       uint32_t mode)
+                       uint32_t mode, uint32_t lflags = 0)
     {
         vnode* target = nullptr;
         bool created = false;
@@ -165,7 +165,7 @@ namespace
         {
             vnode* parent = nullptr;
             char name[NAME_MAX + 1];
-            sint64_t rc = vfs::lookup_parent(path, base, &parent, name);
+            sint64_t rc = vfs::lookup_parent(path, base, &parent, name, lflags);
             if (rc != 0)
                 return rc;
 
@@ -219,7 +219,7 @@ namespace
         else
         {
             bool must_dir = (flags & O_DIRECTORY) != 0;
-            sint64_t rc = vfs::lookup(path, base, &target, must_dir);
+            sint64_t rc = vfs::lookup(path, base, &target, must_dir, lflags);
             if (rc != 0)
                 return rc;
         }
@@ -283,6 +283,58 @@ namespace
             return;
 
         sint64_t rc = do_openat(base, path, flags, mode);
+        kfree(path);
+        set(regs, rc);
+    }
+
+    // openat2(dirfd, path, how, size): openat with resolve flags. Only
+    // RESOLVE_BENEATH changes anything here; the symlink flags are true of
+    // every lookup already, and the rest is refused rather than ignored.
+    void sys_openat2(syscall_regs* regs, iret_frame*)
+    {
+        sint32_t dirfd = (sint32_t)regs->rdi;
+        uint64_t size  = regs->r10;
+
+        if (size < sizeof(open_how))
+        {
+            set(regs, ERR(EINVAL));
+            return;
+        }
+        if (size > sizeof(open_how))
+        {
+            set(regs, ERR(E2BIG));      // a newer struct than this kernel
+            return;
+        }
+        open_how how;
+        if (!uaccess::copy_from_user(&how, regs->rdx, sizeof(how)))
+        {
+            set(regs, ERR(EFAULT));
+            return;
+        }
+
+        const uint64_t known_flags = O_ACCMODE | O_CREAT | O_EXCL | O_NOCTTY |
+                                     O_TRUNC | O_APPEND | O_NONBLOCK |
+                                     O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
+        const uint64_t known_resolve = RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
+                                       RESOLVE_NO_MAGICLINKS;
+        if ((how.flags & ~known_flags) || (how.resolve & ~known_resolve) ||
+            (how.mode & ~07777ULL) || (how.mode && !(how.flags & O_CREAT)))
+        {
+            set(regs, ERR(EINVAL));
+            return;
+        }
+
+        vnode* base = resolve_dirfd(dirfd, regs);
+        if (!base)
+            return;
+
+        char* path = fetch_path(regs->rsi, regs);
+        if (!path)
+            return;
+
+        uint32_t lflags = (how.resolve & RESOLVE_BENEATH) ? vfs::LOOKUP_BENEATH : 0;
+        sint64_t rc = do_openat(base, path, (sint32_t)how.flags, (uint32_t)how.mode,
+                                lflags);
         kfree(path);
         set(regs, rc);
     }
@@ -1805,6 +1857,7 @@ namespace sys_fs
         syscall::set_handler(SYS_SYNC,        sys_sync);
         syscall::set_handler(SYS_GETDENTS64,  sys_getdents64);
         syscall::set_handler(SYS_OPENAT,      sys_openat);
+        syscall::set_handler(SYS_OPENAT2,     sys_openat2);
         syscall::set_handler(SYS_MKDIRAT,     sys_mkdirat);
         syscall::set_handler(SYS_NEWFSTATAT,  sys_newfstatat);
         syscall::set_handler(SYS_UNLINKAT,    sys_unlinkat);

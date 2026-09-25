@@ -42,6 +42,13 @@ int openat(int dirfd, const char* path, int flags, ...)
                                       (uint64_t)mode));
 }
 
+int openat2(int dirfd, const char* path, const struct open_how* how, size_t size)
+{
+    return (int)__syscall_ret(syscall(SYS_OPENAT2, (uint64_t)(sint64_t)dirfd,
+                                      (uint64_t)path, (uint64_t)how,
+                                      (uint64_t)size));
+}
+
 int creat(const char* path, mode_t mode)
 {
     return (int)__syscall_ret(syscall(SYS_CREAT, (uint64_t)path, (uint64_t)mode));

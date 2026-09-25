@@ -211,15 +211,25 @@ namespace vfs
     uint32_t mount_count();
 
     // --- namei --------------------------------------------------------------
+    // lookup flags:
+    //   LOOKUP_BENEATH  the walk may not leave `cwd`, the directory it
+    //                   starts from: an absolute path, or a ".." that would
+    //                   climb above it, fails with -EXDEV (Linux
+    //                   RESOLVE_BENEATH). Going down through mount points is
+    //                   fine. FAT has no symlinks, so counting depth is exact.
+    const uint32_t LOOKUP_BENEATH = 0x1;
+
     // Resolve `path` (absolute, or relative to `cwd`) to a referenced vnode.
     // If `must_be_dir`, a trailing '/' or O_DIRECTORY-style mismatch gives
     // -ENOTDIR. namei walks through mount points in both directions.
-    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir);
+    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir,
+                    uint32_t lflags = 0);
 
     // Resolve everything but the last component: *out_dir is referenced and
     // `name` (NAME_MAX+1 buffer) holds the final component. -ENOENT etc.
+    // Under LOOKUP_BENEATH a final ".." that would leave `cwd` is -EXDEV too.
     sint64_t lookup_parent(const char* path, vnode* cwd, vnode** out_dir,
-                           char* name);
+                           char* name, uint32_t lflags = 0);
 
     // Convenience wrappers used by the console until the fd layer lands.
     sint64_t open_path(const char* path, vnode* cwd, vnode** out);

@@ -34,7 +34,7 @@ namespace
     typedef void (*syscall_handler)(syscall_regs*, iret_frame*);
 
     // Linux x86_64 occupies 0..335; SurfaceOS extensions live at 0x1000+.
-    const uint32_t SYSCALL_NR_MAX  = 336;
+    const uint32_t SYSCALL_NR_MAX  = 448;   // openat2 is 437
     const uint32_t SYSCALLX_NR_MAX = 16;
     const uint64_t SYSCALLX_BASE   = 0x1000;
 
