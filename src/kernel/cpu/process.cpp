@@ -18,6 +18,7 @@
 #include "../../include/mm/memory.h"
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
+#include "../../include/obj/object.h"
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/tty.h"
 #include "../../include/drivers/screen.h"
@@ -107,6 +108,10 @@ namespace process
         // (reclaim_kernel_stacks).
         uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
         Task        task;
+
+        // Kernel objects the process holds, by handle. Empty until open files
+        // move over from the fd table.
+        handle_table handles;
 
         // POSIX file state: descriptors, cwd (referenced vnode) and umask.
         fd_table    fds;
@@ -208,6 +213,7 @@ namespace process
             p->pgid = p->pid;           // its own group until setpgid says otherwise
             sig::init(&p->sig);
 
+            handles::init(&p->handles);
             filesys::fdtable_init(&p->fds);
             p->umask = 022;
             p->cwd = vfs::cwd_ref();        // inherit the system cwd
@@ -218,6 +224,7 @@ namespace process
 
     static void free_process(Process* p)
     {
+        handles::close_all(&p->handles);
         filesys::fdtable_close_all(&p->fds);
         if (p->cwd)
         {
@@ -786,7 +793,8 @@ namespace process
         }
 
         // POSIX: descriptors close and the cwd is released when the process
-        // exits, not when the parent reaps the zombie.
+        // exits, not when the parent reaps the zombie. Handles go with them.
+        handles::close_all(&p->handles);
         filesys::fdtable_close_all(&p->fds);
         if (p->cwd)
         {
@@ -1807,6 +1815,7 @@ namespace process
         // POSIX: the child shares the parent's open file descriptions (same
         // offsets) and inherits its cwd and umask. alloc_process gave the
         // child the system cwd; replace it with the parent's.
+        handles::fork(&child->handles, &current->handles);
         filesys::fdtable_fork(&child->fds, &current->fds);
         child->umask = current->umask;
         if (child->cwd)
@@ -1947,6 +1956,7 @@ namespace process
 
         // execve keeps the fd table except CLOEXEC slots, and keeps cwd and
         // umask (POSIX). adopt_image reset only the address-space fields.
+        handles::close_flagged(&current->handles, HANDLE_CLOEXEC);
         filesys::fdtable_cloexec(&current->fds);
 
         // Every handler address belonged to the image that has just been

@@ -80,6 +80,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/features.o \
 				bin/kernel/cpu/uaccess.o \
 				bin/kernel/acpi/acpi.o \
+				bin/kernel/obj/object.o \
 
 # SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
@@ -159,6 +160,10 @@ bin/kernel/mm/%.o: src/kernel/mm/%.cpp
 	$(GPP) $(CCFLAGS) -o $@ $^
 
 bin/kernel/acpi/%.o: src/kernel/acpi/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(CCFLAGS) -o $@ $^
+
+bin/kernel/obj/%.o: src/kernel/obj/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(CCFLAGS) -o $@ $^
 
