@@ -30,7 +30,6 @@
 #include "../../include/fs/devfs.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/time.h"
-#include "../../sdk/include/abi/auxv.h"
 #include "../../sdk/include/abi/fcntl.h"
 
 #define USER_CS             0x23
@@ -405,9 +404,7 @@ namespace process
         ctx->iret.rip    = entry;
         ctx->iret.cs     = USER_CS;
         ctx->iret.rflags = RFLAGS_USER;
-        // The SysV ABI initial-process stack: rsp points at argc and is
-        // 16-byte aligned. _start pops argc from there.
-        ctx->iret.rsp    = rsp;
+        ctx->iret.rsp    = rsp;         // 16-byte aligned
         ctx->iret.ss     = USER_SS;
     }
 
@@ -571,10 +568,9 @@ namespace process
         uint64_t cr3;
         uint64_t entry;
         uint64_t image_end;
-        uint64_t rsp;           // initial stack pointer (old ABI: at argc)
+        uint64_t rsp;           // initial stack pointer
 
-        // A SurfaceOS program starts in the SDK code page, with its tables.
-        bool          sfos;
+        // Where the program starts (the SDK code page) and its tables.
         sdkpage::Entry sdk;
     };
 
@@ -658,106 +654,6 @@ namespace process
         return v;
     }
 
-    // AT_RANDOM content. No entropy source exists yet (stage 6 plans
-    // getrandom); musl only needs *something* stable for its stack canary.
-    static const uint8_t random_bytes[16] =
-        { 0x53, 0x75, 0x72, 0x66, 0x61, 0x63, 0x65, 0x4F,
-          0x53, 0x2D, 0x61, 0x74, 0x72, 0x6E, 0x64, 0x31 };
-
-    // Build the SysV ABI initial process stack (the exact layout Linux
-    // uses, low addresses first):
-    //
-    //   rsp -> argc                      <- 16-byte aligned
-    //          argv[0..argc-1], NULL
-    //          envp[0..], NULL
-    //          auxv entries ... AT_NULL
-    //          (alignment padding)
-    //          16 random bytes (AT_RANDOM)
-    //          argv/envp strings
-    //   high ->  USER_STACK_TOP
-    //
-    // Everything is staged in a kernel buffer and then copied through the
-    // direct map, so the stack can stay mapped as it is. Returns the
-    // future rsp in *out_rsp, or a negative errno.
-    static sint64_t build_initial_stack(const ArgEnv* ae, const elf::LoadResult* lr,
-                                        uint64_t* out_rsp)
-    {
-        uint32_t strings_size = ae->data_used;
-        uint32_t n_aux = (lr->phdr_vaddr ? 1u : 0u) + 5;  // PHENT PHNUM PAGESZ ENTRY RANDOM
-        uint32_t auxv_size = (n_aux + 1) * 16;            // + AT_NULL
-        uint32_t envp_size = (ae->e_count + 1) * 8;
-        uint32_t argv_size = (ae->a_count + 1) * 8;
-
-        uint32_t fixed = 8 + argv_size + envp_size + auxv_size;
-        uint32_t pad   = (16 - (fixed % 16)) % 16;
-        uint32_t total = fixed + pad + 16 + strings_size;
-        total = (total + 15) & ~(uint32_t)15;
-
-        uint8_t* buf = (uint8_t*)kmalloc(total);
-        if (!buf)
-            return -ENOMEM;
-        memory::memset(buf, 0x00, total);
-
-        uint64_t base       = USER_STACK_TOP - total;
-        uint32_t random_off = fixed + pad;
-        uint32_t strings_off = random_off + 16;
-        uint32_t off = 0;
-
-        // --- argc ---
-        uint64_t argc = ae->a_count;
-        copy_bytes(buf + off, (const uint8_t*)&argc, 8);
-        off += 8;
-
-        // --- argv pointers, NULL-terminated ---
-        for (uint32_t i = 0; i < ae->a_count; i++)
-        {
-            uint64_t v = base + strings_off + ae->a_off[i];
-            copy_bytes(buf + off, (const uint8_t*)&v, 8);
-            off += 8;
-        }
-        off += 8;
-
-        // --- envp pointers, NULL-terminated ---
-        for (uint32_t i = 0; i < ae->e_count; i++)
-        {
-            uint64_t v = base + strings_off + ae->e_off[i];
-            copy_bytes(buf + off, (const uint8_t*)&v, 8);
-            off += 8;
-        }
-        off += 8;
-
-        // --- auxv, AT_NULL-terminated ---
-        struct { uint64_t type; uint64_t val; } entry;
-        if (lr->phdr_vaddr)
-        {
-            entry.type = AT_PHDR;  entry.val = lr->phdr_vaddr;
-            copy_bytes(buf + off, (const uint8_t*)&entry, 16);
-            off += 16;
-        }
-        entry.type = AT_PHENT;  entry.val = lr->phdr_entsize;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-        entry.type = AT_PHNUM;  entry.val = lr->phdr_num;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-        entry.type = AT_PAGESZ; entry.val = PAGE_SIZE_4K;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-        entry.type = AT_ENTRY;  entry.val = lr->entry;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-        entry.type = AT_RANDOM; entry.val = base + random_off;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-        entry.type = AT_NULL;   entry.val = 0;
-        copy_bytes(buf + off, (const uint8_t*)&entry, 16); off += 16;
-
-        // --- random bytes and the strings ---
-        copy_bytes(buf + random_off, random_bytes, sizeof(random_bytes));
-        copy_bytes(buf + strings_off, (const uint8_t*)ae->data, strings_size);
-
-        poke_user(base, buf, total);
-        kfree(buf);
-
-        *out_rsp = base;
-        return 0;
-    }
-
     // Build a complete address space for `path` (resolved against `cwd`):
     // ELF segments, stack with the SysV argv/envp/auxv block. The active
     // address space is unchanged on return. Returns 0 or -errno.
@@ -799,26 +695,19 @@ namespace process
             }
         }
 
-        uint64_t rsp = 0;
+        // Every program starts through the SDK pages with an empty, 16-byte
+        // aligned stack. (Its arguments are not passed on yet: `ae` reaches
+        // the program with SfApp's argument fields.)
+        (void)ae;
+        uint64_t rsp = USER_STACK_TOP;
         sdkpage::Entry sdk = { 0, 0, 0 };
-        if (ok && lr.sfos)
+        if (ok)
         {
-            // Its tables replace argv: an empty, 16-byte aligned stack.
             char name[sizeof(Process::name)];
             copy_name(name, path);
-            rsp = USER_STACK_TOP;
             if (!sdkpage::install(name, &sdk))
             {
                 err = ENOMEM;
-                ok = false;
-            }
-        }
-        else if (ok)
-        {
-            sint64_t rc = build_initial_stack(ae, &lr, &rsp);
-            if (rc < 0)
-            {
-                err = (int)-rc;
                 ok = false;
             }
         }
@@ -836,7 +725,6 @@ namespace process
         out->entry     = lr.entry;
         out->image_end = lr.image_end;
         out->rsp       = rsp;
-        out->sfos      = lr.sfos;
         out->sdk       = sdk;
         return 0;
     }
@@ -848,16 +736,11 @@ namespace process
         p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
         copy_name(p->name, path);
-        if (img->sfos)
-        {
-            // sdk_start(App, Sys, SfMain): see sdkpage.asm.
-            initial_context(&p->ctx, img->sdk.start, img->rsp);
-            p->ctx.regs.rdi = img->sdk.app;
-            p->ctx.regs.rsi = img->sdk.sys;
-            p->ctx.regs.rdx = img->entry;
-        }
-        else
-            initial_context(&p->ctx, img->entry, img->rsp);
+        // sdk_start(App, Sys, SfMain): see sdkpage.asm.
+        initial_context(&p->ctx, img->sdk.start, img->rsp);
+        p->ctx.regs.rdi = img->sdk.app;
+        p->ctx.regs.rsi = img->sdk.sys;
+        p->ctx.regs.rdx = img->entry;
         copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
     }
 

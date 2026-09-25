@@ -35,10 +35,4 @@
 #define SFCALL_CONSOLE_READLINE 2   // (char* Buffer, uint64_t Size, uint64_t* Length)
 #define SFCALL_COUNT            3
 
-// The ELF note that marks a SurfaceOS program (src/sdk/sfos/note.S): name
-// "SFOS", type SFOS_NOTE_ABI, a 4-byte descriptor with the SfSystem
-// revision the program was built against.
-#define SFOS_NOTE_NAME          "SFOS"
-#define SFOS_NOTE_ABI           1
-
 #endif // ABI_SFCALL_H

@@ -15,7 +15,7 @@ MON=/tmp/qmon_int
 LAYOUT=${LAYOUT:-gpt}
 
 rm -f uart.log /tmp/screen_int.ppm
-bash tools/make_test_image.sh "$IMG" "hello" "$LAYOUT"
+bash tools/make_test_image.sh "$IMG" "sdkcheck" "$LAYOUT"
 
 rm -f "$MON"
 qemu-system-x86_64 \

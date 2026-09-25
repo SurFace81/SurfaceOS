@@ -11,7 +11,7 @@ IMG=test_disk.img
 LAYOUT=${LAYOUT:-gpt}
 
 rm -f uart.log
-bash tools/make_test_image.sh "$IMG" "hello" "$LAYOUT"
+bash tools/make_test_image.sh "$IMG" "sdkcheck" "$LAYOUT"
 
 timeout "$TIMEOUT" qemu-system-x86_64 \
     -chardev file,id=uart0,path=uart.log \

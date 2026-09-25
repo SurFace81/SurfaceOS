@@ -3,7 +3,7 @@
 
 #include "types.h"
 
-// The SDK pages of a SurfaceOS program (one built against <sfos.h>).
+// The SDK pages every program is started with.
 //
 //   USER_SDK_CODE   read + execute: the SDK's code - the start-up stub that
 //                   calls SfMain and ends the process, and the protocol

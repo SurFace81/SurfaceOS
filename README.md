@@ -24,13 +24,15 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   open file descriptions with shared offsets
 - devfs (outside the directory tree, no /dev): null, zero, tty, console;
   canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
-- Userspace SDK heading towards musl: POSIX fd API (open/read/write/
-  lseek/stat/getdents64/opendir...), environ/getenv, heap over brk
+- SurfaceOS SDK (<sfos.h>): a program implements SfMain(SfApp*, SfSystem*)
+  and reaches the system through tables the kernel fills in (SDK pages);
+  entered with the syscall instruction. The old POSIX layer (int 0x80,
+  libc) is still in the tree until it is removed.
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, exec /apps/<name>, hardware info commands
-- Test apps: memtest, proctest, argtest, fstest (fd layer + VFS + FAT32,
-  122 checks incl. 3 MiB random-offset I/O and 100 LFN files)
+- Programs: sdkcheck (the SDK tables); the tests are being rewritten on
+  the SDK
  
 # Project Structure
  
@@ -48,10 +50,10 @@ src/
     mm/       — physical memory, heap
     stdlib/   — stdio, string
   include/    — kernel-side headers (cpu/, dev/, fs/, drivers/, mm/)
-  sdk/        — userspace C library: abi/ headers (Linux-compatible),
-                libc/ (crt0.S, syscall, fd, dirent, stdio, stdlib, ...)
-  apps/       — userspace applications (hi, hello, memtest, proctest,
-                argtest, fstest)
+  sdk/        — include/sfos.h + sfos/ (the SDK), sfos.ld (program link
+                script); the old POSIX layer: abi/, libc/, linker.ld
+  apps/       — programs: <name>.cpp is one program, <name>/ is one
+                program of all the .cpp files in it
 tools/
   mkimg.py            — image builder: superfloppy|mbr|gpt, 512/4K sectors
   qemu_exec_test.sh   — full QEMU regression suite (LAYOUT=..., SECTOR=...)
@@ -85,12 +87,12 @@ tools/
 
 # Tests
 
-- `bash tools/qemu_exec_test.sh` — boots QEMU, runs hi/memtest/proctest/
-  argtest/fstest, asserts on the serial log. `LAYOUT=superfloppy|mbr|gpt`,
-  `SECTOR=512|4096` (4096 implies a 512 MiB superfloppy image).
-- `bash tools/qemu_verify.sh` — reboots the fstest image and checks
-  persistence + host `fsck.fat -n`.
-- `bash tools/qemu_matrix.sh` — all of the above across every layout.
+- `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, mount/umount
+  on a second disk and a leak check, asserts on the serial log.
+  `LAYOUT=superfloppy|mbr|gpt`, `SECTOR=512|4096` (4096 implies a 512 MiB
+  superfloppy image).
+- `bash tools/qemu_matrix.sh` — the suite across every layout, plus host
+  `fsck.fat -n` of each image.
 
 # Writing to a real stick
 

@@ -12,28 +12,14 @@ FAILS=0
 
 run_layout() {  # run_layout <label> <layout> [VAR=value...]
     local label="$1"; local layout="$2"; shift 2
-    # Extra VAR=value pairs go to the suite; remember SECTOR so the verify
-    # reboot drives the device identically.
-    SECTOR_FOR_RUN=512
-    for kv in "$@"; do
-        case "$kv" in
-            SECTOR=*) SECTOR_FOR_RUN="${kv#SECTOR=}" ;;
-        esac
-    done
-    export SECTOR_FOR_RUN
+    # Extra VAR=value pairs go to the suite.
     echo "==================== $label ($layout) ===================="
     if env LAYOUT="$layout" "$@" bash tools/qemu_exec_test.sh >/tmp/matrix_$label.log 2>&1; then
         echo "PASS  suite [$label]"
         # The suite leaves test_disk.img behind: validate it while fresh.
         fsck_image "$label" "$layout"
-        # Reboot the same image: persistence + dirty-bit detection.
-        if bash tools/qemu_verify.sh "$layout" "$SECTOR_FOR_RUN" >/tmp/matrix_verify_$label.log 2>&1; then
-            echo "PASS  verify [$label]"
-        else
-            echo "FAIL  verify [$label] (see /tmp/matrix_verify_$label.log)"
-            grep -E "^FAIL" /tmp/matrix_verify_$label.log | tail -5
-            FAILS=$((FAILS+1))
-        fi
+        # The reboot-and-verify pass (qemu_verify.sh) ran fstest's persistence
+        # checks; it comes back with the SDK's file test.
     else
         echo "FAIL  suite [$label] (see /tmp/matrix_$label.log)"
         grep -E "^(PASS|FAIL)" /tmp/matrix_$label.log | tail -25

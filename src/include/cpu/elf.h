@@ -65,14 +65,6 @@ struct Elf64_Phdr
 #define PT_INTERP   3
 #define PT_NOTE     4
 
-// A note record (PT_NOTE): name and descriptor follow, each padded to 4.
-struct Elf64_Nhdr
-{
-    uint32_t n_namesz;
-    uint32_t n_descsz;
-    uint32_t n_type;
-} __attribute__((packed));
-
 // p_flags
 #define PF_X        1
 #define PF_W        2
@@ -94,11 +86,6 @@ namespace elf
         uint64_t phdr_num;
 
         bool     valid;
-
-        // The file carries the SurfaceOS note (abi/sfcall.h): a program
-        // built against <sfos.h>, started through the SDK code page.
-        bool     sfos;
-        uint32_t sfos_revision;     // SfSystem revision it was built for
     };
 
     // Check if a buffer starts with a valid ELF64 header.

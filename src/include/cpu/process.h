@@ -20,7 +20,7 @@ struct vnode;
 //   image_end           heap, grows up via SYS_BRK          (up to USER_MMAP_BASE)
 //   0x0000000010000000  anonymous mmap window               (USER_MMAP_SIZE)
 //   ...                 unused
-//   0x00007FFF00000000  SDK code page, R+X  (SurfaceOS programs only, sdkpage.h)
+//   0x00007FFF00000000  SDK code page, R+X  (sdkpage.h)
 //   0x00007FFF00001000  SDK data page, R    (the tables SfMain gets)
 //   ...                 unused
 //   stack bottom        stack, grows down, NX               (USER_STACK_SIZE)
@@ -32,10 +32,8 @@ struct vnode;
 // stack sits at the top of the half so either can grow without moving the
 // other. paging::map_user_page enforces [USER_MIN, USER_LIMIT).
 //
-// For an old-ABI program the argv/envp/auxv block execve() builds lives at
-// the top of this same stack (the SysV ABI initial-process-stack layout). A
-// SurfaceOS program gets its tables in the SDK data page instead and starts
-// with an empty stack.
+// A program starts with an empty stack; what it is told (SfApp, SfSystem)
+// lives in the SDK data page.
 #define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/linker.ld
 #define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
 #define USER_MMAP_BASE      0x10000000ULL

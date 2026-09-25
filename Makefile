@@ -107,17 +107,17 @@ bin/sdk/crt0.o: src/sdk/libc/crt0.S
 	mkdir -p $(dir $@)
 	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
 
-# Apps: every .cpp in src/apps/ becomes a .bin
-APP_SRC		= $(wildcard src/apps/*.cpp)
-APP_BINS	= $(patsubst src/apps/%.cpp, bin/apps/%.bin, $(APP_SRC))
-
-# SurfaceOS programs (<sfos.h>): src/apps/sfos/*.cpp. No libc and no
-# start-up code: the kernel starts them through the SDK code page, which
-# calls SfMain. The note object marks them as such (src/sdk/sfos/note.S).
-SFOS_NOTE	= bin/sdk/sfos_note.o
-SFOS_APP_SRC	= $(wildcard src/apps/sfos/*.cpp)
-SFOS_APP_BINS	= $(patsubst src/apps/sfos/%.cpp, bin/apps/%.bin, $(SFOS_APP_SRC))
-APP_BINS	+= $(SFOS_APP_BINS)
+# Programs, all built against <sfos.h> (no libc, no start-up code: the
+# kernel starts them through the SDK code page, which calls SfMain):
+#   src/apps/<name>.cpp   a program of one file        -> bin/apps/<name>.bin
+#   src/apps/<name>/      one program of all its .cpp  -> bin/apps/<name>.bin
+APP_ONE_SRC	= $(wildcard src/apps/*.cpp)
+APP_DIR_SRC	= $(wildcard src/apps/*/*.cpp)
+APP_DIRS	= $(sort $(patsubst src/apps/%/,%,$(dir $(APP_DIR_SRC))))
+APP_BINS	= $(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC)) \
+		  $(patsubst %,bin/apps/%.bin,$(APP_DIRS))
+APP_OBJS	= $(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC))
+APP_LDFLAGS	= -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib
 
 .PHONY: run clean create_disk version usb
 
@@ -200,27 +200,25 @@ $(SDK_LIB): $(SDK_LIB_OBJ)
 	$(AR) rcs $@ $^
 
 
-# Apps: compile + link entry.o first, then app object, then pull the rest from libsfos.a
-# -z max-page-size=0x1000: keep the ELF compact. The x86_64-elf default is a
-# 2 MB segment alignment, which pads a 10 KB app to ~1 MB of zeros on disk.
-# That made read_file pull hundreds of clusters over USB and froze the shell.
-bin/apps/%.bin: src/apps/%.cpp src/sdk/linker.ld $(SDK_ENTRY) $(SDK_LIB)
+# Programs. -z max-page-size=0x1000 keeps the ELF compact: the x86_64-elf
+# default is a 2 MB segment alignment, which pads a 10 KB program to ~1 MB
+# of zeros on disk.
+bin/apps/%.o: src/apps/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -MT $@ -MF bin/apps/$*.d -c -o bin/apps/$*.o $<
-	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/linker.ld -nostdlib -o $@ \
-		$(SDK_ENTRY) bin/apps/$*.o -Lbin/sdk -lsfos
+	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
+bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld
+	$(LD) $(APP_LDFLAGS) -o $@ $<
 
-# SurfaceOS programs
-$(SFOS_NOTE): src/sdk/sfos/note.S
-	mkdir -p $(dir $@)
-	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
+define APP_DIR_RULE
+bin/apps/$(1).bin: $$(patsubst src/apps/%.cpp,bin/apps/%.o,$$(wildcard src/apps/$(1)/*.cpp)) src/sdk/sfos.ld
+	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^)
+endef
+$(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
 
-$(SFOS_APP_BINS): bin/apps/%.bin: src/apps/sfos/%.cpp src/sdk/sfos.ld $(SFOS_NOTE)
-	mkdir -p $(dir $@)
-	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -MT $@ -MF bin/apps/$*.d -c -o bin/apps/$*.o $<
-	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib -o $@ \
-		$(SFOS_NOTE) bin/apps/$*.o
+# Keep the objects: they are intermediate files of the pattern rule, which
+# make would otherwise delete and rebuild every time.
+.SECONDARY: $(APP_OBJS)
 
 
 # Generating version
@@ -284,4 +282,4 @@ clean:
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(SDK_ALL_OBJ:.o=.d) $(APP_BINS:.bin=.d) bin/boot/efi/main_efi.d
+         $(SDK_ALL_OBJ:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
