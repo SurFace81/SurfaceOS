@@ -109,12 +109,12 @@ namespace process
         uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
         Task        task;
 
-        // Kernel objects the process holds, by handle. Empty until open files
-        // move over from the fd table.
+        // Kernel objects the process holds, by handle. A file descriptor is a
+        // handle holding a File.
         handle_table handles;
 
-        // POSIX file state: descriptors, cwd (referenced vnode) and umask.
-        fd_table    fds;
+        // POSIX file state beyond the descriptors: cwd (referenced vnode)
+        // and umask.
         vnode*      cwd;
         uint32_t    umask;
 
@@ -214,7 +214,6 @@ namespace process
             sig::init(&p->sig);
 
             handles::init(&p->handles);
-            filesys::fdtable_init(&p->fds);
             p->umask = 022;
             p->cwd = vfs::cwd_ref();        // inherit the system cwd
             return p;
@@ -225,7 +224,6 @@ namespace process
     static void free_process(Process* p)
     {
         handles::close_all(&p->handles);
-        filesys::fdtable_close_all(&p->fds);
         if (p->cwd)
         {
             vfs::unref(p->cwd);
@@ -793,9 +791,9 @@ namespace process
         }
 
         // POSIX: descriptors close and the cwd is released when the process
-        // exits, not when the parent reaps the zombie. Handles go with them.
+        // exits, not when the parent reaps the zombie. Other handles go with
+        // them.
         handles::close_all(&p->handles);
-        filesys::fdtable_close_all(&p->fds);
         if (p->cwd)
         {
             vfs::unref(p->cwd);
@@ -1395,7 +1393,7 @@ namespace process
         // vnode are pinned for the lifetime of the kernel.
         sint32_t fd = -1;
         filesys::file_get(f);
-        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 0)
+        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0 || fd != 0)
         {
             // Either the slot took a reference (fd != 0) or alloc already
             // gave one back (-EMFILE); either way the one file_open handed
@@ -1404,12 +1402,12 @@ namespace process
             return;
         }
         filesys::file_get(f);
-        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0 || fd != 1)
+        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0 || fd != 1)
         {
             filesys::file_put(f);
             return;
         }
-        if (filesys::fdtable_alloc(&p->fds, f, false, &fd) != 0)   // fd 2
+        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0)   // fd 2
             return;                     // alloc already released it
     }
 
@@ -1634,9 +1632,9 @@ namespace process
     // Hooks for sys_fs.cpp (file-descriptor syscalls)
     // -----------------------------------------------------------------------
 
-    fd_table* cur_fds()
+    handle_table* cur_handles()
     {
-        return current ? &current->fds : nullptr;
+        return current ? &current->handles : nullptr;
     }
 
     vnode* cur_cwd()
@@ -1816,7 +1814,6 @@ namespace process
         // offsets) and inherits its cwd and umask. alloc_process gave the
         // child the system cwd; replace it with the parent's.
         handles::fork(&child->handles, &current->handles);
-        filesys::fdtable_fork(&child->fds, &current->fds);
         child->umask = current->umask;
         if (child->cwd)
             vfs::unref(child->cwd);
@@ -1957,7 +1954,6 @@ namespace process
         // execve keeps the fd table except CLOEXEC slots, and keeps cwd and
         // umask (POSIX). adopt_image reset only the address-space fields.
         handles::close_flagged(&current->handles, HANDLE_CLOEXEC);
-        filesys::fdtable_cloexec(&current->fds);
 
         // Every handler address belonged to the image that has just been
         // replaced; ignored signals and the blocked mask survive.

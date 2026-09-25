@@ -7,8 +7,8 @@
 #include "../drivers/keyboard.h"
 #include "../../sdk/include/abi/process.h"
 
-// Opaque handles defined in fs/file.h and fs/vfs.h.
-struct fd_table;
+// Defined in obj/object.h and fs/vfs.h.
+struct handle_table;
 struct vnode;
 
 // ---------------------------------------------------------------------------
@@ -160,10 +160,10 @@ namespace process
     int  signal_pgrp(pid_t pgid, int sig);
 
     // --- Hooks for the file-descriptor syscalls (sys_fs.cpp) ---------------
-    // Valid only in syscall context (a user process is current). fd_table and vnode
-    // are declared in fs/file.h and fs/vfs.h; forward-declared here so this
-    // header stays independent.
-    fd_table* cur_fds();
+    // Valid only in syscall context (a user process is current).
+    // handle_table and vnode are declared in obj/object.h and fs/vfs.h;
+    // forward-declared here so this header stays independent.
+    handle_table* cur_handles();
     vnode*    cur_cwd();                // not referenced: the process owns it
     void      set_cwd(vnode* v);        // takes one reference
     uint32_t  cur_umask();

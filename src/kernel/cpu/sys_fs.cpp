@@ -136,7 +136,7 @@ namespace
         }
 
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), dirfd, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), dirfd, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -261,7 +261,7 @@ namespace
         }
 
         sint32_t fd = -1;
-        sint64_t rc = filesys::fdtable_alloc(process::cur_fds(), f,
+        sint64_t rc = filesys::fd_alloc(process::cur_handles(), f,
                                              (flags & O_CLOEXEC) != 0, &fd);
         if (rc != 0)
             return rc;
@@ -315,7 +315,7 @@ namespace
 
     void sys_close(syscall_regs* regs, iret_frame*)
     {
-        set(regs, filesys::fdtable_close(process::cur_fds(), (sint32_t)regs->rdi));
+        set(regs, filesys::fd_close(process::cur_handles(), (sint32_t)regs->rdi));
     }
 
     // -----------------------------------------------------------------------
@@ -439,7 +439,7 @@ namespace
     void sys_read(syscall_regs* regs, iret_frame* iret)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -464,7 +464,7 @@ namespace
     void sys_write(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -476,7 +476,7 @@ namespace
     void sys_pread(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -501,7 +501,7 @@ namespace
     void sys_pwrite(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -547,7 +547,7 @@ namespace
         }
 
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), fd, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), fd, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -620,7 +620,7 @@ namespace
         }
 
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), fd, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), fd, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -658,7 +658,7 @@ namespace
     void sys_lseek(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -731,7 +731,7 @@ namespace
     void sys_dup(syscall_regs* regs, iret_frame*)
     {
         sint32_t fd = -1;
-        sint64_t rc = filesys::fdtable_dup(process::cur_fds(),
+        sint64_t rc = filesys::fd_dup(process::cur_handles(),
                                            (sint32_t)regs->rdi, 0,
                                            false, false, &fd);
         set(regs, rc != 0 ? rc : fd);
@@ -740,7 +740,7 @@ namespace
     void sys_dup2(syscall_regs* regs, iret_frame*)
     {
         sint32_t fd = -1;
-        sint64_t rc = filesys::fdtable_dup(process::cur_fds(),
+        sint64_t rc = filesys::fd_dup(process::cur_handles(),
                                            (sint32_t)regs->rdi,
                                            (sint32_t)regs->rsi,
                                            false, true, &fd);
@@ -756,7 +756,7 @@ namespace
             set(regs, ERR(EINVAL));
             return;
         }
-        sint64_t rc = filesys::fdtable_dup(process::cur_fds(),
+        sint64_t rc = filesys::fd_dup(process::cur_handles(),
                                            (sint32_t)regs->rdi,
                                            (sint32_t)regs->rsi,
                                            (flags & O_CLOEXEC) != 0, true, &fd);
@@ -768,58 +768,56 @@ namespace
         sint32_t fd = (sint32_t)regs->rdi;
         sint32_t cmd = (sint32_t)regs->rsi;
         sint64_t arg = (sint64_t)regs->rdx;
-        fd_table* t = process::cur_fds();
+        handle_table* t = process::cur_handles();
 
         switch (cmd)
         {
             case F_DUPFD:
             case F_DUPFD_CLOEXEC:
             {
-                if (fd < 0 || fd >= FD_TABLE_SIZE)
+                if (fd < 0 || fd >= HANDLE_TABLE_SIZE)
                 {
                     set(regs, ERR(EBADF));
                     return;
                 }
                 sint32_t newfd = -1;
                 sint32_t minfd = (sint32_t)arg;
-                if (minfd < 0 || minfd >= FD_TABLE_SIZE)
+                if (minfd < 0 || minfd >= HANDLE_TABLE_SIZE)
                 {
                     set(regs, ERR(EINVAL));
                     return;
                 }
-                file* f = nullptr;
-                sint64_t rc = 0;
-                f = filesys::fdtable_get(t, fd, &rc);
-                if (!f)
+                sint64_t rc = filesys::fd_getfd(t, fd);    // any handle dups
+                if (rc < 0)
                 {
                     set(regs, rc);
                     return;
                 }
-                // fdtable_dup with an explicit target *closes* whatever sits
+                // fd_dup with an explicit target *closes* whatever sits
                 // there, so probing slots with it would silently destroy the
                 // caller's fds. Find the free slot first, then dup into it.
-                sint32_t slot = filesys::fdtable_lowest_free(t, minfd);
+                sint32_t slot = filesys::fd_lowest_free(t, minfd);
                 if (slot < 0)
                 {
                     set(regs, ERR(EMFILE));
                     return;
                 }
-                sint64_t r2 = filesys::fdtable_dup(t, fd, slot,
-                                                   cmd == F_DUPFD_CLOEXEC,
-                                                   true, &newfd);
+                sint64_t r2 = filesys::fd_dup(t, fd, slot,
+                                              cmd == F_DUPFD_CLOEXEC,
+                                              true, &newfd);
                 set(regs, r2 != 0 ? r2 : newfd);
                 return;
             }
             case F_GETFD:
-                set(regs, filesys::fdtable_getfd(t, fd));
+                set(regs, filesys::fd_getfd(t, fd));
                 return;
             case F_SETFD:
-                set(regs, filesys::fdtable_setfd(t, fd, arg));
+                set(regs, filesys::fd_setfd(t, fd, arg));
                 return;
             case F_GETFL:
             {
                 sint64_t rc = 0;
-                file* f = filesys::fdtable_get(t, fd, &rc);
+                file* f = filesys::fd_get(t, fd, &rc);
                 if (!f)
                 {
                     set(regs, rc);
@@ -831,7 +829,7 @@ namespace
             case F_SETFL:
             {
                 sint64_t rc = 0;
-                file* f = filesys::fdtable_get(t, fd, &rc);
+                file* f = filesys::fd_get(t, fd, &rc);
                 if (!f)
                 {
                     set(regs, rc);
@@ -898,7 +896,7 @@ namespace
     void sys_fstat(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -952,7 +950,7 @@ namespace
             if (r == 0)
             {
                 sint64_t rc = 0;
-                file* f = filesys::fdtable_get(process::cur_fds(), dirfd, &rc);
+                file* f = filesys::fd_get(process::cur_handles(), dirfd, &rc);
                 if (!f)
                 {
                     set(regs, rc);
@@ -1078,7 +1076,7 @@ namespace
     void sys_fchmod(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -1115,7 +1113,7 @@ namespace
     {
         (void)regs;
         sint64_t rc = 0;
-        if (!filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc))
+        if (!filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc))
         {
             set(regs, rc);
             return;
@@ -1213,7 +1211,7 @@ namespace
         }
 
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), fd, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), fd, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -1546,7 +1544,7 @@ namespace
     void sys_fchdir(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -1613,7 +1611,7 @@ namespace
     void sys_ftruncate(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -1644,7 +1642,7 @@ namespace
     void sys_fsync(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
@@ -1696,7 +1694,7 @@ namespace
     void sys_ioctl(syscall_regs* regs, iret_frame*)
     {
         sint64_t rc = 0;
-        file* f = filesys::fdtable_get(process::cur_fds(), (sint32_t)regs->rdi, &rc);
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)regs->rdi, &rc);
         if (!f)
         {
             set(regs, rc);
