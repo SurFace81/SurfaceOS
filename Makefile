@@ -86,6 +86,12 @@ SOURCES		=  	bin/kernel/kernel.o \
 # everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
+
+# Header dependencies: every compile also writes a .d next to its object
+# (-MMD), with a phony target per header (-MP) so a deleted header does not
+# break the build. Without them a changed struct in a header left stale
+# objects behind that only failed at link time - or not at all.
+DEPFLAGS    = -MMD -MP
 SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
 SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
 SDK_ENTRY   = bin/sdk/crt0.o
@@ -110,7 +116,7 @@ bin/boot/bios/%.bin: src/boot/bios/%.asm
 
 bin/boot/efi/%.o: src/boot/efi/%.c
 	mkdir -p $(dir $@)
-	$(MINGW) $(MFLAGS) -c $< -o $@
+	$(MINGW) $(MFLAGS) $(DEPFLAGS) -c $< -o $@
 
 bin/boot/efi/BOOTX64.EFI: bin/boot/efi/main_efi.o
 	$(MINGW) $^ $(LFLAGS) -o $@
@@ -125,47 +131,47 @@ bin/kernel/data/stdfont.fnt: src/kernel/data/stdfont.asm
 # Kernel object files
 bin/kernel/drivers/%.o: src/kernel/drivers/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/drivers/usb/%.o: src/kernel/drivers/usb/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/drivers/fs/%.o: src/kernel/drivers/fs/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/dev/%.o: src/kernel/dev/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/fs/%.o: src/kernel/fs/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/fs/fat32/%.o: src/kernel/fs/fat32/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/stdlib/%.o: src/kernel/stdlib/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/cpu/%.o: src/kernel/cpu/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/mm/%.o: src/kernel/mm/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/acpi/%.o: src/kernel/acpi/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/obj/%.o: src/kernel/obj/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $^
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	mkdir -p $(dir $@)
@@ -175,7 +181,7 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 # SDK objects
 bin/sdk/%.o: src/sdk/libc/%.cpp
 	mkdir -p $(dir $@)
-	$(GPP) $(SDK_FLAGS) -o $@ $<
+	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
 # SDK static library (everything except entry.o)
 $(SDK_LIB): $(SDK_LIB_OBJ)
@@ -188,7 +194,7 @@ $(SDK_LIB): $(SDK_LIB_OBJ)
 # That made read_file pull hundreds of clusters over USB and froze the shell.
 bin/apps/%.bin: src/apps/%.cpp src/sdk/linker.ld $(SDK_ENTRY) $(SDK_LIB)
 	mkdir -p $(dir $@)
-	$(GPP) $(SDK_FLAGS) -c -o bin/apps/$*.o $<
+	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -MT $@ -MF bin/apps/$*.d -c -o bin/apps/$*.o $<
 	$(LD) -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/linker.ld -nostdlib -o $@ \
 		$(SDK_ENTRY) bin/apps/$*.o -Lbin/sdk -lsfos
 
@@ -205,7 +211,7 @@ bin/kernel/kentry.o: src/kernel/kentry.asm
 
 bin/kernel/kernel.o: src/kernel/kernel.cpp version
 	mkdir -p $(dir $@)
-	$(GPP) $(CCFLAGS) -o $@ $<
+	$(GPP) $(CCFLAGS) $(DEPFLAGS) -o $@ $<
 
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	mkdir -p $(dir $@)
@@ -246,6 +252,12 @@ clean:
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
+	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
+	@find bin -name '*.d' -delete 2>/dev/null || true
 	@rm -rf bin/sdk/*.o bin/sdk/*.a
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h
+
+# Header dependencies written by -MMD (see DEPFLAGS).
+-include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
+         $(SDK_ALL_OBJ:.o=.d) $(APP_BINS:.bin=.d) bin/boot/efi/main_efi.d
