@@ -4,6 +4,11 @@
 
 static tss_t current_tss;
 
+// A copy of rsp0 for the `syscall` entry (interrupts.asm), which has to
+// load the kernel stack itself.
+extern "C" uint64_t sfcall_kernel_rsp;
+uint64_t sfcall_kernel_rsp = 0;
+
 // Dedicated stacks for the faults that cannot trust the interrupted stack.
 // 16 KiB each is plenty: nothing on these paths recurses, it only has to be
 // enough to print a diagnostic.
@@ -62,5 +67,6 @@ namespace tss
     void set_kernel_stack(uint64_t rsp0)
     {
         current_tss.rsp0 = rsp0;
+        sfcall_kernel_rsp = rsp0;
     }
 } // namespace tss

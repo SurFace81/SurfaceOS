@@ -175,3 +175,40 @@ syscall_entry:
 
     RESTORE_REGS
     iretq
+
+; The SurfaceOS ABI: the `syscall` instruction (see sfcall.h).
+;
+; The CPU leaves the return RIP in rcx and RFLAGS in r11, masks IF/DF/TF/AC
+; (SFMASK) and does not switch stacks. So: park the user rsp, take the
+; running process's kernel stack (sfcall_kernel_rsp mirrors TSS rsp0), build
+; the iret frame int 0x80 would have got, and from there on it is the same
+; path: saved registers, dispatch, iretq. One CPU, interrupts off until the
+; frame is built, so a single scratch slot for the user rsp is enough.
+%define USER_CS 0x23
+%define USER_SS 0x2B
+
+global sfcall_entry
+sfcall_entry:
+    mov [rel sfcall_user_rsp], rsp
+    mov rsp, [rel sfcall_kernel_rsp]
+
+    push qword USER_SS
+    push qword [rel sfcall_user_rsp]
+    push r11                    ; user RFLAGS
+    push qword USER_CS
+    push rcx                    ; user RIP
+    SAVE_REGS
+
+    sti                         ; like int 0x80 (a trap gate): IRQs stay on
+
+    mov rdi, rsp
+    extern sfcall_dispatch
+    call sfcall_dispatch
+
+    RESTORE_REGS
+    iretq
+
+extern sfcall_kernel_rsp
+
+section .bss
+sfcall_user_rsp: resq 1

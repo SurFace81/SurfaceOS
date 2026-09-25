@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <abi/sfcall.h>
 
 static int passed = 0;
 static int failed = 0;
@@ -191,6 +192,95 @@ static void test_exec(const char* self)
     check("still running after the failed exec", getpid() > 0);
 }
 
+// --- the SurfaceOS ABI entry (the `syscall` instruction) -------------------
+
+// One call with marker values in every register that must survive it.
+struct sf_probe
+{
+    uint64_t nr;
+    uint64_t status;
+    uint64_t in[11];    // rbx r12 r13 r14 r15 rdi rsi rdx r8 r9 r10
+    uint64_t out[11];
+};
+
+static void sf_call_probe(sf_probe* p)
+{
+    // 128 bytes down first: this function may keep locals in the red zone,
+    // and the pushes below would land on them.
+    asm volatile(
+        "sub $128, %%rsp\n"
+        "push %%rbx\n push %%rbp\n push %%r12\n push %%r13\n push %%r14\n push %%r15\n"
+        "push %0\n"
+        "mov %0, %%rax\n"
+        "mov 16(%%rax), %%rbx\n mov 24(%%rax), %%r12\n mov 32(%%rax), %%r13\n"
+        "mov 40(%%rax), %%r14\n mov 48(%%rax), %%r15\n mov 56(%%rax), %%rdi\n"
+        "mov 64(%%rax), %%rsi\n mov 72(%%rax), %%rdx\n mov 80(%%rax), %%r8\n"
+        "mov 88(%%rax), %%r9\n mov 96(%%rax), %%r10\n"
+        "mov 0(%%rax), %%rax\n"
+        "syscall\n"
+        "pop %%rcx\n"
+        "mov %%rax, 8(%%rcx)\n"
+        "mov %%rbx, 104(%%rcx)\n mov %%r12, 112(%%rcx)\n mov %%r13, 120(%%rcx)\n"
+        "mov %%r14, 128(%%rcx)\n mov %%r15, 136(%%rcx)\n mov %%rdi, 144(%%rcx)\n"
+        "mov %%rsi, 152(%%rcx)\n mov %%rdx, 160(%%rcx)\n mov %%r8, 168(%%rcx)\n"
+        "mov %%r9, 176(%%rcx)\n mov %%r10, 184(%%rcx)\n"
+        "pop %%r15\n pop %%r14\n pop %%r13\n pop %%r12\n pop %%rbp\n pop %%rbx\n"
+        "add $128, %%rsp\n"
+        :: "r"(p)
+        : "rax", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "memory", "cc");
+}
+
+static bool sf_regs_survive(uint64_t nr, uint64_t* status)
+{
+    sf_probe p;
+    p.nr = nr;
+    for (int i = 0; i < 11; i++)
+    {
+        p.in[i] = 0x5F00000000000000ULL + (uint64_t)i * 0x0101010101ULL + nr;
+        p.out[i] = 0;
+    }
+    sf_call_probe(&p);
+    *status = p.status;
+    for (int i = 0; i < 11; i++)
+        if (p.out[i] != p.in[i])
+            return false;
+    return true;
+}
+
+static void test_sfcall()
+{
+    section("syscall instruction (SurfaceOS ABI)");
+
+    uint64_t st = 0;
+    bool kept = sf_regs_survive(0, &st);
+    check("an unknown call returns SF_UNSUPPORTED", st == SF_UNSUPPORTED);
+    check("every register but rax/rcx/r11 survives", kept);
+
+    kept = sf_regs_survive(0xFFFFFFFFULL, &st);
+    check("a huge call number is SF_UNSUPPORTED too", st == SF_UNSUPPORTED && kept);
+
+    // Two processes calling back to back: the timer switches between them
+    // in the middle of calls, and each must come back on its own kernel
+    // stack with its own registers.
+    pid_t child = fork();
+    uint64_t t0 = now_ms();
+    bool all = true;
+    int n = 0;
+    while (now_ms() - t0 < 300)
+    {
+        if (!sf_regs_survive((uint64_t)n & 7, &st) || st != SF_UNSUPPORTED)
+            all = false;
+        n++;
+    }
+    if (child == 0)
+        exit(all && n > 100 ? 0 : 1);
+
+    int status = -1;
+    waitpid(child, &status, 0);
+    check("300 ms of calls from two processes at once come back intact",
+          all && n > 100 && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+}
+
 int main(int argc, char** argv)
 {
     if (argc >= 2 && strcmp(argv[1], "spin") == 0)
@@ -220,6 +310,7 @@ int main(int argc, char** argv)
     test_nohang_sleep();
     test_preemption();
     test_fpu();
+    test_sfcall();
     test_exec(argc >= 1 ? argv[0] : "proctest");
 
     print("\nproctest: ");

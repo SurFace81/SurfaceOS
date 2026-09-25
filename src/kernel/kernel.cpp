@@ -8,6 +8,7 @@
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
 #include "../include/cpu/syscall.h"
+#include "../include/cpu/sfcall.h"
 #include "../include/acpi/acpi.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
@@ -457,6 +458,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
         uart::printf("boot: devfs mounted\n");
 
     syscall::init();
+    sfcall::init();
     process::init();
 
     console::init();

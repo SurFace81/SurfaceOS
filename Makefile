@@ -70,6 +70,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/term.o \
 				bin/kernel/drivers/rtc.o \
 				bin/kernel/cpu/syscall.o \
+				bin/kernel/cpu/sfcall.o \
 				bin/kernel/cpu/sys_fs.o \
 				bin/kernel/cpu/tss.o \
 				bin/kernel/cpu/signal.o \
