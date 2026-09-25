@@ -8,8 +8,9 @@
 //   USER_SDK_CODE   read + execute: the SDK's code - the start-up stub that
 //                   calls SfMain and ends the process, and the protocol
 //                   functions (Console->Print, ...), each a `syscall`.
-//                   Position-independent, copied from the kernel image
-//                   (sdkpage.asm) into every such process.
+//                   One frame for the whole system, filled from the kernel
+//                   image (sdkpage.asm) at boot and mapped PAGE_SHARED into
+//                   every process.
 //   USER_SDK_DATA   read-only: the tables SfMain gets - SfSystem, SfApp,
 //                   SfConsole - filled in by the kernel for this process.
 //
@@ -28,8 +29,12 @@ namespace sdkpage
         uint64_t sys;       // SfSystem* for SfMain
     };
 
-    // Map and fill both pages in the current address space for program
-    // `name`. false when out of memory (the caller destroys the space).
+    // Set up the shared code frame. Called once from kmain.
+    void init();
+
+    // Map both pages in the current address space and fill the data page
+    // for program `name`. false when out of memory (the caller destroys
+    // the space).
     bool install(const char* name, Entry* out);
 
     // SFCALL_CONSOLE_PRINT (Text): write a NUL-terminated string to the

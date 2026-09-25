@@ -18,6 +18,10 @@
 #define PAGE_SIZE       (1ULL << 7)     // PS: this entry maps a huge page
 #define PAGE_PAT_4K     (1ULL << 7)     // PAT bit in a 4 KiB PTE
 #define PAGE_GLOBAL     (1ULL << 8)
+// Bit 9 is free for the OS. A user page with PAGE_SHARED maps a frame the
+// process does not own (the SDK code page): tearing the address space down
+// leaves the frame alone, and fork maps the same frame instead of copying.
+#define PAGE_SHARED     (1ULL << 9)
 #define PAGE_PAT_2M     (1ULL << 12)    // PAT bit in a 2 MiB PDE
 #define PAGE_NX         (1ULL << 63)    // needs EFER.NXE, see cpu::has_nx()
 

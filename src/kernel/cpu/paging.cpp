@@ -375,7 +375,8 @@ namespace paging {
 
     // Deep-copy one level of the user half. `level` is that of `src`
     // (3 = PDPT, 2 = PD, 1 = PT); PT entries are data pages and get a fresh
-    // frame with the same contents. Entries keep their flags.
+    // frame with the same contents - except PAGE_SHARED ones, which keep
+    // their frame. Entries keep their flags.
     static bool clone_level(uint64_t* dst, const uint64_t* src, int level)
     {
         for (uint64_t i = 0; i < 512; i++)
@@ -384,6 +385,11 @@ namespace paging {
             if (!(e & PAGE_PRESENT))
                 continue;
 
+            if (level == 1 && (e & PAGE_SHARED))
+            {
+                dst[i] = e;
+                continue;
+            }
             if (level == 1)
             {
                 uint64_t frame = pmm::alloc_frame();
@@ -484,7 +490,10 @@ namespace paging {
                 continue;
 
             if (level == 1)
-                pmm::free_frame(e & PAGE_ADDR_MASK);
+            {
+                if (!(e & PAGE_SHARED))
+                    pmm::free_frame(e & PAGE_ADDR_MASK);
+            }
             else if (level == 2 && (e & PAGE_SIZE))
                 pmm::free_frames(e & PAGE_ADDR_MASK, 512);   // 2 MiB page
             else if (!(e & PAGE_SIZE))

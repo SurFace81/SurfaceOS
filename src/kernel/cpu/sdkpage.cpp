@@ -18,6 +18,9 @@ extern "C" const uint8_t sdk_console_readline[];
 
 namespace
 {
+    // The code page every process maps (PAGE_SHARED).
+    uint64_t code_frame = 0;
+
     // The data page, as the program sees it.
     struct sdk_data
     {
@@ -62,13 +65,23 @@ namespace
 
 namespace sdkpage
 {
-    bool install(const char* name, Entry* out)
+    void init()
     {
         uint64_t code_len = (uint64_t)(sdk_code_end - sdk_code_start);
-        uint8_t* code = map_page(USER_SDK_CODE, 0);             // R + X
-        if (!code || code_len > PAGE_SIZE_4K)
-            return false;
+        uint64_t frame = pmm::alloc_frame();
+        if (!frame || code_len > PAGE_SIZE_4K)
+            return;                 // install() then fails every program
+        uint8_t* code = (uint8_t*)phys_to_virt(frame);
+        memory::memset(code, 0x00, PAGE_SIZE_4K);
         memory::memcpy(code, sdk_code_start, code_len);
+        code_frame = frame;
+    }
+
+    bool install(const char* name, Entry* out)
+    {
+        // R + X, and not the process's own frame.
+        if (!code_frame || !paging::map_user_page(USER_SDK_CODE, code_frame, PAGE_SHARED))
+            return false;
 
         sdk_data* d = (sdk_data*)map_page(USER_SDK_DATA, PAGE_NX);  // R
         if (!d)
