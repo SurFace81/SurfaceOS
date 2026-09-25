@@ -92,8 +92,20 @@ namespace process
     // nothing can. Never returns.
     __attribute__((noreturn)) void idle();
 
-    // Console only. Loads `path` as a new process (ppid 0) and sleeps until
-    // it has exited - its children are not waited for. argv[0] should be
+    // Handles to processes. The object behind one outlives the process, so
+    // the exit status stays readable after the process is gone.
+    //
+    // open: put a handle to live process `pid` into t (lowest free slot).
+    //   0, -ESRCH (no such process), -EMFILE.
+    // wait: sleep until the process behind handle h has exited and store
+    //   its exit status. With `stopped` it also returns when the process
+    //   stops (once per stop), with *stopped telling which it was.
+    //   0, -EBADF (not a process handle), -EINTR (a signal ended the wait).
+    sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out);
+    sint64_t wait(handle_table* t, sint32_t h, int* status, bool* stopped = nullptr);
+
+    // Console only. Loads `path` as a new process (ppid 0) and sleeps on a
+    // handle to it until it has exited - its children are not waited for. argv[0] should be
     // the program name. Returns false if the program could not be started;
     // otherwise stores its exit status in *exit_status.
     bool run(const char* path, int argc, const char* const* argv, int* exit_status);

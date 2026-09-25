@@ -462,7 +462,7 @@ namespace console
         cmd_count++;
     }
 
-    static bool line_pending()
+    static bool line_pending(void*)
     {
         return pending_valid;
     }
@@ -471,7 +471,7 @@ namespace console
     {
         for (;;)
         {
-            wait::wait_event(&line_wq, line_pending, 0);
+            wait::wait_event(&line_wq, line_pending, nullptr, 0);
             poll();
         }
     }

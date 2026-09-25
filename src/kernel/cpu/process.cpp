@@ -48,6 +48,8 @@ namespace process
     enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
     enum class Wait  : uint8_t { None, Queue };
 
+    struct proc_obj;
+
     struct Process
     {
         State       state;
@@ -113,6 +115,10 @@ namespace process
         // handle holding a File.
         handle_table handles;
 
+        // The process as a kernel object (what a handle to it refers to).
+        // The slot holds one reference until the process exits.
+        proc_obj*   obj;
+
         // POSIX file state beyond the descriptors: cwd (referenced vnode)
         // and umask.
         vnode*      cwd;
@@ -121,6 +127,69 @@ namespace process
     };
 
     static Process  table[MAX_PROCESSES];
+
+    // -----------------------------------------------------------------------
+    // Process objects
+    // -----------------------------------------------------------------------
+    //
+    // What a handle to a process refers to. It is separate from the table
+    // slot because it has to outlive the process: whoever holds a handle can
+    // still read the exit status after the slot has been reused.
+
+    struct proc_obj
+    {
+        kobject    hdr;         // type Process
+        pid_t      pid;
+        bool       exited;
+        int        status;      // exit status once exited (wait format)
+        bool       stop_unseen; // stopped since the last wait that asked
+        wait_queue changed;     // woken on exit and on every stop
+        bool       used;        // pool slot taken
+    };
+
+    const uint32_t  MAX_PROC_OBJS = MAX_PROCESSES * 2;
+    static proc_obj proc_objs[MAX_PROC_OBJS];
+
+    static void proc_obj_destroy(kobject* o)
+    {
+        ((proc_obj*)o)->used = false;
+    }
+
+    static const kobject_ops proc_obj_ops = { obj_type::Process, "process", proc_obj_destroy };
+
+    // A new object for process `pid`; the caller holds its reference.
+    static proc_obj* proc_obj_new(pid_t pid)
+    {
+        for (uint32_t i = 0; i < MAX_PROC_OBJS; i++)
+        {
+            proc_obj* o = &proc_objs[i];
+            if (o->used)
+                continue;
+            kobj::init(&o->hdr, &proc_obj_ops);
+            o->pid         = pid;
+            o->exited      = false;
+            o->status      = 0;
+            o->stop_unseen = false;
+            o->changed.head = nullptr;
+            o->used        = true;
+            return o;
+        }
+        return nullptr;
+    }
+
+    // The process behind p->obj is gone: record how, wake the waiters and
+    // drop the slot's reference.
+    static void proc_obj_exit(Process* p, int status)
+    {
+        proc_obj* o = p->obj;
+        if (!o)
+            return;
+        o->exited = true;
+        o->status = status;
+        wait::wake_up(&o->changed);
+        p->obj = nullptr;
+        kobj::put(&o->hdr);
+    }
     static Process* current   = nullptr;
     static uint32_t last_slot = 0;
     static pid_t    next_pid  = 1;
@@ -129,10 +198,9 @@ namespace process
     static uint32_t slice_ticks     = 0;
 
     // The console is a kernel process; while it runs a program it sleeps on
-    // its child_wq until that program (fg) exits. The program's ppid stays 0
-    // ("started by the console"); fg is what tells it apart from an orphan.
+    // a handle to it until the program exits. The program's ppid stays 0
+    // ("started by the console").
     static Process* console_proc    = nullptr;
-    static Process* fg              = nullptr;
 
     // The boot task becomes the idle task once the kernel is up: it runs
     // whenever nothing else can.
@@ -211,6 +279,9 @@ namespace process
             if (next_pid <= 0)
                 next_pid = 1;
             p->pgid = p->pid;           // its own group until setpgid says otherwise
+            p->obj = proc_obj_new(p->pid);
+            if (!p->obj)
+                return nullptr;         // slot stays Unused
             sig::init(&p->sig);
 
             handles::init(&p->handles);
@@ -223,6 +294,14 @@ namespace process
 
     static void free_process(Process* p)
     {
+        if (p->obj)
+        {
+            // Never ran to an exit (a launch that failed half-way).
+            p->obj->exited = true;
+            wait::wake_up(&p->obj->changed);
+            kobj::put(&p->obj->hdr);
+            p->obj = nullptr;
+        }
         handles::close_all(&p->handles);
         if (p->cwd)
         {
@@ -812,8 +891,12 @@ namespace process
                 q->ppid = 0;
         }
 
-        // An orphan has nobody to report to; the console's program does.
-        if (p->ppid == 0 && p != fg)
+        // Handles to the process see the exit now, whether or not a parent
+        // reaps a zombie later.
+        proc_obj_exit(p, status);
+
+        // An orphan has nobody to report to (the console waits on a handle).
+        if (p->ppid == 0)
         {
             free_process(p);
         }
@@ -832,7 +915,7 @@ namespace process
     static bool child_event(Process* p);
 
     // wait_event condition for wait4: an event for the calling process.
-    static bool current_child_event()
+    static bool current_child_event(void*)
     {
         return child_event(current);
     }
@@ -937,12 +1020,7 @@ namespace process
     static void notify_parent(Process* p)
     {
         if (p->ppid == 0)
-        {
-            // Started by the console, which waits for exactly one program.
-            if (p == fg)
-                wait::wake_up(&console_proc->child_wq);
-            return;
-        }
+            return;                     // the console waits on a handle
         Process* parent = find_live(p->ppid);
         if (parent)
         {
@@ -1011,6 +1089,11 @@ namespace process
 
     static void stop_process(Process* p, int n)
     {
+        if (p->obj)
+        {
+            p->obj->stop_unseen = true;
+            wait::wake_up(&p->obj->changed);
+        }
         p->state = State::Stopped;
         p->wait  = Wait::None;
         p->stop_status  = stop_code(n);
@@ -1346,6 +1429,7 @@ namespace process
         p->pid    = 0;
         p->pgid   = 0;
         p->kernel = true;
+        p->obj->pid = 0;
         p->cr3    = paging::kernel_pml4();
         copy_name(p->name, "console");
         if (p->cwd)
@@ -1454,15 +1538,60 @@ namespace process
         return ae->push_kstr(true, pwdbuf);
     }
 
-    // Wakes the console: its program exited or stopped.
-    static bool fg_event()
+    // -----------------------------------------------------------------------
+    // Handles to processes
+    // -----------------------------------------------------------------------
+
+    sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out)
     {
-        return fg->state == State::Zombie || fg->stop_pending;
+        Process* p = find_live(pid);
+        if (!p || p->kernel || !p->obj)
+            return -ESRCH;
+        return handles::install(t, &p->obj->hdr, flags, 0, out);
     }
+
+    struct wait_req
+    {
+        proc_obj* o;
+        bool      stops;
+    };
+
+    static bool proc_changed(void* arg)
+    {
+        wait_req* r = (wait_req*)arg;
+        return r->o->exited || (r->stops && r->o->stop_unseen);
+    }
+
+    sint64_t wait(handle_table* t, sint32_t h, int* status, bool* stopped)
+    {
+        sint64_t rc = 0;
+        proc_obj* o = (proc_obj*)handles::get(t, h, obj_type::Process, &rc);
+        if (!o)
+            return rc;
+
+        // The handle keeps the object alive while this sleeps.
+        wait_req r = { o, stopped != nullptr };
+        if (!wait::wait_event(&o->changed, proc_changed, &r, 0))
+            return -EINTR;
+
+        if (stopped)
+            *stopped = !o->exited;
+        if (o->exited)
+        {
+            *status = o->status;
+            return 0;
+        }
+        o->stop_unseen = false;         // reported
+        return 0;
+    }
+
+    // -----------------------------------------------------------------------
+    // Console
+    // -----------------------------------------------------------------------
 
     bool run(const char* path, int argc, const char* const* argv, int* exit_status)
     {
-        if (current != console_proc || fg)
+        if (current != console_proc)
             return false;
 
         ArgEnv ae;
@@ -1489,7 +1618,14 @@ namespace process
         open_std_fds(p);
         task::prepare_user(&p->task, p->name, kstack_top(p), &p->ctx);
 
-        fg             = p;
+        // The console follows its program through a handle: that is what
+        // tells it the exit status once the process itself is gone.
+        sint32_t h = -1;
+        if (open(&console_proc->handles, p->pid, 0, &h) != 0)
+        {
+            terminate(p, signal_status(SIGKILL));
+            return false;
+        }
         kill_requested = false;
 
         tty::reset();
@@ -1511,21 +1647,19 @@ namespace process
 
         // The program is runnable now; sleep until it has exited. Its
         // children are not waited for: an orphan keeps running on its own.
+        int status = 0;
         for (;;)
         {
-            wait::wait_event(&console_proc->child_wq, fg_event, 0);
-            if (p->state == State::Zombie)
+            bool stopped = false;
+            wait(&console_proc->handles, h, &status, &stopped);
+            if (!stopped)
                 break;
 
             // Stopped (^Z with the default action). Nothing can continue it
             // yet: there is no fg command.
-            p->stop_pending = false;
             screen::printf("\n[stopped - press Ctrl+Alt+Backspace to end it]\n");
         }
-
-        int status = p->exit_status;
-        free_process(p);
-        fg = nullptr;
+        handles::close(&console_proc->handles, h);
         reclaim_kernel_stacks();
 
         uart::printf("console: program end, status %u\n", (uint32_t)status);
@@ -2048,7 +2182,7 @@ namespace process
             // A caught signal ends the sleep: restart (SA_RESTART) or EINTR.
             current->wait_pid  = pid;
             current->wait_opts = options;
-            if (!wait::wait_event(&current->child_wq, current_child_event, 0))
+            if (!wait::wait_event(&current->child_wq, current_child_event, nullptr, 0))
             {
                 syscall_interrupted(regs);
                 return;
@@ -2630,12 +2764,12 @@ namespace wait
         return true;
     }
 
-    bool wait_event(wait_queue* q, bool (*cond)(), uint64_t tick)
+    bool wait_event(wait_queue* q, bool (*cond)(void*), void* arg, uint64_t tick)
     {
         for (;;)
         {
             uint64_t f = process::irq_save();
-            if (cond() || (tick && pit::ticks() >= tick))
+            if (cond(arg) || (tick && pit::ticks() >= tick))
             {
                 process::irq_restore(f);
                 return true;

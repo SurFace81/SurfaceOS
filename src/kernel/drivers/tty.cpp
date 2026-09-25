@@ -507,14 +507,19 @@ namespace tty
         return ring_pop(out);
     }
 
-    static bool key_available()
+    static bool key_available(void*)
     {
         return !ring_empty();
     }
 
+    static bool input_readable(void*)
+    {
+        return readable();
+    }
+
     bool wait_key()
     {
-        return wait::wait_event(&input_wq, key_available, 0);
+        return wait::wait_event(&input_wq, key_available, nullptr, 0);
     }
 
     bool wait_readable()
@@ -530,7 +535,7 @@ namespace tty
                 hz = pit::frequency();
             tick = pit::ticks() + (left * hz + 999) / 1000 + 1;
         }
-        return wait::wait_event(&input_wq, readable, tick);
+        return wait::wait_event(&input_wq, input_readable, nullptr, tick);
     }
 
     bool readable()
