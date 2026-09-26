@@ -9,7 +9,8 @@
 #                                    leaves data for qemu_verify.sh
 #   3. threadtest                 -> a fault in one thread, ^C and the last
 #                                    thread's exit end the whole program; ^C
-#                                    ends the programs it started too
+#                                    ends the programs it started too; the
+#                                    stress run (8 threads x 3, children)
 #   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
 #
@@ -160,14 +161,23 @@ type_cmd "threadtest lastexit"
 wait_session_end $WANT 15; result $? "threadtest lastexit ends"
 [ "$(last_status)" = "$((42 << 8))" ]; result $? "the last thread's status is the program's"
 
+# Many threads at once, over every CPU there is (run with SMP=4 too).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest stress"
+wait_for "threadtest stress: " 240; result $? "threadtest stress finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "threadtest stress: [0-9]* passed, 0 failed" "$LOG"; result $? "threadtest stress: no failed checks"
+wait_session_end $WANT 15; result $? "threadtest stress exits"
+
 # ^C reaches the programs a program started: they share its console.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
+STARTED_BEFORE=$(grep -ac "started threadtest" "$LOG")
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest group"; sleep 4
 monitor "sendkey ctrl-c"
 wait_session_end $WANT 15; result $? "threadtest group ends on ^C"
-[ "$(grep -ac "started threadtest" "$LOG")" = "2" ]; result $? "it started two programs of its own"
+[ "$(grep -ac "started threadtest" "$LOG")" = "$((STARTED_BEFORE + 2))" ]; result $? "it started two programs of its own"
 sleep 2; type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
