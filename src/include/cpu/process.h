@@ -215,6 +215,10 @@ namespace process
     // signal ended the wait.
     pid_t screen_input_owner(uint32_t screen);
 
+    // Ctrl+Alt+C: end every program on `screen` at the next scheduling
+    // decision (called from the keyboard IRQ).
+    void end_screen_programs(uint32_t screen);
+
     // The calling process's screen, and its console mode (sfconsole.cpp).
     uint32_t current_screen();
     bool     console_raw();

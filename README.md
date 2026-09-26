@@ -50,7 +50,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Nine screens, Alt+F1..F9, each with a system title bar (screen,
   program, subtitle, clock); keys go to the screen's input owner.
   Programs draw through the console protocol (cells, colours, cursor,
-  keys, line or raw mode); Ctrl+C is a key like any other
+  keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
+  ends every program on the shown screen
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
@@ -60,9 +61,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
   what ReadKey reports), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
-  (how a program with several threads ends: fault, the kill key
-  Ctrl+Alt+Backspace, last exit; the kill key ends the programs it
-  started; `threadtest stress` runs many
+  (how a program with several threads ends: fault, Ctrl+Alt+C, last
+  exit; Ctrl+Alt+C ends the programs it started too; `threadtest stress` runs many
   threads over every CPU)
  
 # Project Structure

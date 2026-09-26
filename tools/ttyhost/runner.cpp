@@ -308,85 +308,18 @@ static void t_readable()
     check("new input makes it ready again", tty::readable());
 }
 
-static void t_signals()
+static void t_ctrl_keys()
 {
-    section("ISIG keys become signals");
+    section("Ctrl+C, Ctrl+\\ and Ctrl+Z are keys");
 
+    // The program decides what they mean (ReadLine ends a line on Ctrl+C);
+    // the tty raises no signals, termios ISIG or not.
     reset_tty();
-    check("no signal to start with", tty::take_signal() == 0);
-
     press(KEY_A, 3, true);              // ^C
-    check("ISIG turns ^C into SIGINT", tty::take_signal() == SIGINT);
-    check("and it is taken only once", tty::take_signal() == 0);
-    check("it is not queued as input", do_read(64) == -EAGAIN);
-
-    reset_tty();
-    press(KEY_A, 28, true);             // ^backslash
-    check("^backslash is SIGQUIT", tty::take_signal() == SIGQUIT);
-
-    reset_tty();
+    keyboard_event_t e;
+    check("^C reaches the program as a key", tty::pop_key(&e) && e.KeyChar == 3);
     press(KEY_A, 26, true);             // ^Z
-    check("^Z is SIGTSTP", tty::take_signal() == SIGTSTP);
-
-    // The flush belongs to the consumer: emptying the line buffer from the
-    // keyboard IRQ could land in the middle of a read assembling it.
-    reset_tty();
-    type_str("typed");
-    (void)do_read(64);                  // assembles "typed" into the line
-    press(KEY_A, 3, true);
-    check("the line survives until the signal is taken",
-          tty::line_len() == 5);
-    (void)tty::take_signal();
-    check("taking the signal flushes what was typed", tty::line_len() == 0);
-
-    reset_tty();
-    {
-        struct termios t;
-        tty::get_termios(&t);
-        t.c_lflag |= NOFLSH;
-        tty::set_termios(&t);
-    }
-    type_str("kept");
-    (void)do_read(64);
-    press(KEY_A, 3, true);
-    (void)tty::take_signal();
-    check("NOFLSH keeps it", tty::line_len() == 4);
-
-    reset_tty();
-    set_raw(1, 0);                      // set_raw clears ISIG, as cfmakeraw does
-    press(KEY_A, 3, true);
-    check("without ISIG ^C is ordinary input", read_is(do_read(64), "\003"));
-    check("and no signal is raised", tty::take_signal() == 0);
-}
-
-static void t_emergency_kill()
-{
-    section("the emergency kill");
-
-    // It has to work through anything an application can do to the tty,
-    // which is the whole reason it is not a termios key.
-    reset_tty();
-    check("nothing to start with", !tty::take_kill());
-
-    keyboard_event_t e = {};
-    e.KeyCode = KEY_BACKSPACE;
-    e.KeyChar = 8;
-    e.type    = KEY_PRESS;
-    e.Control = true;
-    e.Alt     = true;
-    tty::on_key(e);
-    check("Ctrl+Alt+Backspace is caught", tty::take_kill());
-    check("and reported only once", !tty::take_kill());
-    check("it never reaches the application", do_read(64) == -EAGAIN);
-
-    reset_tty();
-    set_raw(1, 0);                      // ISIG cleared, everything raw
-    tty::on_key(e);
-    check("raw mode does not disarm it", tty::take_kill());
-
-    reset_tty();
-    press(KEY_BACKSPACE, 8);
-    check("a plain backspace is not it", !tty::take_kill());
+    check("so does ^Z", tty::pop_key(&e) && e.KeyChar == 26);
 }
 
 static void t_foreground()
@@ -471,8 +404,7 @@ int main()
     t_raw();
     t_vmin_vtime();
     t_readable();
-    t_signals();
-    t_emergency_kill();
+    t_ctrl_keys();
     t_foreground();
     t_echo();
     t_mode_switch();

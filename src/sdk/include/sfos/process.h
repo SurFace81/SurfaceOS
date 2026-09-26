@@ -24,7 +24,7 @@
 //            the input, a ReadLine of the new program waits for its turn.
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
-//            was stopped short (a fault, the kill key). Handle is used up.
+//            was stopped short (a fault, Ctrl+Alt+C). Handle is used up.
 typedef struct SfProcess SfProcess;
 
 struct SfProcess

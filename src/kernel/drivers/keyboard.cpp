@@ -145,18 +145,28 @@ namespace keyboard {
         return kb_state.lalt_pressed || kb_state.ralt_pressed;
     }
 
-    // Alt+F1..F9 show screen 1..9. The kernel keeps these keys: neither
-    // the press nor its release reaches anyone.
-    static uint8_t screen_key = 0;      // the F key whose release to swallow
+    // The kernel's keys; neither the press nor its release reaches anyone:
+    //   Alt+F1..F9   show screen 1..9;
+    //   Ctrl+Alt+C   end every program on the shown screen, whatever it is
+    //                doing - nothing a program does can keep it alive.
+    static const uint8_t KEY_C = 46;
+    static uint8_t system_held = 0;     // the key whose release to swallow
 
     static bool system_key(uint8_t code, bool pressed) {
-        if (code == screen_key && !pressed) {
-            screen_key = 0;
+        if (code == system_held && !pressed) {
+            system_held = 0;
             return true;
         }
-        if (pressed && alt_held() && code >= KEY_F1 && code <= KEY_F9) {
-            screen_key = code;
+        if (!pressed || !alt_held())
+            return false;
+        if (code >= KEY_F1 && code <= KEY_F9) {
+            system_held = code;
             term::show((uint32_t)(code - KEY_F1));
+            return true;
+        }
+        if (code == KEY_C && ctrl_held()) {
+            system_held = code;
+            process::end_screen_programs(term::shown_screen());
             return true;
         }
         return false;

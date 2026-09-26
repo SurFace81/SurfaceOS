@@ -7,6 +7,7 @@
 
 #include "../../src/include/drivers/screen.h"
 #include "../../src/include/drivers/pit.h"
+#include "../../src/include/cpu/wait.h"
 #include "../../src/include/drivers/uart.h"
 #include "../../src/include/mm/memory.h"
 
@@ -40,6 +41,20 @@ namespace screen
 namespace pit
 {
     uint64_t uptime_ms() { return fake_ms; }
+    uint64_t ticks() { return fake_ms; }
+    uint32_t frequency() { return 1000; }
+    uint32_t real_frequency() { return 1000; }
+}
+
+// Nothing sleeps on the host: a wait just reports the condition as it is
+// (the tests call the tty the way a reader would after waking).
+namespace wait
+{
+    void wake_up(wait_queue*) {}
+    bool wait_event(wait_queue*, bool (*cond)(void*), void* arg, uint64_t)
+    {
+        return cond(arg);
+    }
 }
 
 namespace uart

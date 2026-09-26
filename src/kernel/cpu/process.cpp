@@ -340,7 +340,10 @@ namespace process
 
     static pid_t    next_pid  = 1;
 
-    static volatile bool kill_requested = false;
+    // Ctrl+Alt+C (keyboard.cpp): the screen whose programs are to end, -1
+    // for none. Acted on at the next scheduling decision - the keyboard IRQ
+    // can land anywhere.
+    static volatile sint32_t end_screen = -1;
 
     // The console is a kernel process; while it runs a program it sleeps on
     // a handle to it until the program exits. The program's ppid stays 0
@@ -683,6 +686,11 @@ namespace process
     static bool owns_input(void*)
     {
         return current && input_owner[current->screen] == current->pid;
+    }
+
+    void end_screen_programs(uint32_t screen)
+    {
+        end_screen = (sint32_t)screen;
     }
 
     uint32_t current_screen()
@@ -1317,19 +1325,17 @@ namespace process
         return nullptr;
     }
 
-    // Ctrl+Alt+Backspace: every user process dies as if by SIGINT, which is
-    // what a terminal interrupt would deliver in Linux. It works when the
-    // program ignores or catches every signal it can.
+    // Ctrl+Alt+C: every program on the screen ends, whatever it is doing -
+    // SIGKILL, which nothing can catch, acted on by each process's own CPU
+    // (a process running on another CPU cannot be torn down from here).
     static void post_signal(Process* p, int n);
 
-    static void kill_user_processes()
+    static void end_programs_on(uint32_t screen)
     {
-        // SIGKILL, acted on by each process's own CPU: a process running
-        // on another CPU cannot be torn down from here.
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (alive(p) && !p->kernel)
+            if (alive(p) && !p->kernel && p->screen == screen)
                 post_signal(p, SIGKILL);
         }
     }
@@ -1411,14 +1417,6 @@ namespace process
                 post_signal(p, n);
         }
         return count;
-    }
-
-    // The kill key, noticed here rather than in the keyboard IRQ: acting on
-    // it touches the process table, and the IRQ can land anywhere.
-    static void tty_signals()
-    {
-        if (tty::take_kill())
-            kill_requested = true;
     }
 
     static void stop_process(Process* p, int n)
@@ -1580,17 +1578,16 @@ namespace process
         return true;
     }
 
-    // The system-wide part of every scheduling decision: act on ^C and the
-    // kill key and on signals that need no user code, then pick a thread
-    // that can run (nullptr: none).
+    // The system-wide part of every scheduling decision: act on Ctrl+Alt+C
+    // and on signals that need no user code, then pick a thread that can
+    // run (nullptr: none).
     static Thread* choose_next()
     {
-        tty_signals();
-        if (kill_requested)
+        sint32_t s = end_screen;
+        if (s >= 0)
         {
-            kill_requested = false;
-            screen::printf("\n[interrupted]\n");
-            kill_user_processes();
+            end_screen = -1;
+            end_programs_on((uint32_t)s);
         }
         service_signals();
         return pick_next();
@@ -1719,8 +1716,6 @@ namespace process
     static void return_to_user(user_regs* regs, iret_frame* iret)
     {
         end_if_doomed(regs, iret);
-
-        tty_signals();
 
         if (!current)
         {
@@ -2049,8 +2044,6 @@ namespace process
             terminate(p, signal_status(SIGKILL));
             return false;
         }
-        kill_requested = false;
-
         tty::reset();
         // The program starts in the foreground: ^C goes to its group, and
         // it is the one allowed to read the keyboard.
@@ -2077,9 +2070,9 @@ namespace process
             if (!stopped)
                 break;
 
-            // Stopped (^Z with the default action). Nothing can continue it
-            // yet: there is no fg command.
-            screen::printf("\n[stopped - press Ctrl+Alt+Backspace to end it]\n");
+            // Stopped (a stop signal with the default action). Nothing can
+            // continue it yet: there is no fg command.
+            screen::printf("\n[stopped - press Ctrl+Alt+C to end it]\n");
         }
         handles::close(&console_proc->handles, h);
         reclaim_kernel_stacks();
@@ -2108,7 +2101,7 @@ namespace process
             return;
         end_if_doomed(regs, iret);
 
-        if (kill_requested)
+        if (end_screen >= 0)
         {
             reschedule(regs, iret);     // does not return
             return;
@@ -2175,7 +2168,7 @@ namespace process
 
     void syscall_return(user_regs* regs, iret_frame* iret)
     {
-        if (kill_requested)
+        if (end_screen >= 0)
         {
             reschedule(regs, iret);
             return;

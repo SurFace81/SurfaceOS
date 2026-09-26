@@ -20,8 +20,6 @@ namespace
     volatile uint32_t head = 0;
     volatile uint32_t tail = 0;
 
-    // Set by the keyboard IRQ, consumed at the next scheduling decision.
-    volatile bool kill_flag = false;
 
     pid_t fg = 0;                       // foreground process group
 
@@ -406,7 +404,6 @@ namespace tty
     {
         head = 0;
         tail = 0;
-        kill_flag = false;
         fg = 0;
         line_len_ = 0;
         line_cur = 0;
@@ -423,16 +420,6 @@ namespace tty
 
     void on_key(keyboard_event_t e)
     {
-        // The emergency kill comes first: it has to work when the
-        // application has cleared ISIG, caught every signal it can, and is
-        // no longer reading anything.
-        if (e.type == KEY_PRESS && e.Control && e.Alt &&
-            e.KeyCode == KEY_BACKSPACE)
-        {
-            kill_flag = true;
-            return;
-        }
-
         // Ctrl+C, Ctrl+\ and Ctrl+Z are keys like any other: every program
         // is a SurfaceOS one, and what they mean is up to it (in a ReadLine,
         // Ctrl+C ends the line - sfconsole.cpp). No ISIG signals any more.
@@ -446,13 +433,6 @@ namespace tty
         wait::wake_up(&input_wq);
     }
 
-    bool take_kill()
-    {
-        if (!kill_flag)
-            return false;
-        kill_flag = false;
-        return true;
-    }
 
     pid_t fg_pgrp()              { return fg; }
     void  set_fg_pgrp(pid_t pgid) { fg = pgid; }

@@ -31,12 +31,6 @@ namespace tty
     // Producer side (called from the keyboard IRQ).
     void on_key(keyboard_event_t e);
 
-    // Ctrl+Alt+Backspace: the console's emergency kill, reported once. The
-    // process layer acts on it at the next scheduling decision (the IRQ can
-    // land anywhere). Every other key, Ctrl+C included, belongs to the
-    // program, so without it a program that never ends would own the
-    // machine.
-    bool take_kill();
 
     // The foreground process group: who ^C goes to, and who is allowed to
     // read the keyboard. 0 means nobody has claimed the terminal, which is
