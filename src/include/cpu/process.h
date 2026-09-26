@@ -56,12 +56,16 @@ struct vnode;
 // A process is a running program: address space, handles, roots, signals.
 // What runs are its threads, and the scheduler picks threads.
 //
-// Every CPU schedules on its own: each thread belongs to a CPU - its
-// process's, the least busy one when the process started - and each CPU
-// runs its own threads round robin, 10 ms apiece. Only one CPU at a time
+// Every CPU schedules on its own: each thread belongs to a CPU - the least
+// busy one when it was made - and each CPU runs its own threads round
+// robin, 10 ms apiece. Threads of one process may run on several CPUs at
+// once: a change that shrinks an address space flushes the TLBs of the
+// other CPUs that have it loaded (smp::flush_tlb). Only one CPU at a time
 // runs kernel code (the big kernel lock, spinlock.h); user code runs on
-// all of them at once. A process's signals are acted on by its own CPU
-// only, since it may be running there.
+// all of them at once. A process's signals are acted on by its home CPU
+// only. When a process ends while one of its threads runs on another CPU,
+// that thread ends at its next kernel entry, and the address space goes
+// with the last thread.
 //
 // User code is preempted by the timer; kernel code is not. Every thread
 // has its own kernel stack and a task (task.h) that runs on it: a trap from
@@ -194,8 +198,9 @@ namespace process
     inline int signal_status(int sig)     { return sig & 0x7F; }
 
     // First step of every syscall: remembers the number, in case the call
-    // is interrupted and has to be restarted.
-    void syscall_enter(uint64_t nr);
+    // is interrupted and has to be restarted. A thread whose process ended
+    // on another CPU meanwhile ends here instead (no return).
+    void syscall_enter(uint64_t nr, user_regs* regs, iret_frame* iret);
 
     // Last step of every syscall: honours a pending Esc, applies signals
     // and may switch to another process.

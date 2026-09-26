@@ -137,6 +137,9 @@ extern "C" void handle_exception(uint64_t vector, uint64_t* stack_frame, uint64_
         //
         // The stub pushed the GPRs and the error code right below the frame.
         user_regs* regs = (user_regs*)(stack_frame - 16);
+        // Interrupts on while waiting for the lock: the CPU holding it may be
+        // waiting for this one to flush its TLB (smp::flush_tlb).
+        asm volatile("sti");
         bkl::enter();
         process::on_user_fault(vector, regs, (iret_frame*)stack_frame);
         bkl::leave();

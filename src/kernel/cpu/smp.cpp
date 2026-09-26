@@ -41,6 +41,10 @@ namespace
     const uint64_t BLOCK_PAGES  = BLOCK_STACK + STACK_PAGES;
 
     uint32_t cpus_running = 1;
+    Cpu*     cpus[acpi::MAX_CPUS];          // by index; [0] is the boot CPU
+
+    const uint8_t TLB_VECTOR = 0xF0;
+    volatile uint32_t tlb_pending = 0;      // CPUs yet to flush
 
     uint8_t* block_page(Cpu* c, uint64_t page)
     {
@@ -68,6 +72,17 @@ namespace
     }
 }
 
+extern "C" void tlb_ipi_entry();
+
+// TLB_VECTOR: reload CR3 (dropping every non-global entry) and report.
+extern "C" void tlb_ipi_handler()
+{
+    uint64_t cr3;
+    asm volatile("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
+    __atomic_sub_fetch(&tlb_pending, 1, __ATOMIC_RELEASE);
+    apic::eoi();
+}
+
 // A started CPU arrives here from the trampoline, on its own stack.
 extern "C" __attribute__((noreturn)) void ap_main(Cpu* c)
 {
@@ -87,6 +102,7 @@ namespace smp
 {
     void start(uint64_t trampoline)
     {
+        cpus[0] = cpu::current();
         const acpi::madt_info* m = acpi::madt();
         uint64_t len = (uint64_t)(ap_trampoline_end - ap_trampoline_start);
         if (!trampoline || !m->present || m->cpu_count < 2 || len > PAGE_SIZE_4K)
@@ -105,6 +121,8 @@ namespace smp
             uart::printf("smp: cannot map the trampoline page\n");
             return;
         }
+        idt::set_entry(TLB_VECTOR, (uint64_t)tlb_ipi_entry, IDT_FLAG_INTERRUPT_GATE);
+
         trampoline_params* params =
             (trampoline_params*)((uint8_t*)phys_to_virt(trampoline) + TRAMPOLINE_PARAMS);
 
@@ -149,6 +167,7 @@ namespace smp
                 pmm::free_frames(frames, BLOCK_PAGES);
                 continue;
             }
+            cpus[index] = c;
             index++;
             cpus_running++;
         }
@@ -160,5 +179,23 @@ namespace smp
     uint32_t running()
     {
         return cpus_running;
+    }
+
+    void flush_tlb(uint64_t cr3)
+    {
+        Cpu* me = cpu::current();
+        uint32_t targets = 0;
+        for (uint32_t i = 0; i < cpus_running; i++)
+            if (cpus[i] != me && cpus[i]->cr3 == cr3)
+                targets++;
+        if (!targets)
+            return;
+
+        __atomic_store_n(&tlb_pending, targets, __ATOMIC_RELEASE);
+        for (uint32_t i = 0; i < cpus_running; i++)
+            if (cpus[i] != me && cpus[i]->cr3 == cr3)
+                apic::send_vector(cpus[i]->apic_id, TLB_VECTOR);
+        while (__atomic_load_n(&tlb_pending, __ATOMIC_ACQUIRE))
+            asm volatile("pause");
     }
 }

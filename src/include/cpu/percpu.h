@@ -40,6 +40,7 @@ struct Cpu
     Task     idle_task;
     uint32_t last_slot;
     uint32_t slice_ticks;
+    uint64_t cr3;           // the address space loaded here (smp::flush_tlb)
     GDT_t*   gdt;
     tss_t    tss;
 };

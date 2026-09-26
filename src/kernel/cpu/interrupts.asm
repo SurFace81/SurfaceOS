@@ -126,6 +126,18 @@ irq_common_stub:
     SWAPGS_IF_USER 8
     iretq
 
+; Another CPU changed an address space loaded here (smp.cpp): no lock, no
+; scheduling - reload CR3 and say so.
+global tlb_ipi_entry
+tlb_ipi_entry:
+    SWAPGS_IF_USER 8
+    SAVE_REGS
+    extern tlb_ipi_handler
+    call tlb_ipi_handler
+    RESTORE_REGS
+    SWAPGS_IF_USER 8
+    iretq
+
 ; The local APIC's spurious interrupt: nothing to handle, and no EOI.
 global apic_spurious
 apic_spurious:

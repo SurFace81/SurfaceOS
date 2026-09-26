@@ -11,7 +11,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   for the tick, per-CPU data (GS base, swapgs), TSS and GDT per CPU,
   spin locks and one big kernel lock (one CPU in the kernel at a time),
   the other CPUs started (INIT-SIPI-SIPI), each scheduling its own
-  threads (a new program goes to the least busy CPU, 10 ms slices),
+  threads (a new thread goes to the least busy CPU, 10 ms slices; the
+  threads of one program run on several CPUs, with TLB shootdown),
   paging (4 KiB, per-process address spaces, W^X), ring-3 user mode
 - ACPI tables without AML: reboot/shutdown (FADT, \_S5), the CPUs and
   interrupt controllers from the MADT (`acpi` command)

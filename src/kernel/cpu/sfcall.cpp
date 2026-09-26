@@ -92,7 +92,7 @@ extern "C" void sfcall_dispatch(user_regs* regs)
     iret_frame* iret = (iret_frame*)(regs + 1);
     uint64_t nr = regs->rax;
 
-    process::syscall_enter(nr);
+    process::syscall_enter(nr, regs, iret);
 
     sfcall::handler_t h = nr < SFCALL_TABLE_SIZE ? table[nr] : nullptr;
     if (h)

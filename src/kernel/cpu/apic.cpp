@@ -283,6 +283,11 @@ namespace apic
         send_ipi(apic_id, ICR_INIT);
     }
 
+    void send_vector(uint32_t apic_id, uint8_t vector)
+    {
+        send_ipi(apic_id, vector);          // fixed delivery
+    }
+
     void send_startup(uint32_t apic_id, uint64_t page)
     {
         send_ipi(apic_id, ICR_STARTUP | (uint32_t)(page >> 12));

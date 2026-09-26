@@ -72,7 +72,10 @@ namespace process
     {
         TState      state;
         Process*    proc;           // null in an unused slot
-        uint32_t    cpu;            // the CPU that runs it (its process's)
+        uint32_t    cpu;            // the CPU that runs it
+        bool        running;        // on its CPU right now
+        bool        doomed;         // its process ended while it ran on another
+                                    // CPU: it ends at its next kernel entry
 
         // What a handle to the thread refers to (its exit status for
         // Join); the thread holds one reference until it ends. Null for
@@ -117,8 +120,10 @@ namespace process
     struct Process
     {
         State       state;
-        uint32_t    cpu;            // the CPU its threads run on; it alone acts
-                                    // on the process's signals
+        uint32_t    cpu;            // its home CPU: where its first thread ran;
+                                    // it alone acts on the process's signals
+        bool        reap_when_empty;    // free the slot once its last (doomed)
+                                        // thread is gone
         pid_t       pid;
         pid_t       ppid;           // 0: started by the console, or an orphan
         pid_t       pgid;           // process group, for job control
@@ -434,16 +439,47 @@ namespace process
         }
         if (t == cur_thread)
             cur_thread = nullptr;
-        t->state = TState::Unused;
-        t->proc  = nullptr;
+        t->state   = TState::Unused;
+        t->proc    = nullptr;
+        t->running = false;
+        t->doomed  = false;
     }
 
-    // End every thread of p (the process is going).
-    static void free_threads(Process* p, SfStatus status)
+    // End every thread of p (the process is going). One running on another
+    // CPU right now cannot be freed from here - that CPU is on its stack and
+    // in its address space: it is doomed instead, and ends at its next
+    // kernel entry (a tick at the latest). How many are left that way.
+    static uint32_t end_threads(Process* p, SfStatus status)
     {
+        uint32_t left = 0;
         for (uint32_t i = 0; i < MAX_THREADS; i++)
-            if (threads[i].proc == p)
-                free_thread(&threads[i], status);
+        {
+            Thread* t = &threads[i];
+            if (t->proc != p)
+                continue;
+            if (t->running && t != cur_thread)
+            {
+                t->doomed = true;
+                left++;
+            }
+            else
+                free_thread(t, status);
+        }
+        return left;
+    }
+
+    // The process's address space goes (no thread of it runs anywhere).
+    static void release_address_space(Process* p)
+    {
+        if (!p->cr3)
+            return;
+        if (read_cr3() == p->cr3)
+        {
+            paging::switch_address_space(paging::kernel_pml4());
+            this_cpu()->cr3 = paging::kernel_pml4();
+        }
+        paging::destroy_address_space(p->cr3);
+        p->cr3 = 0;
     }
 
     static uint32_t count_threads(const Process* p)
@@ -464,9 +500,7 @@ namespace process
         return nullptr;
     }
 
-    // The CPU with the fewest threads: where a new process goes. Threads
-    // stay on their process's CPU until TLB shootdown lets one process's
-    // threads run on several CPUs at once.
+    // The CPU with the fewest threads: where a new process or thread goes.
     static uint32_t least_loaded_cpu()
     {
         uint32_t cpus = smp::running();
@@ -570,7 +604,14 @@ namespace process
             p->cwd = nullptr;
         }
         drop_roots(p);
-        free_threads(p, SF_ABORTED);
+        if (end_threads(p, SF_ABORTED))
+        {
+            // A thread still runs on another CPU: the slot goes with it.
+            p->state = State::Zombie;
+            p->reap_when_empty = true;
+            return;
+        }
+        release_address_space(p);
         p->state = State::Unused;
         p->pid = 0;
     }
@@ -637,10 +678,14 @@ namespace process
     {
         bkl::check_switch();
         leave_current();
+        if (cur_thread)
+            cur_thread->running = false;
         cur_thread = t;
         current = t->proc;
+        t->running = true;
         cpu::set_kernel_stack(kstack_top(t));
         paging::switch_address_space(t->proc->cr3);
+        this_cpu()->cr3 = t->proc->cr3;
         fpu_restore(t->fpu);
         task::switch_to(&t->task);
     }
@@ -650,9 +695,12 @@ namespace process
     {
         bkl::check_switch();
         leave_current();
+        if (cur_thread)
+            cur_thread->running = false;
         cur_thread = nullptr;
         current = nullptr;
         paging::switch_address_space(paging::kernel_pml4());
+        this_cpu()->cr3 = paging::kernel_pml4();
         task::switch_to(t);
     }
 
@@ -1082,16 +1130,12 @@ namespace process
     // the console, an orphan nothing.
     static void terminate(Process* p, int status)
     {
-        // Its threads end first: nothing of the process runs after this.
-        free_threads(p, SF_ABORTED);
-
-        if (p->cr3)
-        {
-            if (read_cr3() == p->cr3)
-                paging::switch_address_space(paging::kernel_pml4());
-            paging::destroy_address_space(p->cr3);
-            p->cr3 = 0;
-        }
+        // Its threads end first: nothing of the process runs after this -
+        // or, for one running on another CPU, after that CPU's next kernel
+        // entry. The address space goes with the last of them.
+        uint32_t left = end_threads(p, SF_ABORTED);
+        if (!left)
+            release_address_space(p);
 
         // POSIX: descriptors close and the cwd is released when the process
         // exits, not when the parent reaps the zombie. Other handles go with
@@ -1121,6 +1165,7 @@ namespace process
         proc_obj_exit(p, status);
 
         // An orphan has nobody to report to (the console waits on a handle).
+        // free_process keeps the slot while a doomed thread still runs.
         if (p->ppid == 0)
         {
             free_process(p);
@@ -1579,10 +1624,36 @@ namespace process
             queue_wake(&timer_wq, tick_due);
     }
 
+    // The running thread's process has ended (on another CPU, while this
+    // one ran it): the thread ends here. The last of such threads takes the
+    // address space - and, if the process is gone, its slot - with it.
+    // Never returns when it ends the thread.
+    static void end_if_doomed(user_regs* regs, iret_frame* iret)
+    {
+        Thread* t = cur_thread;
+        if (!t || !t->doomed)
+            return;
+        Process* p = t->proc;
+        free_thread(t, SF_ABORTED);
+        current = nullptr;
+        if (count_threads(p) == 0)
+        {
+            release_address_space(p);
+            if (p->reap_when_empty)
+            {
+                p->reap_when_empty = false;
+                free_process(p);
+            }
+        }
+        reschedule(regs, iret);
+    }
+
     // Everything that has to happen on the way back to ring 3 when the
     // scheduler was not otherwise involved.
     static void return_to_user(user_regs* regs, iret_frame* iret)
     {
+        end_if_doomed(regs, iret);
+
         tty_signals();
 
         if (!current)
@@ -1962,6 +2033,7 @@ namespace process
     {
         if (!current)
             return;
+        end_if_doomed(regs, iret);
 
         if (kill_requested)
         {
@@ -1995,6 +2067,7 @@ namespace process
 
     void on_user_fault(uint64_t vector, user_regs* regs, iret_frame* iret)
     {
+        end_if_doomed(regs, iret);
         int n = vector_to_signal(vector);
 
         // A process can only survive its own fault if it asked to: there
@@ -2016,8 +2089,10 @@ namespace process
         return_to_user(regs, iret);
     }
 
-    void syscall_enter(uint64_t nr)
+    void syscall_enter(uint64_t nr, user_regs* regs, iret_frame* iret)
     {
+        // A thread of a process that ended on another CPU goes no further.
+        end_if_doomed(regs, iret);
         if (cur_thread)
         {
             cur_thread->syscall_nr = nr;
@@ -2903,6 +2978,9 @@ namespace process
             paging::unmap_page(v);
             pmm::free_frame(phys);
         }
+        // Other CPUs running this space may still have them in their TLBs.
+        // Nobody gets the frames before this returns: that takes the lock.
+        smp::flush_tlb(read_cr3());
     }
 
     void sys_brk(user_regs* regs, iret_frame*)
@@ -3247,6 +3325,7 @@ namespace process
             regs->rax = SF_OUT_OF_RESOURCES;
             return;
         }
+        t->cpu = least_loaded_cpu();            // any CPU: the TLB is kept in step
         const uint64_t pages = THREAD_STACK_SIZE / PAGE_SIZE_4K;
         t->obj = thread_obj_new();
         uint64_t base = t->obj ? find_free_range(current, pages) : 0;
@@ -3372,6 +3451,7 @@ namespace process
         uint64_t flags = prot_to_flags(prot);
         for (uint64_t i = 0; i < pages; i++)
             paging::set_user_page_flags(addr + i * PAGE_SIZE_4K, flags);
+        smp::flush_tlb(read_cr3());         // permissions may have shrunk
 
         regs->rax = 0;
     }

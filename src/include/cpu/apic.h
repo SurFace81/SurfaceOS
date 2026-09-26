@@ -38,6 +38,9 @@ namespace apic
     void send_init(uint32_t apic_id);
     void send_startup(uint32_t apic_id, uint64_t page);
 
+    // Interrupt CPU `apic_id` with `vector`.
+    void send_vector(uint32_t apic_id, uint8_t vector);
+
     // Let the local APIC's timer drive the tick instead of the PIT. It is
     // calibrated against the running PIT to the same rate, so pit::ticks()
     // and everything measured in them stay as they are; then the PIT's IRQ
