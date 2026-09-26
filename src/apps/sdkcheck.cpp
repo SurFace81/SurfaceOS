@@ -1,9 +1,9 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
-// SfSystem, SfApp, SfConsole, SfFiles and SfMemory - that Console->Print
-// works, pages and the heap, and the roots data:/ and tmp:/ with files in
-// them. The exit status is the
+// SfSystem, SfApp, SfConsole, SfFiles, SfMemory and SfTime - that
+// Console->Print works, pages and the heap, the clock and sleeping, and
+// the roots data:/ and tmp:/ with files in them. The exit status is the
 // number of failed checks (0: all passed).
 
 #include <sfos.h>
@@ -158,6 +158,23 @@ static void CheckRoots(SfFiles* Files)
         Other->Close(Other);
 }
 
+static void CheckTime(SfTime* Time)
+{
+    SfDateTime Now = {};
+    Check("GetTime gives a sensible date and time",
+          Time->GetTime(Time, &Now) == SF_SUCCESS &&
+          Now.Year >= 2024 && Now.Month >= 1 && Now.Month <= 12 &&
+          Now.Day >= 1 && Now.Day <= 31 && Now.Hour <= 23 &&
+          Now.Minute <= 59 && Now.Second <= 59);
+
+    uint64_t Before = 0, After = 0;
+    Check("GetUptime", Time->GetUptime(Time, &Before) == SF_SUCCESS && Before > 0);
+    Check("Sleep(0) returns at once", Time->Sleep(Time, 0) == SF_SUCCESS);
+    Check("Sleep(300)", Time->Sleep(Time, 300) == SF_SUCCESS);
+    Time->GetUptime(Time, &After);
+    Check("... takes 300 ms (up to 400)", After - Before >= 300 && After - Before <= 400);
+}
+
 static void CheckMemory(SfMemory* Memory)
 {
     // Pages: zeroed, writable, given back.
@@ -253,6 +270,12 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
           HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, sizeof(SfMemory)));
     if (SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory)
         CheckMemory(Sys->Memory);
+
+    Check("SfTime: signature, revision 1.x, size",
+          SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time &&
+          HeaderOk(&Sys->Time->Hdr, SF_TIME_SIGNATURE, sizeof(SfTime)));
+    if (SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time)
+        CheckTime(Sys->Time);
 
     Check("SfFiles: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&

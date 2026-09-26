@@ -43,6 +43,9 @@
 #define SFCALL_FILE_SET_POSITION     10  // (uint64_t Handle, uint64_t Position)
 #define SFCALL_MEMORY_ALLOCATE_PAGES 11  // (uint64_t Count, void** Address)
 #define SFCALL_MEMORY_FREE_PAGES     12  // (void* Address, uint64_t Count)
-#define SFCALL_COUNT                 13
+#define SFCALL_TIME_GET              13  // (SfDateTime* Time)
+#define SFCALL_TIME_GET_UPTIME       14  // (uint64_t* Milliseconds)
+#define SFCALL_TIME_SLEEP            15  // (uint64_t Milliseconds)
+#define SFCALL_COUNT                 16
 
 #endif // ABI_SFCALL_H

@@ -32,6 +32,23 @@ static SfStatus ConsoleReadLine(SfConsole*, char* Buffer, uint64_t Size, uint64_
     return SfCall(SFCALL_CONSOLE_READLINE, (uint64_t)Buffer, Size, (uint64_t)Length);
 }
 
+// --- Time ------------------------------------------------------------------
+
+static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
+{
+    return SfCall(SFCALL_TIME_GET, (uint64_t)Time);
+}
+
+static SfStatus TimeGetUptime(SfTime*, uint64_t* Milliseconds)
+{
+    return SfCall(SFCALL_TIME_GET_UPTIME, (uint64_t)Milliseconds);
+}
+
+static SfStatus TimeSleep(SfTime*, uint64_t Milliseconds)
+{
+    return SfCall(SFCALL_TIME_SLEEP, Milliseconds);
+}
+
 // --- The tables --------------------------------------------------------------
 // Constant: they sit on the SDK's code pages, which the program can only
 // read.
@@ -59,6 +76,14 @@ const SfMemory SdkMemory =
     MemoryFree,
 };
 
+static const SfTime SdkTime =
+{
+    { SF_TIME_SIGNATURE, SF_TIME_REVISION, sizeof(SfTime) },
+    TimeGetTime,
+    TimeGetUptime,
+    TimeSleep,
+};
+
 static const SfApp SdkApp =
 {
     { SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp) },
@@ -71,6 +96,7 @@ const SfSystem SdkSystem =
     (SfConsole*)&SdkConsole,
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
+    (SfTime*)&SdkTime,
 };
 
 extern "C" void SdkStart(SfMainFunction Main)

@@ -75,6 +75,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sdkpage.o \
 				bin/kernel/cpu/sdkpage.asm.o \
 				bin/kernel/cpu/sffile.o \
+				bin/kernel/cpu/sftime.o \
 				bin/kernel/cpu/sys_fs.o \
 				bin/kernel/cpu/tss.o \
 				bin/kernel/cpu/signal.o \

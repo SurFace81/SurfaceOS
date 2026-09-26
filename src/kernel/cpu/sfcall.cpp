@@ -4,6 +4,7 @@
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
+#include "../../include/cpu/sftime.h"
 #include "../../include/drivers/uart.h"
 
 namespace
@@ -57,6 +58,7 @@ namespace sfcall
         set_handler(SFCALL_MEMORY_ALLOCATE_PAGES, process::sf_allocate_pages);
         set_handler(SFCALL_MEMORY_FREE_PAGES, process::sf_free_pages);
         sffile::init();
+        sftime::init();
         uart::printf("boot: syscall instruction enabled\n");
     }
 
