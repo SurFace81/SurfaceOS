@@ -16,6 +16,7 @@
 // so a hostile argument cannot make the kernel allocate or loop without
 // bound. Errors never kill the app.
 
+#include "../../include/cpu/spinlock.h"
 #include "../../include/cpu/syscall.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/cpu/process.h"
@@ -203,6 +204,7 @@ namespace syscall
 
 extern "C" void syscall_dispatch(syscall_regs* regs)
 {
+    bkl::enter();
     iret_frame* iret = (iret_frame*)(regs + 1);
     uint64_t nr = regs->rax;
 
@@ -220,4 +222,5 @@ extern "C" void syscall_dispatch(syscall_regs* regs)
         regs->rax = (uint64_t)(sint64_t)-ENOSYS;
 
     process::syscall_return(regs, iret);
+    bkl::leave();
 }

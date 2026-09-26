@@ -1,3 +1,4 @@
+#include "../../include/cpu/spinlock.h"
 #include "../../include/cpu/idt.h"
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/process.h"
@@ -132,7 +133,9 @@ extern "C" void handle_exception(uint64_t vector, uint64_t* stack_frame, uint64_
         //
         // The stub pushed the GPRs and the error code right below the frame.
         user_regs* regs = (user_regs*)(stack_frame - 16);
+        bkl::enter();
         process::on_user_fault(vector, regs, (iret_frame*)stack_frame);
+        bkl::leave();
         return;     // the stub now returns into whichever process runs next
     }
 

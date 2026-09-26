@@ -25,6 +25,7 @@ struct Cpu
     uint64_t user_rsp;      // gs:16 - the syscall entry parks the user rsp here
     uint32_t index;         // 0 for the boot CPU
     uint32_t apic_id;
+    uint32_t bkl_depth;     // how often it holds the big kernel lock (spinlock.h)
     GDT_t*   gdt;
     tss_t    tss;
 };

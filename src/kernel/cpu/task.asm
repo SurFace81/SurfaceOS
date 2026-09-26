@@ -13,7 +13,8 @@
 ;   First return of a process task: rsp points at a cpu_context (user_regs
 ;   then the iret frame), popped exactly like the tail of syscall_entry -
 ;   swapgs included: ring 3 gets its own GS base (percpu.h). GS itself is
-;   left alone, since loading it would clear the kernel's GS base.
+;   left alone, since loading it would clear the kernel's GS base. The
+;   big kernel lock is dropped first, as on every return to ring 3.
 
 section .text
 bits 64
@@ -51,8 +52,11 @@ task_kernel_start:
     hlt
     jmp .hang
 
+extern bkl_leave_to_user
+
 global task_user_start
 task_user_start:
+    call bkl_leave_to_user      ; below the context rsp points at: untouched
     mov ax, USER_DS
     mov ds, ax
     mov es, ax

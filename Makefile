@@ -76,6 +76,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/apic.o \
 				bin/kernel/cpu/sys_fs.o \
 				bin/kernel/cpu/percpu.o \
+				bin/kernel/cpu/spinlock.o \
 				bin/kernel/cpu/signal.o \
 				bin/kernel/cpu/process.o \
 				bin/kernel/cpu/task.o \

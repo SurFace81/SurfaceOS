@@ -2,6 +2,7 @@
 #include "../../include/cpu/syscall.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/apic.h"
+#include "../../include/cpu/spinlock.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
 
@@ -167,6 +168,7 @@ namespace irq {
 
 // Common IRQ handler
 void irq_handler(struct interrupt_frame *frame) {
+    bkl::enter();
     uint8_t irq_line = frame->int_no - IRQ_BASE;
 
     // The local APIC's timer ticks in place of the PIT: the same tick.
@@ -177,6 +179,7 @@ void irq_handler(struct interrupt_frame *frame) {
         if (irq_line == 15) {
             port::byte_out(PIC1_COMMAND, PIC_EOI);
         }
+        bkl::leave();
         return;
     }
 
@@ -198,4 +201,5 @@ void irq_handler(struct interrupt_frame *frame) {
     if ((frame->cs & 3) == 3)
         process::on_user_interrupt(irq_line, (user_regs*)frame,
                                    (iret_frame*)&frame->rip);
+    bkl::leave();
 }

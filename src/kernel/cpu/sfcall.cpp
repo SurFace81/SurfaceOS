@@ -1,5 +1,6 @@
 // The SurfaceOS ABI: `syscall` instruction setup and dispatch. See sfcall.h.
 
+#include "../../include/cpu/spinlock.h"
 #include "../../include/cpu/sfcall.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/sdkpage.h"
@@ -82,6 +83,7 @@ namespace sfcall
 // right above them.
 extern "C" void sfcall_dispatch(user_regs* regs)
 {
+    bkl::enter();
     iret_frame* iret = (iret_frame*)(regs + 1);
     uint64_t nr = regs->rax;
 
@@ -94,4 +96,5 @@ extern "C" void sfcall_dispatch(user_regs* regs)
         regs->rax = SF_UNSUPPORTED;
 
     process::syscall_return(regs, iret);
+    bkl::leave();
 }

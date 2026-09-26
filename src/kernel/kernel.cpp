@@ -13,6 +13,7 @@
 #include "../include/acpi/acpi.h"
 #include "../include/cpu/apic.h"
 #include "../include/cpu/percpu.h"
+#include "../include/cpu/spinlock.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
@@ -358,6 +359,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     gdt::init();
     cpu::init_boot_cpu();
+    bkl::enter();               // the boot CPU runs kernel code from here on
     // The bootloader AllocatePages()es 5 MB at PAGE_TABLES_PHYS and
     // linker.ld asserts that the kernel image stops short of it.
     paging::init(PAGE_TABLES_PHYS, BootHeader);

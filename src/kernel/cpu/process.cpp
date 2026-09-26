@@ -8,6 +8,7 @@
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/signal.h"
 #include "../../include/cpu/percpu.h"
+#include "../../include/cpu/spinlock.h"
 #include "../../include/cpu/task.h"
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
@@ -607,6 +608,7 @@ namespace process
     // switched back to.
     static void switch_thread(Thread* t)
     {
+        bkl::check_switch();
         leave_current();
         cur_thread = t;
         current = t->proc;
@@ -619,6 +621,7 @@ namespace process
     // Run a kernel task (idle): no thread is current meanwhile.
     static void switch_kernel_task(Task* t)
     {
+        bkl::check_switch();
         leave_current();
         cur_thread = nullptr;
         current = nullptr;
@@ -1647,7 +1650,13 @@ namespace process
                 // Nobody runs on a free slot's stack now: hand those back
                 // (a thread can end long after the console's program has).
                 reclaim_kernel_stacks();
+
+                // Halt without the big kernel lock: the interrupt that
+                // wakes this CPU takes it on its own, and so does the next
+                // round of this loop.
+                bkl::leave();
                 asm volatile("sti; hlt");
+                bkl::enter();
             }
         }
     }
