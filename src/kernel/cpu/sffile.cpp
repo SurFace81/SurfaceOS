@@ -267,16 +267,6 @@ namespace
         kfree(path);
     }
 
-    void file_close(user_regs* regs, iret_frame*)
-    {
-        if (!from_handle(regs->rdi))
-        {
-            regs->rax = SF_BAD_HANDLE;
-            return;
-        }
-        regs->rax = status(filesys::fd_close(process::cur_handles(), (sint32_t)regs->rdi));
-    }
-
     // Read and Write: (Handle, Buffer, *Size) - *Size in and out.
     void file_transfer(user_regs* regs, bool write)
     {
@@ -384,7 +374,6 @@ namespace sffile
         sfcall::set_handler(SFCALL_FILES_OPEN, files_open);
         sfcall::set_handler(SFCALL_FILES_CREATE_UNIQUE, files_create_unique);
         sfcall::set_handler(SFCALL_FILE_OPEN, file_open);
-        sfcall::set_handler(SFCALL_FILE_CLOSE, file_close);
         sfcall::set_handler(SFCALL_FILE_READ, file_read);
         sfcall::set_handler(SFCALL_FILE_WRITE, file_write);
         sfcall::set_handler(SFCALL_FILE_GET_POSITION, file_get_position);

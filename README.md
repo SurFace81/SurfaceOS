@@ -31,7 +31,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   enters the kernel with the syscall instruction. Sys->Memory gives pages
   and a heap, Sys->Time the clock, the uptime and sleeping,
   Sys->Process the command line of a process, Sys->Thread threads
-  (Create/Exit/Join). App->Args is the command
+  (Create/Exit/Join), Sys->Sync mutexes and events. App->Args is the command
   line; a path in it is opened by the console and reaches the program as
   argN:. Files go through roots: data:/
   (the program's own /files/<name>, created on first start) and tmp:/
@@ -43,7 +43,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables, memory, time, arguments, threads), sfstest (files through the SDK and
+  tables, memory, time, arguments, threads, mutexes and events), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
   (how a program with several threads ends: fault, Ctrl+C, last exit)
  

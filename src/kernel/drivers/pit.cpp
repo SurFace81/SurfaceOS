@@ -79,6 +79,17 @@ namespace pit
         return tick_count;
     }
 
+    uint64_t deadline_ms(uint64_t ms)
+    {
+        uint32_t hz = real_frequency();
+        if (!hz)
+            hz = frequency();
+        uint64_t n = ~0ULL / 2;             // "forever", without overflow
+        if (ms < n / hz)
+            n = (ms * hz + 999) / 1000;
+        return tick_count + (n ? n : 1);
+    }
+
     void sleep_ms(uint32_t ms)
     {
         uint64_t target_ticks = tick_count + ((uint64_t)ms * real_freq) / 1000;

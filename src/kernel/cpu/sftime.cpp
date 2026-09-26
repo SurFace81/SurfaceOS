@@ -47,15 +47,8 @@ namespace
             return;
         }
 
-        uint32_t hz = pit::real_frequency();
-        if (!hz)
-            hz = pit::frequency();
-        uint64_t ticks = ~0ULL / 2;         // "forever", without overflow
-        if (ms < ticks / hz)
-            ticks = (ms * hz + 999) / 1000;
-
         // Woken early only by the user (Ctrl+C).
-        regs->rax = wait::sleep_until(pit::ticks() + ticks) ? SF_SUCCESS : SF_ABORTED;
+        regs->rax = wait::sleep_until(pit::deadline_ms(ms)) ? SF_SUCCESS : SF_ABORTED;
     }
 }
 

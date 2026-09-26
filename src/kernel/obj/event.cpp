@@ -16,7 +16,7 @@ namespace
         bool       used;        // pool slot taken
     };
 
-    const uint32_t MAX_EVENTS = 64;
+    const uint32_t MAX_EVENTS = 256;     // every mutex of every program is one
     event_obj pool[MAX_EVENTS];
 
     event_obj* as_event(kobject* o)

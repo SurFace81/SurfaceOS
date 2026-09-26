@@ -24,6 +24,7 @@
 #include "sfos/time.h"
 #include "sfos/process.h"
 #include "sfos/thread.h"
+#include "sfos/sync.h"
 #include "sfos/system.h"
 
 #endif // SFOS_H

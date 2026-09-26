@@ -5,6 +5,7 @@
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
 #include "../../include/cpu/sftime.h"
+#include "../../include/cpu/sfsync.h"
 #include "../../include/drivers/uart.h"
 
 namespace
@@ -64,6 +65,7 @@ namespace sfcall
         set_handler(SFCALL_MEMORY_FREE_PAGES, process::sf_free_pages);
         sffile::init();
         sftime::init();
+        sfsync::init();
         uart::printf("boot: syscall instruction enabled\n");
     }
 

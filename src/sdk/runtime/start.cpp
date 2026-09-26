@@ -140,6 +140,13 @@ static const SfThread SdkThread =
     ThreadJoin,
 };
 
+static const SfSync SdkSync =
+{
+    { SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync) },
+    SyncCreateMutex,
+    SyncCreateEvent,
+};
+
 // Filled in by SdkStart from the start info.
 static SfApp SdkApp;
 
@@ -152,6 +159,7 @@ const SfSystem SdkSystem =
     (SfTime*)&SdkTime,
     (SfProcess*)&SdkProcess,
     (SfThread*)&SdkThread,
+    (SfSync*)&SdkSync,
 };
 
 extern "C" void SdkStart(SfMainFunction Main)
@@ -162,7 +170,9 @@ extern "C" void SdkStart(SfMainFunction Main)
     SdkApp.ArgCount = Info->ArgCount;
     SdkApp.Args     = Info->Args;
 
-    SfStatus Status = Main((SfApp*)&SdkApp, (SfSystem*)&SdkSystem);
+    SfStatus Status = MemoryInit();
+    if (!SF_ERROR(Status))
+        Status = Main((SfApp*)&SdkApp, (SfSystem*)&SdkSystem);
     SfCall(SFCALL_EXIT, Status);
     __builtin_unreachable();            // SFCALL_EXIT does not return
 }

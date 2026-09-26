@@ -29,6 +29,10 @@ namespace pit
     // Current tick count since boot
     uint64_t ticks();
 
+    // The tick `ms` milliseconds from now, rounded up: a deadline for a
+    // sleep. Never 0; a huge ms gives a tick that is never reached.
+    uint64_t deadline_ms(uint64_t ms);
+
     // Blocking delay
     void sleep_ms(uint32_t ms);
 

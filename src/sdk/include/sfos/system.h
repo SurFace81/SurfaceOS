@@ -9,6 +9,7 @@
 #include "time.h"
 #include "process.h"
 #include "thread.h"
+#include "sync.h"
 
 // The system table: everything a program can ask of the system, handed to
 // SfMain. Services are tables of their own, reached from here.
@@ -19,6 +20,7 @@
 //   Time      the clock and sleeping.
 //   Process   processes.
 //   Thread    threads of this program.
+//   Sync      mutexes and events between them.
 //
 // More services (Memory, Time, Process, ...) are added at the end in later
 // revisions; check Hdr.Size (SF_HAS_FIELD) before using one that came
@@ -32,6 +34,7 @@ typedef struct SfSystem
     SfTime*       Time;
     SfProcess*    Process;
     SfThread*     Thread;
+    SfSync*       Sync;
 } SfSystem;
 
 #define SF_SYSTEM_SIGNATURE SF_SIGNATURE('S', 'F', 'S', 'Y', 'S', 'T', 'E', 'M')
@@ -43,7 +46,8 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Memory) == 32, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Time) == 40, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Process) == 48, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Thread) == 56, "SfSystem layout");
-SF_STATIC_ASSERT(sizeof(SfSystem) == 64, "SfSystem layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Sync) == 64, "SfSystem layout");
+SF_STATIC_ASSERT(sizeof(SfSystem) == 72, "SfSystem layout");
 
 // The program's entry point. What it returns becomes the exit status its
 // parent sees.

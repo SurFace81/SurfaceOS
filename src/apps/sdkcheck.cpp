@@ -1,9 +1,10 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
-// SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime, SfProcess and
-// SfThread - that Console->Print works, pages and the heap, the clock and
-// sleeping, the command line and threads. Files are sfstest's.
+// SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime, SfProcess,
+// SfThread and SfSync - that Console->Print works, pages and the heap, the
+// clock and sleeping, the command line, threads, mutexes and events. Files
+// are sfstest's.
 //
 // It leaves one thread asleep for good when SfMain returns: ending the
 // program has to end that thread too.
@@ -253,6 +254,94 @@ static void CheckThreads(SfThread* Thread)
           Ok && After - Before >= 300 && After - Before <= 500);
 }
 
+// --- Sync ----------------------------------------------------------------
+
+static SfMutex*          CountMutex;
+static volatile uint64_t SharedCount;
+
+// Read, dawdle, write: without the mutex the threads would overwrite each
+// other's increments whenever the timer switches in between.
+static SfStatus CountEntry(void*)
+{
+    for (int i = 0; i < 20000; i++)
+    {
+        CountMutex->Lock(CountMutex);
+        uint64_t Value = SharedCount;
+        for (volatile int j = 0; j < 50; j++)
+            ;
+        SharedCount = Value + 1;
+        CountMutex->Unlock(CountMutex);
+    }
+    return SF_SUCCESS;
+}
+
+static SfEvent* Ping;
+static SfEvent* Pong;
+
+static SfStatus PongEntry(void*)
+{
+    for (int i = 0; i < 100; i++)
+    {
+        if (Ping->Wait(Ping, 2000) != SF_SUCCESS)
+            return SF_TIMEOUT;
+        Pong->Set(Pong);
+    }
+    return SF_SUCCESS;
+}
+
+static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
+{
+    Check("CreateMutex", Sync->CreateMutex(Sync, &CountMutex) == SF_SUCCESS && CountMutex &&
+                         HeaderOk(&CountMutex->Hdr, SF_MUTEX_SIGNATURE, sizeof(SfMutex)));
+    if (!CountMutex)
+        return;
+    uint64_t Ids[4] = {};
+    bool Ok = true;
+    for (int i = 0; i < 4; i++)
+        Ok = Ok && Thread->Create(Thread, CountEntry, nullptr, &Ids[i]) == SF_SUCCESS;
+    for (int i = 0; i < 4; i++)
+        Ok = Ok && Thread->Join(Thread, Ids[i], nullptr) == SF_SUCCESS;
+    Check("a mutex keeps 4 threads' 80000 increments whole", Ok && SharedCount == 80000);
+    Check("Close of a mutex", CountMutex->Close(CountMutex) == SF_SUCCESS);
+
+    // A manual-reset event stays set until Reset.
+    SfEvent* Event = nullptr;
+    Check("CreateEvent", Sync->CreateEvent(Sync, 0, &Event) == SF_SUCCESS && Event &&
+                         HeaderOk(&Event->Hdr, SF_EVENT_SIGNATURE, sizeof(SfEvent)));
+    if (!Event)
+        return;
+    Check("Wait(0) on an event not set is SF_TIMEOUT", Event->Wait(Event, 0) == SF_TIMEOUT);
+    Check("after Set every Wait goes through",
+          Event->Set(Event) == SF_SUCCESS && Event->Wait(Event, 0) == SF_SUCCESS &&
+          Event->Wait(Event, SF_WAIT_FOREVER) == SF_SUCCESS);
+    uint64_t Before = 0, After = 0;
+    Time->GetUptime(Time, &Before);
+    SfStatus Status = (Event->Reset(Event), Event->Wait(Event, 200));
+    Time->GetUptime(Time, &After);
+    Check("after Reset, Wait(200) times out after 200 ms",
+          Status == SF_TIMEOUT && After - Before >= 200 && After - Before <= 300);
+    Event->Close(Event);
+    Check("an unknown event flag is SF_INVALID_PARAMETER",
+          Sync->CreateEvent(Sync, 0x80, &Event) == SF_INVALID_PARAMETER);
+
+    // Auto-reset events: 100 rounds of ping-pong between two threads.
+    Ok = Sync->CreateEvent(Sync, SF_EVENT_AUTO_RESET, &Ping) == SF_SUCCESS &&
+         Sync->CreateEvent(Sync, SF_EVENT_AUTO_RESET, &Pong) == SF_SUCCESS;
+    uint64_t Id = 0;
+    Ok = Ok && Thread->Create(Thread, PongEntry, nullptr, &Id) == SF_SUCCESS;
+    for (int i = 0; Ok && i < 100; i++)
+        Ok = Ping->Set(Ping) == SF_SUCCESS && Pong->Wait(Pong, 2000) == SF_SUCCESS;
+    SfStatus PongStatus = SF_ABORTED;
+    Ok = Ok && Thread->Join(Thread, Id, &PongStatus) == SF_SUCCESS && PongStatus == SF_SUCCESS;
+    Check("auto-reset events: 100 rounds of ping-pong", Ok);
+    Check("... and each Set let one Wait through",
+          Ping && Ping->Wait(Ping, 0) == SF_TIMEOUT && Pong && Pong->Wait(Pong, 0) == SF_TIMEOUT);
+    if (Ping)
+        Ping->Close(Ping);
+    if (Pong)
+        Pong->Close(Pong);
+}
+
 static void CheckMemory(SfMemory* Memory)
 {
     // Pages: zeroed, writable, given back.
@@ -369,9 +458,14 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
           SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread &&
           HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, sizeof(SfThread)));
     System = Sys;
+    Check("SfSync: signature, revision 1.x, size",
+          SF_HAS_FIELD(Sys, SfSystem, Sync) && Sys->Sync &&
+          HeaderOk(&Sys->Sync->Hdr, SF_SYNC_SIGNATURE, sizeof(SfSync)));
     if (SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread)
     {
         CheckThreads(Sys->Thread);
+        if (SF_HAS_FIELD(Sys, SfSystem, Sync) && Sys->Sync)
+            CheckSync(Sys->Sync, Sys->Thread, Sys->Time);
 
         // Left asleep for good: returning from SfMain ends it.
         uint64_t Id = 0;

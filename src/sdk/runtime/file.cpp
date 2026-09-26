@@ -20,7 +20,7 @@ static SfStatus FileOpen(SfFile* This, const char* Path, uint64_t Mode, SfFile**
 
 static SfStatus FileClose(SfFile* This)
 {
-    SfStatus Status = SfCall(SFCALL_FILE_CLOSE, Object(This)->Handle);
+    SfStatus Status = SfCall(SFCALL_CLOSE, Object(This)->Handle);
     MemoryFree((SfMemory*)&SdkMemory, This);
     return Status;
 }
@@ -67,7 +67,7 @@ static SfStatus NewFile(SfStatus Status, uint64_t Handle, SfFile** Out)
     Status = MemoryAllocate((SfMemory*)&SdkMemory, sizeof(FileObject), (void**)&File);
     if (SF_ERROR(Status))
     {
-        SfCall(SFCALL_FILE_CLOSE, Handle);
+        SfCall(SFCALL_CLOSE, Handle);
         return Status;
     }
     File->Public = FileTable;

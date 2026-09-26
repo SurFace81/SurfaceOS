@@ -26,6 +26,26 @@ extern const SfSystem SdkSystem;
 extern const SfMemory SdkMemory;
 extern const SfFiles  SdkFiles;
 
+// A lock between the threads of the program (sync.cpp): a count of who
+// wants it and an auto-reset event the waiters sleep on. Taking a free
+// lock and letting go of one nobody waits for never enter the kernel.
+struct SdkLock
+{
+    volatile sint64_t Count;
+    uint64_t          Event;        // handle
+};
+
+SfStatus LockInit(SdkLock* Lock);
+void     LockAcquire(SdkLock* Lock);
+void     LockRelease(SdkLock* Lock);
+
+// sync.cpp
+SfStatus SyncCreateMutex(SfSync* This, SfMutex** Out);
+SfStatus SyncCreateEvent(SfSync* This, uint64_t Flags, SfEvent** Out);
+
+// memory.cpp: set up the heap's lock. Before SfMain.
+SfStatus MemoryInit();
+
 // memory.cpp
 SfStatus MemoryAllocatePages(SfMemory* This, uint64_t Count, void** Address);
 SfStatus MemoryFreePages(SfMemory* This, void* Address, uint64_t Count);

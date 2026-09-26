@@ -37,7 +37,7 @@
 #define SFCALL_FILES_OPEN            3   // (const char* Path, uint64_t Mode, uint64_t* Handle)
 #define SFCALL_FILES_CREATE_UNIQUE   4   // (uint64_t* Handle, char* Path, uint64_t PathSize)
 #define SFCALL_FILE_OPEN             5   // (uint64_t Dir, const char* Path, uint64_t Mode, uint64_t* Handle)
-#define SFCALL_FILE_CLOSE            6   // (uint64_t Handle)
+#define SFCALL_CLOSE                 6   // (uint64_t Handle): any handle
 #define SFCALL_FILE_READ             7   // (uint64_t Handle, void* Buffer, uint64_t* Size)
 #define SFCALL_FILE_WRITE            8   // (uint64_t Handle, const void* Buffer, uint64_t* Size)
 #define SFCALL_FILE_GET_POSITION     9   // (uint64_t Handle, uint64_t* Position)
@@ -52,6 +52,10 @@
 #define SFCALL_THREAD_CREATE         18  // (SfThreadEntry Entry, void* Arg, uint64_t* Id)
 #define SFCALL_THREAD_EXIT           19  // (SfStatus) - does not return
 #define SFCALL_THREAD_JOIN           20  // (uint64_t Id, SfStatus* Status)
-#define SFCALL_COUNT                 21
+#define SFCALL_EVENT_CREATE          21  // (uint64_t Flags, uint64_t* Handle)
+#define SFCALL_EVENT_SET             22  // (uint64_t Handle)
+#define SFCALL_EVENT_RESET           23  // (uint64_t Handle)
+#define SFCALL_WAIT                  24  // (uint64_t Handle, uint64_t TimeoutMs): any waitable handle
+#define SFCALL_COUNT                 25
 
 #endif // ABI_SFCALL_H

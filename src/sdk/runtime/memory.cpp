@@ -30,19 +30,16 @@ namespace
 
     Block* FreeList;        // in address order
 
-    // A plain spin lock until SfSync has a mutex: on one CPU a waiter spins
-    // out its time slice, then the holder runs on and lets go.
-    volatile uint32_t HeapLock;
+    SdkLock HeapLock;
 
     void Lock()
     {
-        while (__atomic_exchange_n(&HeapLock, 1, __ATOMIC_ACQUIRE))
-            asm volatile("pause");
+        LockAcquire(&HeapLock);
     }
 
     void Unlock()
     {
-        __atomic_store_n(&HeapLock, 0, __ATOMIC_RELEASE);
+        LockRelease(&HeapLock);
     }
 
     char* End(Block* B)
@@ -130,6 +127,11 @@ namespace
         }
         return nullptr;
     }
+}
+
+SfStatus MemoryInit()
+{
+    return LockInit(&HeapLock);
 }
 
 SfStatus MemoryAllocatePages(SfMemory*, uint64_t Count, void** Address)
