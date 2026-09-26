@@ -1,9 +1,12 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
-// SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime and SfProcess -
-// that Console->Print works, pages and the heap, the clock and sleeping,
-// and the command line. Files are sfstest's.
+// SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime, SfProcess and
+// SfThread - that Console->Print works, pages and the heap, the clock and
+// sleeping, the command line and threads. Files are sfstest's.
+//
+// It leaves one thread asleep for good when SfMain returns: ending the
+// program has to end that thread too.
 //
 // Run as `sdkcheck <file> <word>`, with a file that does not exist yet
 // and a word that is no file, it also checks the argN: roots. The exit status is the
@@ -149,6 +152,107 @@ static void CheckArgs(SfApp* App, SfProcess* Process, SfFiles* Files)
           Files->Open(Files, "arg2:", SF_FILE_READ, &Out) == SF_NOT_FOUND);
 }
 
+// --- Threads -------------------------------------------------------------
+
+static SfSystem* System;
+
+struct Worker
+{
+    uint64_t Index;
+    uint64_t Sum;
+    bool     HeapOk;
+};
+
+// Adds up 1..200000 and churns the heap meanwhile, alongside the others.
+static SfStatus WorkerEntry(void* Arg)
+{
+    Worker*   W   = (Worker*)Arg;
+    SfMemory* Mem = System->Memory;
+    W->HeapOk = true;
+    for (uint64_t i = 1; i <= 200000; i++)
+    {
+        W->Sum += i;
+        if (i % 1000 == 0)
+        {
+            uint8_t* Block = nullptr;
+            uint64_t Size  = 16 + (i / 1000) * 8 + W->Index;
+            if (SF_ERROR(Mem->Allocate(Mem, Size, (void**)&Block)))
+                W->HeapOk = false;
+            else
+            {
+                for (uint64_t j = 0; j < Size; j++)
+                    Block[j] = (uint8_t)W->Index;
+                for (uint64_t j = 0; j < Size; j++)
+                    W->HeapOk = W->HeapOk && Block[j] == (uint8_t)W->Index;
+                Mem->Free(Mem, Block);
+            }
+        }
+    }
+    return W->Index;                    // the thread's SfStatus
+}
+
+static SfStatus ExitEntry(void*)
+{
+    System->Thread->Exit(System->Thread, SF_ERROR_BIT | 77);
+    return SF_SUCCESS;                  // never reached
+}
+
+static SfStatus SleepEntry(void* Arg)
+{
+    System->Time->Sleep(System->Time, (uint64_t)Arg);
+    return SF_SUCCESS;
+}
+
+static void CheckThreads(SfThread* Thread)
+{
+    Worker   Workers[4] = {};
+    uint64_t Ids[4]     = {};
+    bool Ok = true;
+    for (uint64_t i = 0; i < 4; i++)
+    {
+        Workers[i].Index = i + 1;
+        Ok = Ok && Thread->Create(Thread, WorkerEntry, &Workers[i], &Ids[i]) == SF_SUCCESS;
+    }
+    Check("Create starts 4 threads", Ok);
+
+    bool Statuses = true, Sums = true, Heap = true;
+    for (uint64_t i = 0; i < 4; i++)
+    {
+        SfStatus Status = SF_ABORTED;
+        Statuses = Statuses && Thread->Join(Thread, Ids[i], &Status) == SF_SUCCESS &&
+                   Status == i + 1;
+        Sums = Sums && Workers[i].Sum == 200000ULL * 200001ULL / 2;
+        Heap = Heap && Workers[i].HeapOk;
+    }
+    Check("Join returns what each thread's function returned", Statuses);
+    Check("... each thread did its own work", Sums);
+    Check("... and the heap stayed whole with all 4 using it", Heap);
+    Check("an Id is used up by Join: again is SF_BAD_HANDLE",
+          Thread->Join(Thread, Ids[0], nullptr) == SF_BAD_HANDLE);
+    Check("an Id that is no thread is SF_BAD_HANDLE",
+          Thread->Join(Thread, 60, nullptr) == SF_BAD_HANDLE);
+
+    uint64_t Id = 0;
+    SfStatus Status = SF_SUCCESS;
+    Check("Exit ends a thread with its status",
+          Thread->Create(Thread, ExitEntry, nullptr, &Id) == SF_SUCCESS &&
+          Thread->Join(Thread, Id, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 77));
+
+    // Three threads asleep for 300 ms at the same time take 300 ms, not 900.
+    SfTime*  Time = System->Time;
+    uint64_t Before = 0, After = 0;
+    uint64_t Sleepers[3] = {};
+    Time->GetUptime(Time, &Before);
+    Ok = true;
+    for (int i = 0; i < 3; i++)
+        Ok = Ok && Thread->Create(Thread, SleepEntry, (void*)300, &Sleepers[i]) == SF_SUCCESS;
+    for (int i = 0; i < 3; i++)
+        Ok = Ok && Thread->Join(Thread, Sleepers[i], nullptr) == SF_SUCCESS;
+    Time->GetUptime(Time, &After);
+    Check("three threads sleep side by side (300..500 ms for all)",
+          Ok && After - Before >= 300 && After - Before <= 500);
+}
+
 static void CheckMemory(SfMemory* Memory)
 {
     // Pages: zeroed, writable, given back.
@@ -260,6 +364,19 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Check("SfFiles: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&
           HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, sizeof(SfFiles)));
+
+    Check("SfThread: signature, revision 1.x, size",
+          SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread &&
+          HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, sizeof(SfThread)));
+    System = Sys;
+    if (SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread)
+    {
+        CheckThreads(Sys->Thread);
+
+        // Left asleep for good: returning from SfMain ends it.
+        uint64_t Id = 0;
+        Sys->Thread->Create(Sys->Thread, SleepEntry, (void*)1000000000ULL, &Id);
+    }
 
     Print("sdkcheck: ");
     PrintNumber(Passed);

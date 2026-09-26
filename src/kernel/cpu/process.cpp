@@ -50,8 +50,9 @@ namespace process
     // -----------------------------------------------------------------------
 
     // A process: a running program - its address space, handles, roots,
-    // signals and place in the process tree. What runs is its thread (one
-    // per process for now): the scheduler picks threads.
+    // signals and place in the process tree. What runs are its threads: the
+    // one it starts with and those it creates (SfThread). The scheduler
+    // picks threads.
     //
     // Process state: Live (its thread runs or sleeps), Stopped (job control:
     // its thread is not picked until SIGCONT), Zombie (exited, the parent
@@ -61,12 +62,24 @@ namespace process
     enum class TState : uint8_t { Unused, Runnable, Blocked };
 
     struct proc_obj;
+    struct thread_obj;
     struct Process;
 
     struct Thread
     {
         TState      state;
         Process*    proc;           // null in an unused slot
+
+        // What a handle to the thread refers to (its exit status for
+        // Join); the thread holds one reference until it ends. Null for
+        // the thread a process starts with: nobody can join that one.
+        thread_obj* obj;
+
+        // The user stack of a created thread (the kernel's to free), in
+        // pages from stack_base; 0 for the first thread, whose stack is the
+        // process's.
+        uint64_t    stack_base;
+        uint64_t    stack_pages;
 
         // Blocked: the queue slept on (null once woken), the next sleeper
         // on it, whether wake_up ended the sleep, and the deadline tick (0
@@ -100,7 +113,6 @@ namespace process
     struct Process
     {
         State       state;
-        Thread*     thread;         // its one thread; null once it exited
         pid_t       pid;
         pid_t       ppid;           // 0: started by the console, or an orphan
         pid_t       pgid;           // process group, for job control
@@ -243,6 +255,56 @@ namespace process
         p->obj = nullptr;
         kobj::put(&o->hdr);
     }
+    // -----------------------------------------------------------------------
+    // Thread objects
+    // -----------------------------------------------------------------------
+    //
+    // What a handle to a thread refers to: it outlives the thread, so Join
+    // can read the exit status after the thread has gone.
+
+    struct thread_obj
+    {
+        kobject    hdr;         // type Thread
+        bool       exited;
+        SfStatus   status;      // the thread's SfStatus once exited
+        wait_queue changed;     // woken on exit
+    };
+
+    static void thread_obj_destroy(kobject* o)
+    {
+        kfree(o);
+    }
+
+    // Waitable: signaled once the thread has ended.
+    static bool thread_obj_signaled(kobject* o)
+    {
+        return ((thread_obj*)o)->exited;
+    }
+
+    static wait_queue* thread_obj_waitq(kobject* o)
+    {
+        return &((thread_obj*)o)->changed;
+    }
+
+    static const kobject_ops thread_obj_ops =
+    {
+        obj_type::Thread, "thread", thread_obj_destroy,
+        thread_obj_signaled, thread_obj_waitq, nullptr,
+    };
+
+    // A new thread object; the caller holds its reference.
+    static thread_obj* thread_obj_new()
+    {
+        thread_obj* o = (thread_obj*)kmalloc(sizeof(thread_obj));
+        if (!o)
+            return nullptr;
+        kobj::init(&o->hdr, &thread_obj_ops);
+        o->exited = false;
+        o->status = SF_SUCCESS;
+        o->changed.head = nullptr;
+        return o;
+    }
+
     // The thread running now, and its process.
     static Thread*  cur_thread = nullptr;
     static Process* current   = nullptr;
@@ -339,21 +401,56 @@ namespace process
         return nullptr;
     }
 
-    // The thread is gone: off any queue, its slot free (the kernel stack
-    // stays with the slot).
     static void unlink_wait(Thread* t);
 
-    static void free_thread(Thread* t)
+    // The thread is gone: off any queue, its Join reports `status`, its
+    // slot is free (the kernel stack stays with the slot). Its user stack
+    // goes with the address space, or with end_created_thread.
+    static void free_thread(Thread* t, SfStatus status)
     {
         unlink_wait(t);
+        if (t->obj)
+        {
+            t->obj->exited = true;
+            t->obj->status = status;
+            wait::wake_up(&t->obj->changed);
+            kobj::put(&t->obj->hdr);
+            t->obj = nullptr;
+        }
         if (t == cur_thread)
             cur_thread = nullptr;
         t->state = TState::Unused;
         t->proc  = nullptr;
     }
 
-    // A new process with its thread, both slots taken but not started yet
-    // (state Unused until start()).
+    // End every thread of p (the process is going).
+    static void free_threads(Process* p, SfStatus status)
+    {
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+            if (threads[i].proc == p)
+                free_thread(&threads[i], status);
+    }
+
+    static uint32_t count_threads(const Process* p)
+    {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+            if (threads[i].proc == p && threads[i].state != TState::Unused)
+                n++;
+        return n;
+    }
+
+    // The thread a new process starts with (alloc_process made it).
+    static Thread* first_thread(Process* p)
+    {
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+            if (threads[i].proc == p)
+                return &threads[i];
+        return nullptr;
+    }
+
+    // A new process with its first thread, both slots taken but not
+    // started yet (state Unused until start()).
     static Process* alloc_process()
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
@@ -363,8 +460,8 @@ namespace process
 
             Process* p = &table[i];
             memory::memset((uint8_t*)p, 0x00, sizeof(Process));
-            p->thread = alloc_thread(p);
-            if (!p->thread)
+            Thread* t = alloc_thread(p);
+            if (!t)
                 return nullptr;         // slot stays Unused
             p->pid = next_pid++;
             if (next_pid <= 0)
@@ -373,8 +470,7 @@ namespace process
             p->obj = proc_obj_new(p->pid);
             if (!p->obj)
             {
-                free_thread(p->thread);
-                p->thread = nullptr;
+                free_thread(t, SF_ABORTED);
                 return nullptr;         // slot stays Unused
             }
             sig::init(&p->sig);
@@ -440,18 +536,17 @@ namespace process
             p->cwd = nullptr;
         }
         drop_roots(p);
-        if (p->thread)
-            free_thread(p->thread);
-        p->thread = nullptr;
+        free_threads(p, SF_ABORTED);
         p->state = State::Unused;
         p->pid = 0;
     }
 
-    // Start a process alloc_process made: its thread becomes runnable.
+    // Start a process alloc_process made: its first thread becomes
+    // runnable.
     static void start(Process* p)
     {
         p->state = State::Live;
-        p->thread->state = TState::Runnable;
+        first_thread(p)->state = TState::Runnable;
     }
 
     // A process that still exists and can be signalled. A stopped process
@@ -889,7 +984,7 @@ namespace process
         return 0;
     }
 
-    static void adopt_image(Process* p, const Image* img, const char* path)
+    static void adopt_image(Process* p, Thread* t, const Image* img, const char* path)
     {
         p->cr3         = img->cr3;
         p->brk_start   = img->image_end;
@@ -902,9 +997,9 @@ namespace process
         p->args_size = img->args_size;
         p->argc      = img->argc;
         // SdkStart(SfMain): see abi/sdkimage.h.
-        initial_context(&p->thread->ctx, img->sdk_start, img->rsp);
-        p->thread->ctx.regs.rdi = img->entry;
-        copy_bytes(p->thread->fpu, fpu_template, sizeof(p->thread->fpu));
+        initial_context(&t->ctx, img->sdk_start, img->rsp);
+        t->ctx.regs.rdi = img->entry;
+        copy_bytes(t->fpu, fpu_template, sizeof(t->fpu));
     }
 
     // -----------------------------------------------------------------------
@@ -951,10 +1046,8 @@ namespace process
     // the console, an orphan nothing.
     static void terminate(Process* p, int status)
     {
-        // Its thread ends first: nothing of the process runs after this.
-        if (p->thread)
-            free_thread(p->thread);
-        p->thread = nullptr;
+        // Its threads end first: nothing of the process runs after this.
+        free_threads(p, SF_ABORTED);
 
         if (p->cr3)
         {
@@ -1260,11 +1353,11 @@ namespace process
         // An interrupted syscall: with SA_RESTART the context saved in the
         // frame re-executes it after the handler returns; without, it fails
         // with EINTR (already in rax).
-        if (p->thread->restart_pending)
+        if (cur_thread->restart_pending)
         {
             if (act.flags & SA_RESTART)
-                restart_syscall(p->thread, regs, iret);
-            p->thread->restart_pending = false;
+                restart_syscall(cur_thread, regs, iret);
+            cur_thread->restart_pending = false;
         }
 
         cpu_context ctx;
@@ -1526,10 +1619,10 @@ namespace process
             vfs::unref(p->cwd);
             p->cwd = nullptr;
         }
-        copy_bytes(p->thread->fpu, fpu_template, sizeof(p->thread->fpu));
+        Thread* t = first_thread(p);
+        copy_bytes(t->fpu, fpu_template, sizeof(t->fpu));
 
-        task::prepare_kernel(&p->thread->task, "console", kstack_top(p->thread), entry,
-                             nullptr);
+        task::prepare_kernel(&t->task, "console", kstack_top(t), entry, nullptr);
         start(p);
         console_proc = p;
     }
@@ -1600,7 +1693,7 @@ namespace process
             kfree(img.args);
             return nullptr;
         }
-        adopt_image(p, &img, path);
+        adopt_image(p, first_thread(p), &img, path);
 
         vnode* data = nullptr;
         vnode* tmp  = nullptr;
@@ -1737,7 +1830,7 @@ namespace process
 
         p->ppid = 0;
         open_std_fds(p);
-        Thread* t = p->thread;
+        Thread* t = first_thread(p);
         task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
         uint64_t entry = t->ctx.iret.rip;
         start(p);
@@ -1984,7 +2077,8 @@ namespace process
         reschedule(regs, iret);
     }
 
-    // No threads yet: exit_group terminates exactly the calling process.
+    // exit and exit_group both end the whole process (the old ABI has no
+    // threads of its own).
     void sys_exit_group(user_regs* regs, iret_frame* iret)
     {
         sys_exit(regs, iret);
@@ -2116,12 +2210,12 @@ namespace process
         // Handlers and the blocked mask carry over; pending signals do not
         // (POSIX: the child starts with an empty pending set).
         sig::inherit(&child->sig, &current->sig);
-        child->thread->restart_pending = false;
+        first_thread(child)->restart_pending = false;
         child->mask_saved      = false;
 
         // The child resumes from the same instruction with rax = 0, on its
         // own kernel stack.
-        Thread* ct = child->thread;
+        Thread* ct = first_thread(child);
         ct->ctx.regs = *regs;
         ct->ctx.iret = *iret;
         ct->ctx.regs.rax = 0;
@@ -2241,7 +2335,7 @@ namespace process
         paging::switch_address_space(img.cr3);
         paging::destroy_address_space(old);
 
-        adopt_image(current, &img, path);   // copies the name it needs
+        adopt_image(current, cur_thread, &img, path);   // copies the name it needs
         kfree(path);
 
         // execve keeps the fd table except CLOEXEC slots, and keeps cwd and
@@ -2950,6 +3044,124 @@ namespace process
             return;
         }
         release_range(addr, pages);
+        regs->rax = SF_SUCCESS;
+    }
+
+    // -----------------------------------------------------------------------
+    // Threads (SfThread)
+    // -----------------------------------------------------------------------
+
+    // SFCALL_THREAD_CREATE (Entry, Arg, *Handle): a new thread of the
+    // calling process. It starts in the SDK runtime (SdkHeader.ThreadStart,
+    // which calls Entry(Arg)) on a stack of its own, and *Handle refers to
+    // it for Join.
+    void sf_thread_create(user_regs* regs, iret_frame*)
+    {
+        uint64_t entry = regs->rdi;
+        uint64_t arg   = regs->rsi;
+        uint64_t start = sdkpage::thread_start();
+        if (!entry || !start)
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+
+        Thread* t = alloc_thread(current);
+        if (!t)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        const uint64_t pages = THREAD_STACK_SIZE / PAGE_SIZE_4K;
+        t->obj = thread_obj_new();
+        uint64_t base = t->obj ? find_free_range(current, pages) : 0;
+        if (!base || !map_user_region(base, THREAD_STACK_SIZE, PAGE_WRITE | PAGE_NX))
+        {
+            if (base)
+                release_range(base, pages);
+            free_thread(t, SF_ABORTED);
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        current->mmap_cursor = base + THREAD_STACK_SIZE;
+        if (current->mmap_cursor >= USER_MMAP_LIMIT)
+            current->mmap_cursor = USER_MMAP_BASE;
+        t->stack_base  = base;
+        t->stack_pages = pages;
+
+        sint32_t h = -1;
+        if (handles::install(&current->handles, &t->obj->hdr, 0, 0, &h) != 0)
+        {
+            release_range(base, pages);
+            free_thread(t, SF_ABORTED);
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        uint64_t handle = (uint64_t)h;
+        if (!uaccess::copy_to_user(regs->rdx, &handle, sizeof(handle)))
+        {
+            handles::close(&current->handles, h);
+            release_range(base, pages);
+            free_thread(t, SF_ABORTED);
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+
+        // SdkThreadStart(Entry, Arg), the stack as right after a call.
+        initial_context(&t->ctx, start, base + THREAD_STACK_SIZE - 8);
+        t->ctx.regs.rdi = entry;
+        t->ctx.regs.rsi = arg;
+        copy_bytes(t->fpu, fpu_template, sizeof(t->fpu));
+        task::prepare_user(&t->task, current->name, kstack_top(t), &t->ctx);
+        t->state = TState::Runnable;
+        regs->rax = SF_SUCCESS;
+    }
+
+    // SFCALL_THREAD_EXIT (SfStatus): the calling thread ends with that
+    // status. The last thread of a process ends the process with it.
+    void sf_thread_exit(user_regs* regs, iret_frame* iret)
+    {
+        if (count_threads(current) <= 1)
+        {
+            sf_exit(regs, iret);
+            return;
+        }
+        Thread* t = cur_thread;
+        if (t->stack_base)
+            release_range(t->stack_base, t->stack_pages);
+        free_thread(t, regs->rdi);
+        reschedule(regs, iret);
+    }
+
+    // SFCALL_THREAD_JOIN (Handle, *Status): sleep until the thread has
+    // ended, store its SfStatus and close the handle.
+    void sf_thread_join(user_regs* regs, iret_frame*)
+    {
+        sint64_t rc = 0;
+        sint32_t h  = regs->rdi < HANDLE_TABLE_SIZE ? (sint32_t)regs->rdi : -1;
+        kobject* o  = handles::get(&current->handles, h, obj_type::Thread, &rc);
+        if (!o)
+        {
+            regs->rax = SF_BAD_HANDLE;
+            return;
+        }
+
+        // Our own reference: another thread may close the handle meanwhile.
+        kobj::get(o);
+        rc = objects::wait(o, 0);
+        SfStatus status = ((thread_obj*)o)->status;
+        kobj::put(o);
+        if (rc != 0)
+        {
+            regs->rax = rc == -EINTR ? SF_ABORTED : SF_BAD_HANDLE;
+            return;
+        }
+        if (regs->rsi && !uaccess::copy_to_user(regs->rsi, &status, sizeof(status)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        handles::close(&current->handles, h);
         regs->rax = SF_SUCCESS;
     }
 

@@ -30,6 +30,10 @@ namespace sdkpage
     bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,
                  uint64_t* start);
 
+    // Where a created thread starts (SdkHeader.ThreadStart), 0 when the
+    // runtime is unusable.
+    uint64_t thread_start();
+
     // SFCALL_CONSOLE_PRINT (Text): write a NUL-terminated string to the
     // console.
     void console_print(user_regs* regs, iret_frame* iret);

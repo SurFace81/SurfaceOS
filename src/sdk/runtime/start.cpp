@@ -11,11 +11,15 @@ typedef SfStatus (*SfMainFunction)(SfApp* App, SfSystem* Sys);
 // becomes the exit status.
 extern "C" __attribute__((noreturn)) void SdkStart(SfMainFunction Main);
 
+// A created thread starts here (SfThread Create); Entry's SfStatus ends it.
+extern "C" __attribute__((noreturn)) void SdkThreadStart(SfThreadEntry Entry, void* Arg);
+
 extern "C" __attribute__((section(".sdk_header"), used))
 const SdkHeader SdkImageHeader =
 {
     SDK_HEADER_MAGIC,
     (uint64_t)&SdkStart,
+    (uint64_t)&SdkThreadStart,
     (uint64_t)SdkStateStart,
     (uint64_t)SdkStateEnd,
 };
@@ -63,6 +67,29 @@ static SfStatus ProcessGetArgs(SfProcess*, uint64_t Id, char* Buffer, uint64_t* 
                   (uint64_t)Count);
 }
 
+// --- Threads -----------------------------------------------------------------
+
+static SfStatus ThreadCreate(SfThread*, SfThreadEntry Entry, void* Arg, uint64_t* Id)
+{
+    return SfCall(SFCALL_THREAD_CREATE, (uint64_t)Entry, (uint64_t)Arg, (uint64_t)Id);
+}
+
+static SfStatus ThreadExit(SfThread*, SfStatus Status)
+{
+    return SfCall(SFCALL_THREAD_EXIT, Status);
+}
+
+static SfStatus ThreadJoin(SfThread*, uint64_t Id, SfStatus* Status)
+{
+    return SfCall(SFCALL_THREAD_JOIN, Id, (uint64_t)Status);
+}
+
+extern "C" void SdkThreadStart(SfThreadEntry Entry, void* Arg)
+{
+    SfCall(SFCALL_THREAD_EXIT, Entry(Arg));
+    __builtin_unreachable();            // SFCALL_THREAD_EXIT does not return
+}
+
 // --- The tables --------------------------------------------------------------
 // Constant, apart from SfApp: they sit on the SDK's code pages, which the
 // program can only read.
@@ -105,6 +132,14 @@ static const SfProcess SdkProcess =
     ProcessGetArgs,
 };
 
+static const SfThread SdkThread =
+{
+    { SF_THREAD_SIGNATURE, SF_THREAD_REVISION, sizeof(SfThread) },
+    ThreadCreate,
+    ThreadExit,
+    ThreadJoin,
+};
+
 // Filled in by SdkStart from the start info.
 static SfApp SdkApp;
 
@@ -116,6 +151,7 @@ const SfSystem SdkSystem =
     (SfMemory*)&SdkMemory,
     (SfTime*)&SdkTime,
     (SfProcess*)&SdkProcess,
+    (SfThread*)&SdkThread,
 };
 
 extern "C" void SdkStart(SfMainFunction Main)

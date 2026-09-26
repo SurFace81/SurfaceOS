@@ -55,6 +55,9 @@ namespace sfcall
         set_handler(SFCALL_EXIT, process::sf_exit);
         set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);
         set_handler(SFCALL_CONSOLE_READLINE, sdkpage::console_readline);
+        set_handler(SFCALL_THREAD_CREATE, process::sf_thread_create);
+        set_handler(SFCALL_THREAD_EXIT, process::sf_thread_exit);
+        set_handler(SFCALL_THREAD_JOIN, process::sf_thread_join);
         set_handler(SFCALL_PROCESS_GET_ID, process::sf_get_id);
         set_handler(SFCALL_PROCESS_GET_ARGS, process::sf_get_args);
         set_handler(SFCALL_MEMORY_ALLOCATE_PAGES, process::sf_allocate_pages);

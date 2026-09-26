@@ -28,6 +28,7 @@ typedef struct SdkHeader
 {
     uint64_t Magic;
     uint64_t Start;         // void Start(SfMain)
+    uint64_t ThreadStart;   // void ThreadStart(Entry, Arg): a created thread
     uint64_t StateStart;    // SDK_STATE_ADDRESS
     uint64_t StateEnd;      // how much of it the runtime uses
 } SdkHeader;

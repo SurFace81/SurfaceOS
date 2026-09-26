@@ -7,7 +7,7 @@
 // and merges it with free neighbours. When no block fits, the heap grows
 // by at least HEAP_GROW_PAGES pages. Pages are never given back.
 //
-// One thread per process for now; the heap gets a lock with threads.
+// Threads share the heap: every change to it happens under HeapLock.
 
 #include "runtime.h"
 
@@ -29,6 +29,21 @@ namespace
     };
 
     Block* FreeList;        // in address order
+
+    // A plain spin lock until SfSync has a mutex: on one CPU a waiter spins
+    // out its time slice, then the holder runs on and lets go.
+    volatile uint32_t HeapLock;
+
+    void Lock()
+    {
+        while (__atomic_exchange_n(&HeapLock, 1, __ATOMIC_ACQUIRE))
+            asm volatile("pause");
+    }
+
+    void Unlock()
+    {
+        __atomic_store_n(&HeapLock, 0, __ATOMIC_RELEASE);
+    }
 
     char* End(Block* B)
     {
@@ -138,14 +153,19 @@ SfStatus MemoryAllocate(SfMemory*, uint64_t Size, void** Buffer)
     if (Need < MIN_BLOCK)
         Need = MIN_BLOCK;
 
+    Lock();
     Block* B = Take(Need);
     if (!B)
     {
         SfStatus Status = Grow(Need);
         if (SF_ERROR(Status))
+        {
+            Unlock();
             return Status;
+        }
         B = Take(Need);
     }
+    Unlock();
 
     void* Data = (char*)B + HEADER;
     memset(Data, 0, B->Size - HEADER);
@@ -158,9 +178,14 @@ SfStatus MemoryFree(SfMemory*, void* Buffer)
     if (!Buffer || ((uint64_t)Buffer & 15))
         return SF_INVALID_PARAMETER;
     Block* B = (Block*)((char*)Buffer - HEADER);
+    Lock();
     if (B->Tag != TAG_USED)
+    {
+        Unlock();
         return SF_INVALID_PARAMETER;    // not from Allocate, or freed already
+    }
     Release(B);
+    Unlock();
     return SF_SUCCESS;
 }
 

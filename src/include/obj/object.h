@@ -25,6 +25,7 @@ enum class obj_type : uint8_t
     File,           // open file description
     Process,
     Event,
+    Thread,
 };
 
 struct kobject;

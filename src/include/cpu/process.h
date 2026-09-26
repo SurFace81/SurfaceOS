@@ -45,7 +45,8 @@ struct vnode;
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
-#define MAX_THREADS         32      // one per process for now
+#define MAX_THREADS         64
+#define THREAD_STACK_SIZE   (256 * 1024)            // a created thread's user stack
 #define MAX_ROOTS           16      // data, tmp and argN of one process
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,10 @@ namespace process
     void sys_exit      (user_regs* regs, iret_frame* iret);
     // SFCALL_EXIT (SfStatus): the SurfaceOS ABI's exit.
     void sf_exit       (user_regs* regs, iret_frame* iret);
+    // SFCALL_THREAD_CREATE / EXIT / JOIN: SfStatus results.
+    void sf_thread_create(user_regs* regs, iret_frame* iret);
+    void sf_thread_exit(user_regs* regs, iret_frame* iret);
+    void sf_thread_join(user_regs* regs, iret_frame* iret);
     // SFCALL_PROCESS_GET_ID / GET_ARGS: SfStatus results.
     void sf_get_id     (user_regs* regs, iret_frame* iret);
     void sf_get_args   (user_regs* regs, iret_frame* iret);

@@ -24,6 +24,7 @@ namespace
     uint64_t code_frames[CODE_PAGES_MAX];
     uint64_t code_pages  = 0;
     uint64_t start       = 0;       // SdkHeader.Start
+    uint64_t thread      = 0;       // SdkHeader.ThreadStart
     uint64_t state_pages = 0;
 
     // Map one zeroed page at vaddr; its kernel (direct-map) address, or
@@ -73,9 +74,15 @@ namespace sdkpage
         }
         code_pages  = pages;
         start       = h->Start;
+        thread      = h->ThreadStart;
         state_pages = (h->StateEnd - h->StateStart + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
         uart::printf("sdkpage: SDK runtime %u bytes, %u state pages\n",
                      (uint32_t)len, (uint32_t)state_pages);
+    }
+
+    uint64_t thread_start()
+    {
+        return thread;
     }
 
     bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,

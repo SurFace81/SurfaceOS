@@ -49,6 +49,9 @@
 #define SFCALL_TIME_SLEEP            15  // (uint64_t Milliseconds)
 #define SFCALL_PROCESS_GET_ID        16  // (uint64_t* Id)
 #define SFCALL_PROCESS_GET_ARGS      17  // (uint64_t Id, char* Buffer, uint64_t* Size, uint64_t* Count)
-#define SFCALL_COUNT                 18
+#define SFCALL_THREAD_CREATE         18  // (SfThreadEntry Entry, void* Arg, uint64_t* Id)
+#define SFCALL_THREAD_EXIT           19  // (SfStatus) - does not return
+#define SFCALL_THREAD_JOIN           20  // (uint64_t Id, SfStatus* Status)
+#define SFCALL_COUNT                 21
 
 #endif // ABI_SFCALL_H
