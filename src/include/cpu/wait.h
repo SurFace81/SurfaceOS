@@ -3,24 +3,24 @@
 
 #include "types.h"
 
-// Wait queues: a process sleeps inside the kernel, on its own kernel stack,
+// Wait queues: a thread sleeps inside the kernel, on its own kernel stack,
 // until something wakes it, and then carries on from the call.
 //
-//   sleep_on(q)           the current process sleeps until wake_up(q);
+//   sleep_on(q)           the current thread sleeps until wake_up(q);
 //   wake_up(q)            every sleeper on q becomes runnable (IRQ-safe);
-//   sleep_until(t)        the current process sleeps until pit::ticks() >= t;
+//   sleep_until(t)        the current thread sleeps until pit::ticks() >= t;
 //   wait_event(q, c, a, t) sleeps on q until c(a) holds (or tick t passes).
 //
 // A deliverable signal also ends a sleep: the call then returns false and
 // the caller decides between EINTR and restarting (for a syscall:
-// process::syscall_interrupted). Only processes sleep for now; the queue
-// links them through the process table (process.cpp).
+// process::syscall_interrupted). The queue links its threads through the
+// thread table (process.cpp).
 
-namespace process { struct Process; }
+namespace process { struct Thread; }
 
 struct wait_queue
 {
-    process::Process* head = nullptr;
+    process::Thread* head = nullptr;
 };
 
 namespace wait

@@ -49,27 +49,63 @@ namespace process
     // Process table
     // -----------------------------------------------------------------------
 
-    enum class State : uint8_t { Unused, Runnable, Blocked, Stopped, Zombie };
-    enum class Wait  : uint8_t { None, Queue };
+    // A process: a running program - its address space, handles, roots,
+    // signals and place in the process tree. What runs is its thread (one
+    // per process for now): the scheduler picks threads.
+    //
+    // Process state: Live (its thread runs or sleeps), Stopped (job control:
+    // its thread is not picked until SIGCONT), Zombie (exited, the parent
+    // has not reaped it yet). Thread state: Runnable or Blocked (asleep on a
+    // wait queue).
+    enum class State  : uint8_t { Unused, Live, Stopped, Zombie };
+    enum class TState : uint8_t { Unused, Runnable, Blocked };
 
     struct proc_obj;
+    struct Process;
+
+    struct Thread
+    {
+        TState      state;
+        Process*    proc;           // null in an unused slot
+
+        // Blocked: the queue slept on (null once woken), the next sleeper
+        // on it, whether wake_up ended the sleep, and the deadline tick (0
+        // for none).
+        wait_queue* wq;
+        Thread*     wq_next;
+        bool        woken;
+        uint64_t    wake_tick;
+
+        // The call running now. restart_pending: a signal ended a sleep
+        // inside it before it had a result (syscall_interrupted). On the way
+        // back to ring 3 the call is either restarted - RIP stepped back
+        // over `int 0x80`, rax = syscall_nr - or fails with EINTR.
+        uint64_t    syscall_nr;
+        bool        restart_pending;
+
+        // User state a fresh image or a fork child starts from. Once the
+        // thread runs, its live user state is the trap frame on its own
+        // kernel stack, not this.
+        cpu_context ctx;
+        uint8_t     fpu[512] __attribute__((aligned(16)));   // FXSAVE area
+        // Kernel stack for traps taken while this thread runs (TSS RSP0),
+        // and the task that runs on it. Owned by the table *slot*, not by
+        // the thread: terminate() can free a thread while running on this
+        // very stack, so it is released later, from another task
+        // (reclaim_kernel_stacks).
+        uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
+        Task        task;
+    };
 
     struct Process
     {
         State       state;
-        Wait        wait;
+        Thread*     thread;         // its one thread; null once it exited
         pid_t       pid;
         pid_t       ppid;           // 0: started by the console, or an orphan
         pid_t       pgid;           // process group, for job control
         pid_t       wait_pid;       // wait4 sleeping: which child (<= 0: any)
         uint64_t    wait_opts;      // wait4 sleeping: WUNTRACED/WCONTINUED/...
-        uint64_t    wake_tick;      // Wait::Queue: deadline tick, 0 for none
-
-        // Wait::Queue: the queue slept on (null once woken), the next
-        // sleeper on it, and whether wake_up ended the sleep.
-        wait_queue* wq;
-        Process*    wq_next;
-        bool        woken;
 
         // wait4 sleeps here; notify_parent wakes it on every child event.
         wait_queue  child_wq;
@@ -85,13 +121,8 @@ namespace process
         bool        stop_pending;   // a stop the parent has not seen yet
         bool        cont_pending;   // ditto for a resume
 
-        // Signals. restart_pending: a signal ended a sleep inside syscall
-        // `syscall_nr` before it had a result (syscall_interrupted). On the
-        // way back to ring 3 the call is either restarted - RIP stepped back
-        // over `int 0x80`, rax = syscall_nr - or fails with EINTR.
+        // Signals.
         sig::signal_state sig;
-        uint64_t    syscall_nr;     // of the syscall running now
-        bool        restart_pending;
         bool        mask_saved;     // sigsuspend: restore this on sigreturn
         sigset_t    saved_mask;
 
@@ -101,19 +132,6 @@ namespace process
         uint64_t    brk_start;      // end of the ELF image
         uint64_t    brk;            // current program break
         uint64_t    mmap_cursor;    // where the next mmap search starts
-
-        // User state a fresh image or a fork child starts from. Once the
-        // process runs, its live user state is the trap frame on its own
-        // kernel stack, not this.
-        cpu_context ctx;
-        uint8_t     fpu[512] __attribute__((aligned(16)));   // FXSAVE area
-        // Kernel stack for traps taken while this process runs (TSS RSP0),
-        // and the task that runs on it. Owned by the table *slot*, not by
-        // the process: terminate() can free a process while running on this
-        // very stack, so it is released later, from another task
-        // (reclaim_kernel_stacks).
-        uint64_t    kstack;     // base (direct-map virtual), 0 when the slot has none
-        Task        task;
 
         // Kernel objects the process holds, by handle. A file descriptor is a
         // handle holding a File.
@@ -146,6 +164,7 @@ namespace process
     };
 
     static Process  table[MAX_PROCESSES];
+    static Thread   threads[MAX_THREADS];
 
     // -----------------------------------------------------------------------
     // Process objects
@@ -224,6 +243,8 @@ namespace process
         p->obj = nullptr;
         kobj::put(&o->hdr);
     }
+    // The thread running now, and its process.
+    static Thread*  cur_thread = nullptr;
     static Process* current   = nullptr;
     static uint32_t last_slot = 0;
     static pid_t    next_pid  = 1;
@@ -252,23 +273,23 @@ namespace process
         return v;
     }
 
-    static inline uint64_t kstack_top(const Process* p)
+    static inline uint64_t kstack_top(const Thread* t)
     {
-        return p->kstack + KERNEL_STACK_SIZE;
+        return t->kstack + KERNEL_STACK_SIZE;
     }
 
-    // Hand the kernel stacks of empty slots back. A process that exits
+    // Hand the kernel stacks of empty thread slots back. A thread that ends
     // frees its slot while still running on that stack, so a stack can only
     // go once some other task runs - the caller's own is never touched.
     static void reclaim_kernel_stacks()
     {
-        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
         {
-            Process* p = &table[i];
-            if (p->state != State::Unused || !p->kstack || &p->task == task::current())
+            Thread* t = &threads[i];
+            if (t->state != TState::Unused || !t->kstack || &t->task == task::current())
                 continue;
-            pmm::free_frames(virt_to_phys((void*)p->kstack), KERNEL_STACK_FRAMES);
-            p->kstack = 0;
+            pmm::free_frames(virt_to_phys((void*)t->kstack), KERNEL_STACK_FRAMES);
+            t->kstack = 0;
         }
     }
 
@@ -291,6 +312,48 @@ namespace process
         dst[i] = '\0';
     }
 
+    // A free thread slot with a kernel stack, cleared, for process p; its
+    // state stays Unused until the process starts. nullptr: none, or no
+    // memory for the stack.
+    static Thread* alloc_thread(Process* p)
+    {
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+        {
+            Thread* t = &threads[i];
+            if (t->state != TState::Unused || t->proc)
+                continue;
+
+            uint64_t ks = t->kstack;    // belongs to the slot; survives reuse
+            memory::memset((uint8_t*)t, 0x00, sizeof(Thread));
+            t->kstack = ks;
+            if (!t->kstack)
+            {
+                uint64_t frames = pmm::alloc_frames(KERNEL_STACK_FRAMES);
+                if (!frames)
+                    return nullptr;
+                t->kstack = (uint64_t)phys_to_virt(frames);
+            }
+            t->proc = p;
+            return t;
+        }
+        return nullptr;
+    }
+
+    // The thread is gone: off any queue, its slot free (the kernel stack
+    // stays with the slot).
+    static void unlink_wait(Thread* t);
+
+    static void free_thread(Thread* t)
+    {
+        unlink_wait(t);
+        if (t == cur_thread)
+            cur_thread = nullptr;
+        t->state = TState::Unused;
+        t->proc  = nullptr;
+    }
+
+    // A new process with its thread, both slots taken but not started yet
+    // (state Unused until start()).
     static Process* alloc_process()
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
@@ -299,23 +362,21 @@ namespace process
                 continue;
 
             Process* p = &table[i];
-            uint64_t ks = p->kstack;    // belongs to the slot; survives reuse
             memory::memset((uint8_t*)p, 0x00, sizeof(Process));
-            p->kstack = ks;
-            if (!p->kstack)
-            {
-                uint64_t frames = pmm::alloc_frames(KERNEL_STACK_FRAMES);
-                if (!frames)
-                    return nullptr;     // slot stays Unused
-                p->kstack = (uint64_t)phys_to_virt(frames);
-            }
+            p->thread = alloc_thread(p);
+            if (!p->thread)
+                return nullptr;         // slot stays Unused
             p->pid = next_pid++;
             if (next_pid <= 0)
                 next_pid = 1;
             p->pgid = p->pid;           // its own group until setpgid says otherwise
             p->obj = proc_obj_new(p->pid);
             if (!p->obj)
+            {
+                free_thread(p->thread);
+                p->thread = nullptr;
                 return nullptr;         // slot stays Unused
+            }
             sig::init(&p->sig);
 
             handles::init(&p->handles);
@@ -379,16 +440,25 @@ namespace process
             p->cwd = nullptr;
         }
         drop_roots(p);
+        if (p->thread)
+            free_thread(p->thread);
+        p->thread = nullptr;
         p->state = State::Unused;
         p->pid = 0;
+    }
+
+    // Start a process alloc_process made: its thread becomes runnable.
+    static void start(Process* p)
+    {
+        p->state = State::Live;
+        p->thread->state = TState::Runnable;
     }
 
     // A process that still exists and can be signalled. A stopped process
     // counts: SIGCONT is the whole point of it being there.
     static inline bool alive(const Process* p)
     {
-        return p->state == State::Runnable || p->state == State::Blocked ||
-               p->state == State::Stopped;
+        return p->state == State::Live || p->state == State::Stopped;
     }
 
     static Process* find_live(pid_t pid)
@@ -422,31 +492,34 @@ namespace process
     static void fpu_save(uint8_t* area)    { asm volatile("fxsave (%0)"  :: "r"(area) : "memory"); }
     static void fpu_restore(uint8_t* area) { asm volatile("fxrstor (%0)" :: "r"(area) : "memory"); }
 
-    // Leave the running process (if there still is one): its FPU state is
+    // Leave the running thread (if there still is one): its FPU state is
     // the live one until now.
     static void leave_current()
     {
-        if (current)
-            fpu_save(current->fpu);
+        if (cur_thread)
+            fpu_save(cur_thread->fpu);
     }
 
-    // Run `p`: its address space, FPU state and kernel stack become live and
-    // its task resumes - inside its own trap handler, or at its first entry
-    // to ring 3. Returns when the calling task is switched back to.
-    static void switch_process(Process* p)
+    // Run thread `t`: its process's address space, its FPU state and kernel
+    // stack become live and its task resumes - inside its own trap handler,
+    // or at its first entry to ring 3. Returns when the calling task is
+    // switched back to.
+    static void switch_thread(Thread* t)
     {
         leave_current();
-        current = p;
-        tss::set_kernel_stack(kstack_top(p));
-        paging::switch_address_space(p->cr3);
-        fpu_restore(p->fpu);
-        task::switch_to(&p->task);
+        cur_thread = t;
+        current = t->proc;
+        tss::set_kernel_stack(kstack_top(t));
+        paging::switch_address_space(t->proc->cr3);
+        fpu_restore(t->fpu);
+        task::switch_to(&t->task);
     }
 
-    // Run a kernel task (idle, console): no process is current meanwhile.
+    // Run a kernel task (idle): no thread is current meanwhile.
     static void switch_kernel_task(Task* t)
     {
         leave_current();
+        cur_thread = nullptr;
         current = nullptr;
         paging::switch_address_space(paging::kernel_pml4());
         task::switch_to(t);
@@ -829,9 +902,9 @@ namespace process
         p->args_size = img->args_size;
         p->argc      = img->argc;
         // SdkStart(SfMain): see abi/sdkimage.h.
-        initial_context(&p->ctx, img->sdk_start, img->rsp);
-        p->ctx.regs.rdi = img->entry;
-        copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
+        initial_context(&p->thread->ctx, img->sdk_start, img->rsp);
+        p->thread->ctx.regs.rdi = img->entry;
+        copy_bytes(p->thread->fpu, fpu_template, sizeof(p->thread->fpu));
     }
 
     // -----------------------------------------------------------------------
@@ -856,19 +929,19 @@ namespace process
         asm volatile("push %0; popfq" :: "r"(f) : "memory", "cc");
     }
 
-    // Take p off the queue it sleeps on, if any.
-    static void unlink_wait(Process* p)
+    // Take t off the queue it sleeps on, if any.
+    static void unlink_wait(Thread* t)
     {
         uint64_t f = irq_save();
-        if (p->wq)
+        if (t->wq)
         {
-            Process** link = &p->wq->head;
-            while (*link && *link != p)
+            Thread** link = &t->wq->head;
+            while (*link && *link != t)
                 link = &(*link)->wq_next;
             if (*link)
-                *link = p->wq_next;
-            p->wq = nullptr;
-            p->wq_next = nullptr;
+                *link = t->wq_next;
+            t->wq = nullptr;
+            t->wq_next = nullptr;
         }
         irq_restore(f);
     }
@@ -878,7 +951,10 @@ namespace process
     // the console, an orphan nothing.
     static void terminate(Process* p, int status)
     {
-        unlink_wait(p);
+        // Its thread ends first: nothing of the process runs after this.
+        if (p->thread)
+            free_thread(p->thread);
+        p->thread = nullptr;
 
         if (p->cr3)
         {
@@ -923,7 +999,6 @@ namespace process
         else
         {
             p->state = State::Zombie;
-            p->wait = Wait::None;
             p->exit_status = status;
             notify_parent(p);
         }
@@ -963,39 +1038,33 @@ namespace process
         return !has_child;     // nothing left to wait for: let waitpid fail
     }
 
-    static bool wake_ready(Process* p)
+    static bool wake_ready(Thread* t)
     {
         // A deliverable signal ends any wait: this is what makes a blocking
         // read interruptible, and what lets a handler run at all while the
         // process sits in read() or wait().
-        if (sig::next_deliverable(&p->sig))
-            return true;
-
-        switch (p->wait)
-        {
-            case Wait::Queue:  return p->woken ||
-                                      (p->wake_tick && pit::ticks() >= p->wake_tick);
-            default:           return true;
-        }
+        return sig::next_deliverable(&t->proc->sig) || t->woken ||
+               (t->wake_tick && pit::ticks() >= t->wake_tick);
     }
 
-    static Process* pick_next()
+    // The next thread to run, round robin over the thread table; a thread
+    // of a stopped process is passed over. nullptr: none can run.
+    static Thread* pick_next()
     {
-        for (uint32_t i = 1; i <= MAX_PROCESSES; i++)
+        for (uint32_t i = 1; i <= MAX_THREADS; i++)
         {
-            uint32_t slot = (last_slot + i) % MAX_PROCESSES;
-            Process* p = &table[slot];
+            uint32_t slot = (last_slot + i) % MAX_THREADS;
+            Thread* t = &threads[slot];
+            if (t->state == TState::Unused || t->proc->state != State::Live)
+                continue;
 
-            if (p->state == State::Blocked && wake_ready(p))
-            {
-                p->state = State::Runnable;
-                p->wait = Wait::None;
-            }
+            if (t->state == TState::Blocked && wake_ready(t))
+                t->state = TState::Runnable;
 
-            if (p->state == State::Runnable)
+            if (t->state == TState::Runnable)
             {
                 last_slot = slot;
-                return p;
+                return t;
             }
         }
         return nullptr;
@@ -1061,8 +1130,7 @@ namespace process
             p->sig.pending &= ~STOP_SIGNALS;
             if (p->state == State::Stopped)
             {
-                p->state = State::Runnable;
-                p->wait  = Wait::None;
+                p->state = State::Live;
                 p->cont_pending = true;
                 notify_parent(p);
             }
@@ -1115,7 +1183,6 @@ namespace process
             wait::wake_up(&p->obj->changed);
         }
         p->state = State::Stopped;
-        p->wait  = Wait::None;
         p->stop_status  = stop_code(n);
         p->stop_pending = true;
         notify_parent(p);
@@ -1175,10 +1242,10 @@ namespace process
     // Make the return to ring 3 re-execute the syscall p was in: step back
     // over `int 0x80` with the syscall number in rax again (every other
     // argument register is still as the caller left it).
-    static void restart_syscall(Process* p, user_regs* regs, iret_frame* iret)
+    static void restart_syscall(Thread* t, user_regs* regs, iret_frame* iret)
     {
         iret->rip -= INT80_LENGTH;
-        regs->rax = p->syscall_nr;
+        regs->rax = t->syscall_nr;
     }
 
     // Build the handler frame on the user stack and point the trap frame at
@@ -1193,11 +1260,11 @@ namespace process
         // An interrupted syscall: with SA_RESTART the context saved in the
         // frame re-executes it after the handler returns; without, it fails
         // with EINTR (already in rax).
-        if (p->restart_pending)
+        if (p->thread->restart_pending)
         {
             if (act.flags & SA_RESTART)
-                restart_syscall(p, regs, iret);
-            p->restart_pending = false;
+                restart_syscall(p->thread, regs, iret);
+            p->thread->restart_pending = false;
         }
 
         cpu_context ctx;
@@ -1266,9 +1333,9 @@ namespace process
     }
 
     // The system-wide part of every scheduling decision: act on ^C and the
-    // kill key and on signals that need no user code, then pick a process
+    // kill key and on signals that need no user code, then pick a thread
     // that can run (nullptr: none).
-    static Process* choose_next()
+    static Thread* choose_next()
     {
         tty_signals();
         if (kill_requested)
@@ -1287,11 +1354,11 @@ namespace process
     // never returns from here.
     static void schedule()
     {
-        Process* next = choose_next();
+        Thread* next = choose_next();
         if (!next)
             switch_kernel_task(&idle_task);
-        else if (next != current)
-            switch_process(next);
+        else if (next != cur_thread)
+            switch_thread(next);
 
         // Running again: whoever switched to us made us current.
         slice_ticks = 0;
@@ -1322,52 +1389,51 @@ namespace process
     // counts as a spurious wakeup and the caller re-checks.
     static bool queue_sleep(wait_queue* q, uint64_t tick)
     {
-        Process* p = current;
+        Thread* t = cur_thread;
 
         uint64_t f = irq_save();
-        p->woken     = false;
-        p->wake_tick = tick;
-        p->wq      = q;
-        p->wq_next = q->head;
-        q->head    = p;
-        p->state   = State::Blocked;
-        p->wait    = Wait::Queue;
+        t->woken     = false;
+        t->wake_tick = tick;
+        t->wq      = q;
+        t->wq_next = q->head;
+        q->head    = t;
+        t->state   = TState::Blocked;
         irq_restore(f);
 
         schedule();
 
         // A signal ended the sleep: still on the queue.
-        unlink_wait(p);
-        bool woken = p->woken;
-        p->woken = false;
-        p->wake_tick = 0;
-        return woken || !sig::next_deliverable(&p->sig);
+        unlink_wait(t);
+        bool woken = t->woken;
+        t->woken = false;
+        t->wake_tick = 0;
+        return woken || !sig::next_deliverable(&t->proc->sig);
     }
 
     // Wake the sleepers on q that `due` accepts (all when due is null).
-    static void queue_wake(wait_queue* q, bool (*due)(const Process*))
+    static void queue_wake(wait_queue* q, bool (*due)(const Thread*))
     {
         uint64_t f = irq_save();
-        Process** link = &q->head;
+        Thread** link = &q->head;
         while (*link)
         {
-            Process* p = *link;
-            if (due && !due(p))
+            Thread* t = *link;
+            if (due && !due(t))
             {
-                link = &p->wq_next;
+                link = &t->wq_next;
                 continue;
             }
-            *link = p->wq_next;
-            p->wq = nullptr;
-            p->wq_next = nullptr;
-            p->woken = true;    // pick_next makes it runnable
+            *link = t->wq_next;
+            t->wq = nullptr;
+            t->wq_next = nullptr;
+            t->woken = true;    // pick_next makes it runnable
         }
         irq_restore(f);
     }
 
-    static bool tick_due(const Process* p)
+    static bool tick_due(const Thread* t)
     {
-        return pit::ticks() >= p->wake_tick;
+        return pit::ticks() >= t->wake_tick;
     }
 
     void on_timer_tick()
@@ -1388,8 +1454,8 @@ namespace process
             return;
         }
 
-        if (service_signals() || !current ||
-            current->state != State::Runnable)
+        if (service_signals() || !current || current->state != State::Live ||
+            cur_thread->state != TState::Runnable)
         {
             reschedule(regs, iret);
             return;
@@ -1460,10 +1526,11 @@ namespace process
             vfs::unref(p->cwd);
             p->cwd = nullptr;
         }
-        copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
+        copy_bytes(p->thread->fpu, fpu_template, sizeof(p->thread->fpu));
 
-        task::prepare_kernel(&p->task, "console", kstack_top(p), entry, nullptr);
-        p->state = State::Runnable;
+        task::prepare_kernel(&p->thread->task, "console", kstack_top(p->thread), entry,
+                             nullptr);
+        start(p);
         console_proc = p;
     }
 
@@ -1473,9 +1540,9 @@ namespace process
         // the scheduler; after each one, see whether somebody can run.
         for (;;)
         {
-            Process* next = choose_next();
+            Thread* next = choose_next();
             if (next)
-                switch_process(next);
+                switch_thread(next);
             else
                 asm volatile("sti; hlt");
         }
@@ -1556,7 +1623,6 @@ namespace process
             vfs::ref(arg_roots[i]);
             add_root(p, name, arg_roots[i]);
         }
-        p->state = State::Runnable;
         return p;
     }
 
@@ -1671,7 +1737,10 @@ namespace process
 
         p->ppid = 0;
         open_std_fds(p);
-        task::prepare_user(&p->task, p->name, kstack_top(p), &p->ctx);
+        Thread* t = p->thread;
+        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
+        uint64_t entry = t->ctx.iret.rip;
+        start(p);
 
         // The console follows its program through a handle: that is what
         // tells it the exit status once the process itself is gone.
@@ -1698,7 +1767,7 @@ namespace process
                               screen::vp_w(), screen::vp_h() - bar_h);
 
         uart::printf("console: program start, pid %u %s entry=%llx\n",
-                     (uint32_t)p->pid, p->name, p->ctx.iret.rip);
+                     (uint32_t)p->pid, p->name, entry);
 
         // The program is runnable now; sleep until it has exited. Its
         // children are not waited for: an orphan keeps running on its own.
@@ -1792,10 +1861,10 @@ namespace process
 
     void syscall_enter(uint64_t nr)
     {
-        if (current)
+        if (cur_thread)
         {
-            current->syscall_nr = nr;
-            current->restart_pending = false;
+            cur_thread->syscall_nr = nr;
+            cur_thread->restart_pending = false;
         }
     }
 
@@ -1810,10 +1879,10 @@ namespace process
 
         // Interrupted, but no handler ran after all (the signal went away
         // meanwhile): restart as if nothing had happened.
-        if (current && current->restart_pending)
+        if (cur_thread && cur_thread->restart_pending)
         {
-            restart_syscall(current, regs, iret);
-            current->restart_pending = false;
+            restart_syscall(cur_thread, regs, iret);
+            cur_thread->restart_pending = false;
         }
     }
 
@@ -1889,7 +1958,7 @@ namespace process
         // EINTR unless push_signal_frame (SA_RESTART) or syscall_return
         // (no handler) turn it into a restart.
         regs->rax = SYSCALL_ERR(EINTR);
-        current->restart_pending = true;
+        cur_thread->restart_pending = true;
     }
 
     // -----------------------------------------------------------------------
@@ -2047,18 +2116,19 @@ namespace process
         // Handlers and the blocked mask carry over; pending signals do not
         // (POSIX: the child starts with an empty pending set).
         sig::inherit(&child->sig, &current->sig);
-        child->restart_pending = false;
+        child->thread->restart_pending = false;
         child->mask_saved      = false;
 
         // The child resumes from the same instruction with rax = 0, on its
         // own kernel stack.
-        child->ctx.regs = *regs;
-        child->ctx.iret = *iret;
-        child->ctx.regs.rax = 0;
-        fpu_save(child->fpu);
-        task::prepare_user(&child->task, child->name, kstack_top(child), &child->ctx);
+        Thread* ct = child->thread;
+        ct->ctx.regs = *regs;
+        ct->ctx.iret = *iret;
+        ct->ctx.regs.rax = 0;
+        fpu_save(ct->fpu);
+        task::prepare_user(&ct->task, child->name, kstack_top(ct), &ct->ctx);
 
-        child->state = State::Runnable;
+        start(child);
         regs->rax = (uint64_t)child->pid;
     }
 
@@ -2181,12 +2251,12 @@ namespace process
         // Every handler address belonged to the image that has just been
         // replaced; ignored signals and the blocked mask survive.
         sig::reset_on_exec(&current->sig);
-        current->restart_pending = false;
+        cur_thread->restart_pending = false;
         current->mask_saved      = false;
 
-        fpu_restore(current->fpu);
-        *regs = current->ctx.regs;
-        *iret = current->ctx.iret;
+        fpu_restore(cur_thread->fpu);
+        *regs = cur_thread->ctx.regs;
+        *iret = cur_thread->ctx.iret;
     }
 
     void sys_wait4(user_regs* regs, iret_frame* iret)
@@ -2478,7 +2548,7 @@ namespace process
         iret->ss     = USER_SS;
         iret->rflags = sig::sanitize_rflags(f.ctx.iret.rflags);
 
-        current->restart_pending = false;
+        cur_thread->restart_pending = false;
         current->mask_saved      = false;
     }
 

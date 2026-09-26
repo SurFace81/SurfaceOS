@@ -45,18 +45,23 @@ struct vnode;
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
+#define MAX_THREADS         32      // one per process for now
 #define MAX_ROOTS           16      // data, tmp and argN of one process
 
 // ---------------------------------------------------------------------------
 // Scheduling model
 // ---------------------------------------------------------------------------
 //
-// User code is preempted by the timer; kernel code is not. Every process
+// A process is a running program: address space, handles, roots, signals.
+// What runs is a thread of it (one per process for now), and the scheduler
+// picks threads.
+//
+// User code is preempted by the timer; kernel code is not. Every thread
 // has its own kernel stack and a task (task.h) that runs on it: a trap from
-// ring 3 lands on that stack, and a process switch is a task::switch_to from
-// inside the trap handler, which leaves the trap frame where it is. The
-// other process resumes inside its own handler and returns to ring 3
-// through its own frame. Switches happen only on the way back to ring 3 -
+// ring 3 lands on that stack, and a switch is a task::switch_to from inside
+// the trap handler, which leaves the trap frame where it is. The other
+// thread resumes inside its own handler and returns to ring 3 through its
+// own frame. Switches happen only on the way back to ring 3 -
 // on return from a syscall, an IRQ that interrupted user code, or a
 // user-mode fault - so the drivers (xHCI, FAT32, screen) never see
 // reentrancy.
@@ -78,8 +83,8 @@ struct vnode;
 // delivery is just a rewrite of the trap frame at the same boundary (see
 // the signal section of process.cpp).
 //
-// The stack belongs to the process table *slot*, not to the process:
-// terminate() can free a process while executing on that very stack, so the
+// The stack belongs to the thread table *slot*, not to the thread:
+// terminate() can free a thread while executing on that very stack, so the
 // frames go back to the PMM later, from another task.
 
 namespace process
