@@ -171,6 +171,15 @@ static bool has_partitions(blkdev* disk)
     return false;
 }
 
+// Write /mount's volume through after a mount point came or went: nothing
+// else flushes it (no file of it was written), and the free-cluster count
+// on disk would stay behind.
+static void flush_mount_dir(vnode* dir)
+{
+    if (dir->ops->fsync)
+        dir->ops->fsync(dir);
+}
+
 // Remove the empty directory /mount/<name>. 0 or -errno.
 static sint64_t remove_mount_dir(const char* name)
 {
@@ -179,6 +188,8 @@ static sint64_t remove_mount_dir(const char* name)
     if (rc != 0)
         return rc;
     rc = dir->ops->rmdir ? dir->ops->rmdir(dir, name) : -EPERM;
+    if (rc == 0)
+        flush_mount_dir(dir);
     vfs::unref(dir);
     return rc;
 }
@@ -199,6 +210,7 @@ static sint64_t mount_dev(blkdev* d)
         rc = dir->ops->mkdir(dir, d->name, 0755);
         if (rc == 0)
         {
+            flush_mount_dir(dir);
             made = true;
             rc = vfs::lookup(d->name, dir, &point, true);
         }
