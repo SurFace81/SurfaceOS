@@ -7,7 +7,7 @@
 
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/signal.h"
-#include "../../include/cpu/tss.h"
+#include "../../include/cpu/percpu.h"
 #include "../../include/cpu/task.h"
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
@@ -610,7 +610,7 @@ namespace process
         leave_current();
         cur_thread = t;
         current = t->proc;
-        tss::set_kernel_stack(kstack_top(t));
+        cpu::set_kernel_stack(kstack_top(t));
         paging::switch_address_space(t->proc->cr3);
         fpu_restore(t->fpu);
         task::switch_to(&t->task);

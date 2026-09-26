@@ -8,8 +8,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   partition start and disk signature to the kernel for automount)
 - x86_64 kernel: GDT/IDT, local APIC + IOAPIC (xAPIC or x2APIC; the
   8259s without a MADT), the local APIC timer calibrated against the PIT
-  for the tick, paging (4 KiB, per-process address spaces,
-  W^X), TSS, ring-3 user mode
+  for the tick, per-CPU data (GS base, swapgs), TSS and GDT per CPU,
+  paging (4 KiB, per-process address spaces, W^X), ring-3 user mode
 - ACPI tables without AML: reboot/shutdown (FADT, \_S5), the CPUs and
   interrupt controllers from the MADT (`acpi` command)
 - Preemptive scheduler (switches only at ring-3 boundaries), fork/execve/

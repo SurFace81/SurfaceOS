@@ -475,6 +475,12 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
     Check("Print returns SF_SUCCESS", Con->Print(Con, "") == SF_SUCCESS);
 
+    // Loading GS clears its base; the kernel keeps its own GS base (swapgs
+    // on every entry) and must not notice.
+    asm volatile("mov %0, %%gs" :: "r"((uint16_t)0x2B));
+    Check("a program loading GS does not disturb the system",
+          Con->Print(Con, "") == SF_SUCCESS);
+
     // Longer than the kernel's copy chunk (1 KiB): printed in pieces.
     static char Long[2601];
     for (int i = 0; i < 2600; i++)

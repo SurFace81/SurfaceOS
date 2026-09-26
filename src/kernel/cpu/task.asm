@@ -11,7 +11,9 @@
 ;
 ; task_user_start:
 ;   First return of a process task: rsp points at a cpu_context (user_regs
-;   then the iret frame), popped exactly like the tail of syscall_entry.
+;   then the iret frame), popped exactly like the tail of syscall_entry -
+;   swapgs included: ring 3 gets its own GS base (percpu.h). GS itself is
+;   left alone, since loading it would clear the kernel's GS base.
 
 section .text
 bits 64
@@ -55,7 +57,6 @@ task_user_start:
     mov ds, ax
     mov es, ax
     mov fs, ax
-    mov gs, ax
 
     pop r15
     pop r14
@@ -72,4 +73,5 @@ task_user_start:
     pop rcx
     pop rbx
     pop rax
+    swapgs
     iretq

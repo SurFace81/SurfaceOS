@@ -4,6 +4,7 @@
 #include "../../include/cpu/irq.h"
 #include "../../include/cpu/idt.h"
 #include "../../include/cpu/paging.h"
+#include "../../include/cpu/percpu.h"
 #include "../../include/acpi/acpi.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/pit.h"
@@ -192,6 +193,7 @@ namespace apic
         lapic_write(LAPIC_SVR, SVR_ENABLE | APIC_SPURIOUS_VECTOR);
 
         bsp_id = x2apic ? lapic_read(LAPIC_ID) : lapic_read(LAPIC_ID) >> 24;
+        cpu::current()->apic_id = bsp_id;
         for (uint8_t irq = 0; irq < 16; irq++)
             route(irq, true);
         on = true;

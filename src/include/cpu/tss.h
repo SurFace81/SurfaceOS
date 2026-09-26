@@ -3,7 +3,8 @@
 
 #include "types.h"
 
-// 64-bit Task State Segment. Only RSP0 and the IST entries are used.
+// 64-bit Task State Segment. Only RSP0 and the IST entries are used. Each
+// CPU has its own (percpu.h).
 struct tss_t
 {
     uint32_t reserved0;
@@ -32,13 +33,5 @@ struct tss_t
 #define IST_DOUBLE_FAULT    1   // #DF
 #define IST_NMI             2   // NMI
 #define IST_MACHINE_CHECK   3   // #MC
-
-namespace tss
-{
-    void init();
-
-    // Kernel stack used by the CPU on ring3 -> ring0 transitions.
-    void set_kernel_stack(uint64_t rsp0);
-}
 
 #endif // TSS_H
