@@ -68,10 +68,10 @@ static SfStatus ProcessGetArgs(SfProcess*, uint64_t Id, char* Buffer, uint64_t* 
 }
 
 static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
-                             const char* const* Args, uint64_t* Handle)
+                             const char* const* Args, uint64_t Flags, uint64_t* Handle)
 {
     return SfCall(SFCALL_PROCESS_START, (uint64_t)Name, ArgCount, (uint64_t)Args,
-                  (uint64_t)Handle);
+                  (uint64_t)Handle, Flags);
 }
 
 static SfStatus ProcessWait(SfProcess*, uint64_t Handle, SfStatus* Status)

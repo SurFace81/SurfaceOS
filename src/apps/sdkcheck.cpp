@@ -14,6 +14,12 @@
 //   sdkcheck child <word> <two words>  returns SF_ERROR_BIT | 5 when it got
 //                                      exactly those arguments, | 6 if not
 //   sdkcheck late                      prints a line after 300 ms
+//   sdkcheck reader                    reads a line, says what it got
+//
+// Run as `sdkcheck input`, it starts `sdkcheck reader` with its input
+// (SF_START_GIVE_INPUT) and then reads a line of its own: the first line
+// typed goes to the child, the second - once the child has ended - back
+// to it ("sdkcheck input: child got ...", "... parent got ...").
 //
 // Run as `sdkcheck <file> <word>`, with a file that does not exist yet
 // and a word that is no file, it also checks the argN: roots. The exit status is the
@@ -356,7 +362,7 @@ static void CheckStart(SfProcess* Process)
     uint64_t Handle = 0;
     SfStatus Status = SF_SUCCESS;
     Check("Start runs a program",
-          Process->Start(Process, "sdkcheck", 3, Args, &Handle) == SF_SUCCESS);
+          Process->Start(Process, "sdkcheck", 3, Args, 0, &Handle) == SF_SUCCESS);
     Check("Wait gives what it returned (and it got its arguments)",
           Process->Wait(Process, Handle, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 5));
     Check("a Handle is used up by Wait: again is SF_BAD_HANDLE",
@@ -365,22 +371,56 @@ static void CheckStart(SfProcess* Process)
     uint64_t Handles[3] = {};
     bool Ok = true;
     for (int i = 0; i < 3; i++)
-        Ok = Ok && Process->Start(Process, "sdkcheck", 3, Args, &Handles[i]) == SF_SUCCESS;
+        Ok = Ok && Process->Start(Process, "sdkcheck", 3, Args, 0, &Handles[i]) == SF_SUCCESS;
     for (int i = 0; i < 3; i++)
         Ok = Ok && Process->Wait(Process, Handles[i], &Status) == SF_SUCCESS &&
              Status == (SF_ERROR_BIT | 5);
     Check("three programs side by side", Ok);
 
     Check("Start of no such program is SF_NOT_FOUND",
-          Process->Start(Process, "nosuch", 0, nullptr, &Handle) == SF_NOT_FOUND);
+          Process->Start(Process, "nosuch", 0, nullptr, 0, &Handle) == SF_NOT_FOUND);
     Check("Start of a path is SF_INVALID_PARAMETER",
-          Process->Start(Process, "../apps/sdkcheck", 0, nullptr, &Handle) ==
+          Process->Start(Process, "../apps/sdkcheck", 0, nullptr, 0, &Handle) ==
           SF_INVALID_PARAMETER);
 }
 
-// sdkcheck child|late: see the top of the file.
+// Read a line and report it as "sdkcheck input: <Who> got <line>".
+static SfStatus ReadAndReport(SfConsole* Console, const char* Who)
+{
+    char Line[64];
+    SfStatus Status = Console->ReadLine(Console, Line, sizeof(Line), nullptr);
+    if (SF_ERROR(Status))
+        return Status;
+    Print("sdkcheck input: ");
+    Print(Who);
+    Print(" got ");
+    Print(Line);
+    Print("\n");
+    return SF_SUCCESS;
+}
+
+// sdkcheck input: see the top of the file.
+static SfStatus RunInput(SfSystem* Sys)
+{
+    const char* Args[] = { "reader" };
+    uint64_t Handle = 0;
+    SfStatus Status = Sys->Process->Start(Sys->Process, "sdkcheck", 1, Args,
+                                          SF_START_GIVE_INPUT, &Handle);
+    if (SF_ERROR(Status))
+        return Status;
+    Print("sdkcheck input: the reader has the keys\n");
+    SfStatus ChildStatus = SF_ABORTED;
+    Sys->Process->Wait(Sys->Process, Handle, &ChildStatus);
+    if (SF_ERROR(ChildStatus))
+        return ChildStatus;
+    return ReadAndReport(Sys->Console, "parent");
+}
+
+// sdkcheck child|late|reader: see the top of the file.
 static SfStatus RunAsChild(SfApp* App, SfSystem* Sys)
 {
+    if (SameText(App->Args[1], "reader"))
+        return ReadAndReport(Sys->Console, "child");
     if (SameText(App->Args[1], "late"))
     {
         Sys->Time->Sleep(Sys->Time, 300);
@@ -459,8 +499,11 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return SF_INVALID_PARAMETER;        // nothing to report through
     Con = Sys->Console;
     if (App && App->ArgCount >= 2 &&
-        (SameText(App->Args[1], "child") || SameText(App->Args[1], "late")))
+        (SameText(App->Args[1], "child") || SameText(App->Args[1], "late") ||
+         SameText(App->Args[1], "reader")))
         return RunAsChild(App, Sys);
+    if (App && App->ArgCount >= 2 && SameText(App->Args[1], "input"))
+        return RunInput(Sys);
 
     Print("sdkcheck - the tables SfMain gets\n");
 
@@ -537,7 +580,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         // A child that outlives this program (not waited for).
         const char* Late[] = { "late" };
         uint64_t Handle = 0;
-        Sys->Process->Start(Sys->Process, "sdkcheck", 1, Late, &Handle);
+        Sys->Process->Start(Sys->Process, "sdkcheck", 1, Late, 0, &Handle);
     }
 
     Print("sdkcheck: ");

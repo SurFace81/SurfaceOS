@@ -14,6 +14,7 @@
 
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/term.h"
+#include "../../include/cpu/process.h"
 
 namespace keyboard {
     uint8_t scancode_to_ascii(uint8_t scancode);
@@ -163,6 +164,9 @@ namespace keyboard {
 
     static void emit(uint8_t code, char ch, bool pressed) {
         if (system_key(code, pressed))
+            return;
+        // Keys typed on a screen nobody owns go nowhere.
+        if (process::screen_input_owner(term::shown_screen()) < 0)
             return;
         if (user_callback == nullptr)
             return;

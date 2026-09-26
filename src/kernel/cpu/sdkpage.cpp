@@ -194,6 +194,14 @@ namespace sdkpage
             return;
         }
 
+        // Only the input owner of the screen reads keys; anyone else waits
+        // for its turn (sfos/process.h, Start).
+        if (!process::wait_for_input())
+        {
+            regs->rax = SF_ABORTED;
+            return;
+        }
+
         // The tty's line is at most 1 KiB, so one read takes all of it.
         const uint64_t LINE = 1024;
         char* line = (char*)kmalloc(LINE);

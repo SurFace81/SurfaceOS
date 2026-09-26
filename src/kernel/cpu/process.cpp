@@ -16,6 +16,7 @@
 #include "../../include/cpu/sffile.h"
 #include "../../include/stdlib/string.h"
 #include "../../sdk/include/sfos/status.h"
+#include "../../sdk/include/sfos/process.h"
 #include "../../include/cpu/wait.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
@@ -153,6 +154,11 @@ namespace process
         sigset_t    saved_mask;
 
         char        name[32];
+
+        // The screen it shows on and reads keys from, and who gave it that
+        // screen's input when it owns it (input owners, below).
+        uint32_t    screen;
+        pid_t       input_giver;
 
         uint64_t    cr3;
         uint64_t    brk_start;      // end of the ELF image
@@ -641,6 +647,51 @@ namespace process
                 return p;
         }
         return nullptr;
+    }
+
+    // -----------------------------------------------------------------------
+    // Input owners
+    // -----------------------------------------------------------------------
+
+    // Each screen gives its keys to one process, its input owner (-1: none,
+    // and the keys are dropped). The console owns screen 1 and gives it to
+    // the program it starts; a program that owns it gives it on with
+    // Start(SF_START_GIVE_INPUT). When the owner ends, the screen goes back
+    // to whoever gave it, or to the console if that one is gone too.
+    static pid_t      input_owner[TERM_SCREENS];
+    static wait_queue input_owner_wq;   // ReadLine waits here for its turn
+
+    static void set_input_owner(uint32_t screen, pid_t pid)
+    {
+        input_owner[screen] = pid;
+        wait::wake_up(&input_owner_wq);
+    }
+
+    // p ends: whatever screen it owns goes back.
+    static void return_input(Process* p)
+    {
+        for (uint32_t s = 0; s < TERM_SCREENS; s++)
+        {
+            if (input_owner[s] != p->pid)
+                continue;
+            Process* giver = find_live(p->input_giver);
+            set_input_owner(s, giver ? giver->pid : 0);
+        }
+    }
+
+    static bool owns_input(void*)
+    {
+        return current && input_owner[current->screen] == current->pid;
+    }
+
+    pid_t screen_input_owner(uint32_t screen)
+    {
+        return screen < TERM_SCREENS ? input_owner[screen] : -1;
+    }
+
+    bool wait_for_input()
+    {
+        return wait::wait_event(&input_owner_wq, owns_input, nullptr, 0);
     }
 
     // -----------------------------------------------------------------------
@@ -1160,6 +1211,8 @@ namespace process
             else
                 q->ppid = 0;
         }
+
+        return_input(p);
 
         // Handles to the process see the exit now, whether or not a parent
         // reaps a zombie later.
@@ -1702,6 +1755,10 @@ namespace process
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
 
+        input_owner[0] = 0;             // the console's screen
+        for (uint32_t s = 1; s < TERM_SCREENS; s++)
+            input_owner[s] = -1;
+
         task::init(&this_cpu()->idle_task, "idle");
 
         asm volatile("fninit");
@@ -1986,6 +2043,8 @@ namespace process
         // The program starts in the foreground: ^C goes to its group, and
         // it is the one allowed to read the keyboard.
         tty::set_fg_pgrp(p->pgid);
+        p->input_giver = 0;
+        set_input_owner(p->screen, p->pid);
         keyboard_callback_t prev_callback = keyboard::get_callback();
         keyboard::set_keyboard_callback(program_key_handler);
 
@@ -2015,6 +2074,9 @@ namespace process
 
         uart::printf("console: program end, status %u\n", (uint32_t)status);
 
+        // The console takes its screen back, even from a program the one it
+        // ran gave the input to and that runs on.
+        set_input_owner(console_proc->screen, 0);
         term::set_program("console");
         screen::clear();
         screen::show_cursor();
@@ -2319,6 +2381,7 @@ namespace process
         copy_bytes((uint8_t*)child->name, (const uint8_t*)current->name, sizeof(child->name));
         child->ppid        = current->pid;
         child->pgid        = current->pgid;     // same job as its parent
+        child->screen      = current->screen;
         child->brk_start   = current->brk_start;
         child->brk         = current->brk;
         child->mmap_cursor = current->mmap_cursor;
@@ -3102,11 +3165,13 @@ namespace process
         regs->rax = 0;
     }
 
-    // SFCALL_PROCESS_START (Name, ArgCount, Args, *Handle): start program
-    // /apps/<Name> with Args after its name, and hand back a handle to it.
-    // The new process shares the caller's console: it joins the caller's
-    // process group (^C reaches both). Its ppid stays 0 - the caller
-    // follows it through the handle, so it never lingers as a zombie.
+    // SFCALL_PROCESS_START (Name, ArgCount, Args, *Handle, Flags): start
+    // program /apps/<Name> with Args after its name, and hand back a handle
+    // to it. The new process shares the caller's screen: it joins the
+    // caller's process group (^C reaches both). Its ppid stays 0 - the
+    // caller follows it through the handle, so it never lingers as a
+    // zombie. SF_START_GIVE_INPUT hands it the caller's input, if the
+    // caller has it.
     void sf_process_start(user_regs* regs, iret_frame*)
     {
         char name[NAME_MAX + 1];
@@ -3156,7 +3221,13 @@ namespace process
             return;
         }
 
-        p->pgid = current->pgid;
+        p->pgid   = current->pgid;
+        p->screen = current->screen;
+        if ((regs->r8 & SF_START_GIVE_INPUT) && owns_input(nullptr))
+        {
+            p->input_giver = current->pid;
+            set_input_owner(p->screen, p->pid);
+        }
         Thread* t = first_thread(p);
         task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
         start(p);                       // runs once this call is back in ring 3

@@ -10,13 +10,14 @@
 
 // One kernel call: number and up to four arguments, SfStatus back.
 static inline SfStatus SfCall(uint64_t Number, uint64_t A1 = 0, uint64_t A2 = 0,
-                              uint64_t A3 = 0, uint64_t A4 = 0)
+                              uint64_t A3 = 0, uint64_t A4 = 0, uint64_t A5 = 0)
 {
     SfStatus Result;
     register uint64_t R10 asm("r10") = A4;
+    register uint64_t R8 asm("r8") = A5;
     asm volatile("syscall"
                  : "=a"(Result)
-                 : "a"(Number), "D"(A1), "S"(A2), "d"(A3), "r"(R10)
+                 : "a"(Number), "D"(A1), "S"(A2), "d"(A3), "r"(R10), "r"(R8)
                  : "rcx", "r11", "memory");
     return Result;
 }

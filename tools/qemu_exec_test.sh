@@ -133,6 +133,27 @@ grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no fai
 wait_session_end $WANT 15; result $? "sdkcheck exits"
 [ "$(last_status)" = "0" ]; result $? "its SfStatus comes back as exit status 0"
 
+# 1a. Input owners: a child started with SF_START_GIVE_INPUT reads the
+#     first line, the parent the next one once the child has ended; keys
+#     typed on screen 2, which nobody owns, go nowhere.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck input"
+wait_for "the reader has the keys" 20; result $? "sdkcheck input started its reader"
+type_cmd "first"
+wait_for "sdkcheck input: child got first" 10; result $? "the child got the first line"
+type_cmd "second"
+wait_for "sdkcheck input: parent got second" 10; result $? "the parent got the next one"
+wait_session_end $WANT 15; result $? "sdkcheck input exits"
+key alt-f2
+python3 tools/send_keys.py "$MON" "zz"     # no Enter: leaked, it would
+key alt-f1                                  # prefix the next command
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"
+type_cmd "screens"
+wait_for "sdkcheck input: child got screens" 10
+result $? "keys typed on screen 2 did not reach screen 1"
+wait_session_end $WANT 15
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))

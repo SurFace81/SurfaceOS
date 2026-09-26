@@ -47,12 +47,15 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   (/tmp, unique names from CreateUnique); no path leads above its root.
   The old POSIX layer (int 0x80, libc) is still in the tree until it is
   removed.
+- Nine screens, Alt+F1..F9, each with a system title bar (screen,
+  program, subtitle, clock); keys go to the screen's input owner
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables, memory, time, arguments, threads, mutexes and events, starting programs), sfstest (files through the SDK and
+  tables, memory, time, arguments, threads, mutexes and events, starting programs;
+  `sdkcheck input` hands its keys to a child), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
   (how a program with several threads ends: fault, Ctrl+C, last exit;
   Ctrl+C ends the programs it started; `threadtest stress` runs many

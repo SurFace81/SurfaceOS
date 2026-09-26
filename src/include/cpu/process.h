@@ -209,6 +209,12 @@ namespace process
     // Is the caller in the terminal's foreground group? The tty read path
     // asks before handing input to a background job.
     bool  in_foreground();
+
+    // The process that gets screen `screen`'s keys (-1: none). A ReadLine
+    // waits (wait_for_input) until its process is the one; false when a
+    // signal ended the wait.
+    pid_t screen_input_owner(uint32_t screen);
+    bool  wait_for_input();
     pid_t cur_pgrp();
 
     // Post a signal to every process of a group, as the tty does for ^C.
