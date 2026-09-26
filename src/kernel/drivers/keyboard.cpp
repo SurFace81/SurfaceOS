@@ -13,6 +13,7 @@
 // DOS-era software saw a consistent shift state; they are dropped here.
 
 #include "../../include/drivers/keyboard.h"
+#include "../../include/drivers/term.h"
 
 namespace keyboard {
     uint8_t scancode_to_ascii(uint8_t scancode);
@@ -143,7 +144,26 @@ namespace keyboard {
         return kb_state.lalt_pressed || kb_state.ralt_pressed;
     }
 
+    // Alt+F1..F9 show screen 1..9. The kernel keeps these keys: neither
+    // the press nor its release reaches anyone.
+    static uint8_t screen_key = 0;      // the F key whose release to swallow
+
+    static bool system_key(uint8_t code, bool pressed) {
+        if (code == screen_key && !pressed) {
+            screen_key = 0;
+            return true;
+        }
+        if (pressed && alt_held() && code >= KEY_F1 && code <= KEY_F9) {
+            screen_key = code;
+            term::show((uint32_t)(code - KEY_F1));
+            return true;
+        }
+        return false;
+    }
+
     static void emit(uint8_t code, char ch, bool pressed) {
+        if (system_key(code, pressed))
+            return;
         if (user_callback == nullptr)
             return;
 

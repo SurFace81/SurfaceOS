@@ -45,7 +45,7 @@ struct term_cell
 };
 
 // Screens: each has its own cells, cursor, colours and parser state, and
-// the panel shows one of them (Alt+F1..F9 in a later step).
+// the panel shows one of them (Alt+F1..F9, keyboard.cpp).
 #define TERM_SCREENS    9
 
 namespace term
