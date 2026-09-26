@@ -27,8 +27,9 @@ namespace spin
 // CPU, not a thread, and nests (an interrupt taken inside the kernel just
 // goes one deeper).
 //
-//   taken    on every entry from ring 3 (interrupt, exception, int 0x80,
-//            syscall), at boot, and by the idle loop when it wakes up;
+//   taken    on every entry from ring 3 (exception, int 0x80, syscall), at
+//            boot, and by the idle loop when it wakes up; an interrupt
+//            takes it only if it is free (irq.cpp: it never waits);
 //   dropped  on every return to ring 3 (the entry's own, or a new thread's
 //            first one in task_user_start), and by the idle loop before it
 //            halts.
@@ -39,6 +40,10 @@ namespace bkl
 {
     void enter();
     void leave();
+
+    // enter() unless another CPU holds the lock: false then, and nothing
+    // taken. For interrupt handlers, which must not wait for it.
+    bool try_enter();
 
     // Complain (serial log) unless this CPU holds the lock exactly once -
     // how it must be at a thread switch.

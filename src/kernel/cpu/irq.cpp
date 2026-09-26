@@ -3,6 +3,8 @@
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/apic.h"
 #include "../../include/cpu/spinlock.h"
+#include "../../include/cpu/percpu.h"
+#include "../../include/drivers/pit.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
 
@@ -166,31 +168,71 @@ namespace irq {
 
 } // namespace
 
-// Common IRQ handler
-void irq_handler(struct interrupt_frame *frame) {
-    bkl::enter();
-    uint8_t irq_line = frame->int_no - IRQ_BASE;
+// ISA lines whose interrupt came while another CPU held the big kernel
+// lock: their handlers run once this CPU gets it (the next tick at the
+// latest). A device keeps its data meanwhile - the keyboard its byte.
+static volatile uint32_t deferred_lines = 0;
 
-    // The local APIC's timer ticks in place of the PIT: the same tick.
-    if (irq_line == IRQ_APIC_TIMER)
-        irq_line = IRQ0_TIMER;
-    
-    if (!apic::active() && irq::is_spurious_irq(irq_line)) {
-        if (irq_line == 15) {
-            port::byte_out(PIC1_COMMAND, PIC_EOI);
-        }
-        bkl::leave();
-        return;
-    }
+static void run_deferred()
+{
+    uint32_t lines = __atomic_exchange_n(&deferred_lines, 0, __ATOMIC_ACQ_REL);
+    for (uint8_t line = 0; lines; line++, lines >>= 1)
+        if ((lines & 1) && irq_handlers[line])
+            irq_handlers[line]();
+}
 
-    if (irq_handlers[irq_line] != 0) {
-        irq_handlers[irq_line]();
-    }
-
+static void end_of_interrupt(uint8_t irq_line)
+{
     if (apic::active())
         apic::eoi();
     else
         irq::pic_send_eoi(irq_line);
+}
+
+// Common IRQ handler.
+//
+// An interrupt handler never waits for the big kernel lock: while another
+// CPU is in the kernel, it may well be waiting for the clock to move. So
+// without the lock, the boot CPU's tick only advances the clock, another
+// ISA line is deferred, and another CPU's tick is skipped.
+void irq_handler(struct interrupt_frame *frame) {
+    uint8_t irq_line = frame->int_no - IRQ_BASE;
+
+    // The local APIC's timer ticks in place of the PIT. The boot CPU's is
+    // the system's tick; another CPU's only ends time slices there (and
+    // wakes it from halting, so it looks for work).
+    bool cpu_tick = false;
+    if (irq_line == IRQ_APIC_TIMER)
+    {
+        if (cpu::current()->index == 0)
+            irq_line = IRQ0_TIMER;
+        else
+            cpu_tick = true;
+    }
+
+    if (!apic::active() && irq::is_spurious_irq(irq_line)) {
+        if (irq_line == 15) {
+            port::byte_out(PIC1_COMMAND, PIC_EOI);
+        }
+        return;
+    }
+
+    if (!bkl::try_enter()) {
+        if (irq_line == IRQ0_TIMER)
+            pit::count_tick();
+        else if (!cpu_tick)
+            __atomic_or_fetch(&deferred_lines, 1U << irq_line, __ATOMIC_ACQ_REL);
+        end_of_interrupt(irq_line);
+        return;
+    }
+
+    if (deferred_lines)
+        run_deferred();
+    if (!cpu_tick && irq_handlers[irq_line] != 0) {
+        irq_handlers[irq_line]();
+    }
+
+    end_of_interrupt(irq_line);
 
     if (irq_line == IRQ0_TIMER)
         process::on_timer_tick();
@@ -199,7 +241,7 @@ void irq_handler(struct interrupt_frame *frame) {
     // scheduler may preempt the process or act on Esc. The EOI is already
     // out, so switching away (or abandoning the frame) is safe.
     if ((frame->cs & 3) == 3)
-        process::on_user_interrupt(irq_line, (user_regs*)frame,
+        process::on_user_interrupt(cpu_tick ? IRQ0_TIMER : irq_line, (user_regs*)frame,
                                    (iret_frame*)&frame->rip);
     bkl::leave();
 }

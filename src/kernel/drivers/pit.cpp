@@ -44,9 +44,14 @@ namespace pit
         port::byte_out(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
     }
 
+    void count_tick()
+    {
+        __atomic_add_fetch(&tick_count, 1, __ATOMIC_RELAXED);
+    }
+
     void handler()
     {
-        tick_count++;
+        count_tick();
 
         // ~45 fps: rasterise whatever the terminal marked dirty (cursor
         // blink included) and push the back buffer to VRAM. Nothing else

@@ -6,8 +6,8 @@
 // The other CPUs. The boot CPU starts each one the MADT lists (INIT, then
 // startup IPIs into ap_trampoline.asm at the page the loader claimed); a
 // started CPU sets up its own GDT, TSS, GS base, IDT, features, syscall
-// MSRs and local APIC, says it is online and halts. It runs no kernel code
-// after that yet.
+// MSRs, local APIC and timer, says it is online and goes on to run threads
+// (process::run_cpu).
 
 namespace smp
 {

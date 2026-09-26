@@ -7,6 +7,7 @@
 #include "../../include/cpu/features.h"
 #include "../../include/cpu/sfcall.h"
 #include "../../include/cpu/paging.h"
+#include "../../include/cpu/process.h"
 #include "../../include/acpi/acpi.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/memory.h"
@@ -77,10 +78,9 @@ extern "C" __attribute__((noreturn)) void ap_main(Cpu* c)
     c->apic_id = apic::init_cpu();
     __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
 
-    // Nothing to run here yet: stay halted (interrupts off, so nothing
-    // reaches it but an NMI).
-    for (;;)
-        asm volatile("cli; hlt");
+    // Its own tick, and on to running threads (its idle loop).
+    apic::start_timer_cpu();
+    process::run_cpu();
 }
 
 namespace smp
@@ -154,8 +154,7 @@ namespace smp
         }
 
         paging::unmap_page(trampoline);
-        uart::printf("smp: %u CPU(s) running, %u halted until there is work for them\n",
-                     cpus_running, cpus_running - 1);
+        uart::printf("smp: %u CPU(s) running\n", cpus_running);
     }
 
     uint32_t running()

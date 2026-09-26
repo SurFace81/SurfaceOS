@@ -54,8 +54,14 @@ struct vnode;
 // ---------------------------------------------------------------------------
 //
 // A process is a running program: address space, handles, roots, signals.
-// What runs is a thread of it (one per process for now), and the scheduler
-// picks threads.
+// What runs are its threads, and the scheduler picks threads.
+//
+// Every CPU schedules on its own: each thread belongs to a CPU - its
+// process's, the least busy one when the process started - and each CPU
+// runs its own threads round robin, 10 ms apiece. Only one CPU at a time
+// runs kernel code (the big kernel lock, spinlock.h); user code runs on
+// all of them at once. A process's signals are acted on by its own CPU
+// only, since it may be running there.
 //
 // User code is preempted by the timer; kernel code is not. Every thread
 // has its own kernel stack and a task (task.h) that runs on it: a trap from
@@ -70,8 +76,9 @@ struct vnode;
 // The console is a kernel process of its own (pid 0, no user address
 // space), scheduled like any other: it sleeps until a command line is typed,
 // and while a program it started runs, it sleeps until that program exits.
-// When nothing can run, the idle task - the boot task, once the kernel is
-// up - halts until an interrupt wakes somebody.
+// When nothing can run, a CPU's idle task - its boot task, once the kernel
+// is up - halts until an interrupt wakes somebody; every CPU's own timer
+// wakes it at least every tick to look for work.
 //
 // A syscall that has to wait (a tty read, waitpid, nanosleep, pause) sleeps
 // in the kernel on a wait queue (wait.h) and carries on from where it was
@@ -101,6 +108,10 @@ namespace process
     // The rest of the boot task's life: run whatever can run, halt when
     // nothing can. Never returns.
     __attribute__((noreturn)) void idle();
+
+    // Every other CPU, once it is set up: its boot context becomes its
+    // idle task, and it runs threads from here on. Never returns.
+    __attribute__((noreturn)) void run_cpu();
 
     // Handles to processes. The object behind one outlives the process, so
     // the exit status stays readable after the process is gone.

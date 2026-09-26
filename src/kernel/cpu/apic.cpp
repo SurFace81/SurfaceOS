@@ -62,6 +62,7 @@ namespace
     ioapic    ioapics[acpi::MAX_IOAPICS];
     uint32_t  ioapic_count = 0;
     uint32_t  bsp_id = 0;
+    uint32_t  timer_count = 0;          // local APIC timer counts per tick
 
     inline uint64_t rdmsr(uint32_t msr)
     {
@@ -258,6 +259,13 @@ namespace apic
         return bsp_id;
     }
 
+    void start_timer_cpu()
+    {
+        lapic_write(LAPIC_TIMER_DIV, TIMER_DIV_16);
+        lapic_write(LAPIC_LVT_TIMER, LVT_PERIODIC | (IRQ_BASE + IRQ_APIC_TIMER));
+        lapic_write(LAPIC_TIMER_INIT, timer_count);
+    }
+
     uint32_t init_cpu()
     {
         // Same mode as the boot CPU's (xAPIC to x2APIC is a legal switch;
@@ -310,8 +318,8 @@ namespace apic
 
         // The PIT falls silent and the local APIC ticks in its place.
         mask_irq(IRQ0_TIMER);
-        lapic_write(LAPIC_LVT_TIMER, LVT_PERIODIC | (IRQ_BASE + IRQ_APIC_TIMER));
-        lapic_write(LAPIC_TIMER_INIT, per_tick);
+        timer_count = per_tick;
+        start_timer_cpu();
 
         // ARAT: the timer keeps running in deep C-states. Without it a CPU
         // idling in one could miss ticks; hlt (all the kernel uses) is C1.

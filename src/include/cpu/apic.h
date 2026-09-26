@@ -43,6 +43,11 @@ namespace apic
     // and everything measured in them stay as they are; then the PIT's IRQ
     // is masked. False (the PIT goes on) when the APIC is not in use.
     bool start_timer();
+
+    // The same periodic timer on the CPU this runs on (every other CPU as
+    // it starts), at the rate start_timer found. Only the boot CPU's tick
+    // is the system's clock; the others preempt and wake their own CPU.
+    void start_timer_cpu();
 }
 
 // The local APIC's spurious-interrupt vector (interrupts.asm): no EOI.

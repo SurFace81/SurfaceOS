@@ -12,6 +12,8 @@
 #                                    ends the programs it started too
 #   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
+#
+# SMP=<n> runs QEMU with n CPUs (default 1).
 set -u
 
 # Programs may write any bytes to the serial log: byte semantics everywhere,
@@ -35,6 +37,7 @@ rm -f "$MON"
 qemu-system-x86_64 \
     -chardev file,id=uart0,path=$LOG \
     -m ${QEMU_MEM:-128M} \
+    -smp ${SMP:-1} \
     -bios uefi64.bin \
     -cpu ${QEMU_CPU:-qemu64} \
     -device qemu-xhci \

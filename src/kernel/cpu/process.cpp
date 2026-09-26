@@ -9,6 +9,8 @@
 #include "../../include/cpu/signal.h"
 #include "../../include/cpu/percpu.h"
 #include "../../include/cpu/spinlock.h"
+#include "../../include/acpi/acpi.h"
+#include "../../include/cpu/smp.h"
 #include "../../include/cpu/task.h"
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
@@ -70,6 +72,7 @@ namespace process
     {
         TState      state;
         Process*    proc;           // null in an unused slot
+        uint32_t    cpu;            // the CPU that runs it (its process's)
 
         // What a handle to the thread refers to (its exit status for
         // Join); the thread holds one reference until it ends. Null for
@@ -114,6 +117,8 @@ namespace process
     struct Process
     {
         State       state;
+        uint32_t    cpu;            // the CPU its threads run on; it alone acts
+                                    // on the process's signals
         pid_t       pid;
         pid_t       ppid;           // 0: started by the console, or an orphan
         pid_t       pgid;           // process group, for job control
@@ -311,23 +316,26 @@ namespace process
         return o;
     }
 
-    // The thread running now, and its process.
-    static Thread*  cur_thread = nullptr;
-    static Process* current   = nullptr;
-    static uint32_t last_slot = 0;
+    // The thread running on this CPU and its process, the time slice it
+    // has used, and where this CPU's round-robin search goes on: each
+    // CPU's own (percpu.h), named here as if they were variables.
+    static inline Cpu* this_cpu() { return cpu::current(); }
+    #define cur_thread  (this_cpu()->thread)
+    #define current     (this_cpu()->proc)
+    #define slice_ticks (this_cpu()->slice_ticks)
+    #define last_slot   (this_cpu()->last_slot)
+
     static pid_t    next_pid  = 1;
 
     static volatile bool kill_requested = false;
-    static uint32_t slice_ticks     = 0;
 
     // The console is a kernel process; while it runs a program it sleeps on
     // a handle to it until the program exits. The program's ppid stays 0
     // ("started by the console").
     static Process* console_proc    = nullptr;
 
-    // The boot task becomes the idle task once the kernel is up: it runs
-    // whenever nothing else can.
-    static Task     idle_task;
+    // Each CPU's boot task becomes its idle task once the kernel is up: it
+    // runs whenever nothing else can (this_cpu()->idle_task).
 
     const uint64_t KERNEL_STACK_FRAMES = KERNEL_STACK_SIZE / 4096;
 
@@ -354,7 +362,7 @@ namespace process
         for (uint32_t i = 0; i < MAX_THREADS; i++)
         {
             Thread* t = &threads[i];
-            if (t->state != TState::Unused || !t->kstack || &t->task == task::current())
+            if (t->state != TState::Unused || !t->kstack || &t->task == this_cpu()->running_task)
                 continue;
             pmm::free_frames(virt_to_phys((void*)t->kstack), KERNEL_STACK_FRAMES);
             t->kstack = 0;
@@ -402,6 +410,7 @@ namespace process
                 t->kstack = (uint64_t)phys_to_virt(frames);
             }
             t->proc = p;
+            t->cpu  = p->cpu;
             return t;
         }
         return nullptr;
@@ -455,6 +464,23 @@ namespace process
         return nullptr;
     }
 
+    // The CPU with the fewest threads: where a new process goes. Threads
+    // stay on their process's CPU until TLB shootdown lets one process's
+    // threads run on several CPUs at once.
+    static uint32_t least_loaded_cpu()
+    {
+        uint32_t cpus = smp::running();
+        uint32_t load[acpi::MAX_CPUS] = {};
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+            if (threads[i].state != TState::Unused && threads[i].cpu < cpus)
+                load[threads[i].cpu]++;
+        uint32_t best = 0;
+        for (uint32_t c = 1; c < cpus; c++)
+            if (load[c] < load[best])
+                best = c;
+        return best;
+    }
+
     // A new process with its first thread, both slots taken but not
     // started yet (state Unused until start()).
     static Process* alloc_process()
@@ -466,6 +492,7 @@ namespace process
 
             Process* p = &table[i];
             memory::memset((uint8_t*)p, 0x00, sizeof(Process));
+            p->cpu = least_loaded_cpu();
             Thread* t = alloc_thread(p);
             if (!t)
                 return nullptr;         // slot stays Unused
@@ -1149,15 +1176,17 @@ namespace process
                (t->wake_tick && pit::ticks() >= t->wake_tick);
     }
 
-    // The next thread to run, round robin over the thread table; a thread
-    // of a stopped process is passed over. nullptr: none can run.
+    // The next thread to run on this CPU, round robin over its threads in
+    // the thread table; a thread of a stopped process is passed over.
+    // nullptr: none can run.
     static Thread* pick_next()
     {
         for (uint32_t i = 1; i <= MAX_THREADS; i++)
         {
             uint32_t slot = (last_slot + i) % MAX_THREADS;
             Thread* t = &threads[slot];
-            if (t->state == TState::Unused || t->proc->state != State::Live)
+            if (t->state == TState::Unused || t->cpu != this_cpu()->index ||
+                t->proc->state != State::Live)
                 continue;
 
             if (t->state == TState::Blocked && wake_ready(t))
@@ -1175,13 +1204,17 @@ namespace process
     // Ctrl+Alt+Backspace: every user process dies as if by SIGINT, which is
     // what a terminal interrupt would deliver in Linux. It works when the
     // program ignores or catches every signal it can.
+    static void post_signal(Process* p, int n);
+
     static void kill_user_processes()
     {
+        // SIGKILL, acted on by each process's own CPU: a process running
+        // on another CPU cannot be torn down from here.
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
             if (alive(p) && !p->kernel)
-                terminate(p, signal_status(SIGINT));
+                post_signal(p, SIGKILL);
         }
     }
 
@@ -1300,6 +1333,8 @@ namespace process
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
+            if (p->cpu != this_cpu()->index)
+                continue;               // its own CPU acts on it (it may be running there)
 
             while (alive(p) && p->sig.pending)
             {
@@ -1458,7 +1493,7 @@ namespace process
     {
         Thread* next = choose_next();
         if (!next)
-            switch_kernel_task(&idle_task);
+            switch_kernel_task(&this_cpu()->idle_task);
         else if (next != cur_thread)
             switch_thread(next);
 
@@ -1595,7 +1630,7 @@ namespace process
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
 
-        task::init(&idle_task, "idle");
+        task::init(&this_cpu()->idle_task, "idle");
 
         asm volatile("fninit");
         fpu_save(fpu_template);
@@ -1634,6 +1669,15 @@ namespace process
         task::prepare_kernel(&t->task, "console", kstack_top(t), entry, nullptr);
         start(p);
         console_proc = p;
+    }
+
+    void run_cpu()
+    {
+        task::init(&this_cpu()->idle_task, "idle");
+        this_cpu()->thread = nullptr;
+        this_cpu()->proc   = nullptr;
+        bkl::enter();
+        idle();
     }
 
     void idle()
@@ -1879,8 +1923,8 @@ namespace process
         screen::push_viewport(screen::vp_x(), screen::vp_y() + bar_h,
                               screen::vp_w(), screen::vp_h() - bar_h);
 
-        uart::printf("console: program start, pid %u %s entry=%llx\n",
-                     (uint32_t)p->pid, p->name, entry);
+        uart::printf("console: program start, pid %u %s entry=%llx cpu %u\n",
+                     (uint32_t)p->pid, p->name, entry, p->cpu);
 
         // The program is runnable now; sleep until it has exited. Its
         // children are not waited for: an orphan keeps running on its own.
@@ -3054,8 +3098,8 @@ namespace process
             regs->rax = SF_INVALID_PARAMETER;
             return;
         }
-        uart::printf("process: pid %u started %s (pid %u)\n",
-                     (uint32_t)current->pid, p->name, (uint32_t)p->pid);
+        uart::printf("process: pid %u started %s (pid %u, cpu %u)\n",
+                     (uint32_t)current->pid, p->name, (uint32_t)p->pid, p->cpu);
         regs->rax = SF_SUCCESS;
     }
 

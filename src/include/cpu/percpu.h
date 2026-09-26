@@ -4,6 +4,9 @@
 #include "types.h"
 #include "tss.h"
 #include "gdt.h"
+#include "task.h"
+
+namespace process { struct Process; struct Thread; }
 
 // What each CPU keeps for itself: found through the GS base, which points
 // at the CPU's own Cpu while it runs kernel code.
@@ -27,6 +30,16 @@ struct Cpu
     uint32_t apic_id;
     uint32_t bkl_depth;     // how often it holds the big kernel lock (spinlock.h)
     volatile bool online;   // set by the CPU itself once it runs (smp.cpp)
+
+    // The scheduler's part (process.cpp): the thread running here and its
+    // process, the kernel task on this CPU, the idle task it falls back
+    // to, where its round-robin search goes on, and the time slice used.
+    process::Thread*  thread;
+    process::Process* proc;
+    Task*    running_task;
+    Task     idle_task;
+    uint32_t last_slot;
+    uint32_t slice_ticks;
     GDT_t*   gdt;
     tss_t    tss;
 };

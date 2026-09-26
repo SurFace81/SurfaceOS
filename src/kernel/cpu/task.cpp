@@ -1,6 +1,7 @@
 // Kernel tasks: stack switching. See task.h.
 
 #include "../../include/cpu/task.h"
+#include "../../include/cpu/percpu.h"
 
 extern "C" void task_switch(uint64_t* save_rsp, uint64_t new_rsp);
 extern "C" void task_kernel_start();
@@ -10,8 +11,6 @@ namespace task
 {
     namespace
     {
-        Task* running = nullptr;
-
         // What task_switch pops, lowest address first.
         struct switch_frame
         {
@@ -41,20 +40,21 @@ namespace task
     {
         boot->rsp = 0;
         boot->name = name;
-        running = boot;
+        cpu::current()->running_task = boot;
     }
 
     Task* current()
     {
-        return running;
+        return cpu::current()->running_task;
     }
 
     void switch_to(Task* next)
     {
-        Task* prev = running;
+        Cpu* c = cpu::current();
+        Task* prev = c->running_task;
         if (prev == next)
             return;
-        running = next;
+        c->running_task = next;
         task_switch(&prev->rsp, next->rsp);
     }
 

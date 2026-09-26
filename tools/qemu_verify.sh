@@ -21,6 +21,7 @@ rm -f "$LOG" "$MON"
 qemu-system-x86_64 \
     -chardev file,id=uart0,path=$LOG \
     -m ${QEMU_MEM:-128M} \
+    -smp ${SMP:-1} \
     -bios uefi64.bin \
     -cpu ${QEMU_CPU:-qemu64} \
     -device qemu-xhci \

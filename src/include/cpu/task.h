@@ -29,10 +29,10 @@ struct Task
 
 namespace task
 {
-    // Adopt the running boot context as task `boot`.
+    // Adopt the running boot context of this CPU as task `boot`.
     void init(Task* boot, const char* name);
 
-    // The task running right now.
+    // The task running right now on this CPU.
     Task* current();
 
     // Save the running task and resume `next`. Returns when some other task
