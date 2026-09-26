@@ -52,6 +52,7 @@ namespace sfcall
 
         set_handler(SFCALL_EXIT, process::sf_exit);
         set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);
+        set_handler(SFCALL_CONSOLE_READLINE, sdkpage::console_readline);
         uart::printf("boot: syscall instruction enabled\n");
     }
 

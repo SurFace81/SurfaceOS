@@ -8,6 +8,7 @@
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/tty.h"
+#include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/sfos.h"
 
 extern "C" const uint8_t sdk_code_start[];
@@ -141,5 +142,56 @@ namespace sdkpage
             text += CHUNK - 1;
         }
         kfree(buf);
+    }
+
+    void console_readline(user_regs* regs, iret_frame*)
+    {
+        uint64_t buffer = regs->rdi;
+        uint64_t size   = regs->rsi;
+        uint64_t length = regs->rdx;
+        if (!size)
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+
+        // The tty's line is at most 1 KiB, so one read takes all of it.
+        const uint64_t LINE = 1024;
+        char* line = (char*)kmalloc(LINE);
+        if (!line)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+
+        sint64_t n;
+        while ((n = tty::read(line, LINE)) == -EAGAIN)
+        {
+            if (!tty::wait_readable())
+            {
+                // Ctrl+C (or ^Z) ended the wait.
+                kfree(line);
+                regs->rax = SF_ABORTED;
+                return;
+            }
+        }
+        if (n == 0)
+        {
+            kfree(line);
+            regs->rax = SF_END_OF_FILE;
+            return;
+        }
+
+        uint64_t len = (uint64_t)n;
+        if (line[len - 1] == '\n')
+            len--;
+        if (len > size - 1)
+            len = size - 1;             // a longer line is cut
+        line[len] = '\0';
+
+        bool ok = uaccess::copy_to_user(buffer, line, len + 1) &&
+                  (!length || uaccess::copy_to_user(length, &len, sizeof(len)));
+        kfree(line);
+        regs->rax = ok ? SF_SUCCESS : SF_INVALID_PARAMETER;
     }
 }

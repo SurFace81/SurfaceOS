@@ -1301,51 +1301,45 @@ static void cmd_cd(int argc, const char** argv)
     vfs::set_cwd(v);        // takes the reference
 }
 
-static void cmd_exec(int argc, const char** argv)
+namespace commands
 {
-    if (argc < 2)
+    bool run_app(int argc, const char** argv)
     {
-        screen::printf("\n\rUsage: exec <filename> [args...]   (Esc terminates the app)");
-        return;
-    }
-
-    // argv[1..] becomes the program's argv, so argv[0] is its own name.
-    int status = 0;
-    screen::printf("\n\r");
-    bool ran = process::run(argv[1], argc - 1, argv + 1, &status);
-    if (!ran)
-    {
-        // PATH fallback: a bare name is looked up in /apps.
-        bool has_slash = false;
-        for (const char* p = argv[1]; *p; p++)
-            if (*p == '/')
-                has_slash = true;
-
-        if (!has_slash)
+        // argv becomes the program's argv, so argv[0] is its own name.
+        int status = 0;
+        screen::printf("\n\r");
+        bool ran = process::run(argv[0], argc, argv, &status);
+        if (!ran)
         {
-            static const char prefix[] = "/apps/";
-            char alt[NAME_MAX + sizeof(prefix)];
-            uint32_t n = 0;
-            for (const char* p = prefix; *p; p++)
-                alt[n++] = *p;
-            for (const char* p = argv[1]; *p && n < sizeof(alt) - 1; p++)
-                alt[n++] = *p;
-            alt[n] = '\0';
+            // A bare name is looked up in /apps.
+            bool has_slash = false;
+            for (const char* p = argv[0]; *p; p++)
+                if (*p == '/')
+                    has_slash = true;
 
-            ran = process::run(alt, argc - 1, argv + 1, &status);
+            if (!has_slash)
+            {
+                static const char prefix[] = "/apps/";
+                char alt[NAME_MAX + sizeof(prefix)];
+                uint32_t n = 0;
+                for (const char* p = prefix; *p; p++)
+                    alt[n++] = *p;
+                for (const char* p = argv[0]; *p && n < sizeof(alt) - 1; p++)
+                    alt[n++] = *p;
+                alt[n] = '\0';
+
+                ran = process::run(alt, argc, argv, &status);
+            }
         }
-    }
+        if (!ran)
+            return false;
 
-    if (!ran)
-    {
-        screen::printf("Failed to load: %s", argv[1]);
-        return;
+        if (WIFSIGNALED(status))
+            screen::printf("%s: terminated by signal %u", argv[0], (uint32_t)WTERMSIG(status));
+        else if (WEXITSTATUS(status) != 0)
+            screen::printf("%s: exited with status %u", argv[0], (uint32_t)WEXITSTATUS(status));
+        return true;
     }
-
-    if (WIFSIGNALED(status))
-        screen::printf("%s: terminated by signal %u", argv[1], (uint32_t)WTERMSIG(status));
-    else if (WEXITSTATUS(status) != 0)
-        screen::printf("%s: exited with status %u", argv[1], (uint32_t)WEXITSTATUS(status));
 }
 
 // Flush every mounted file system and unmount the root (and with it
@@ -1472,7 +1466,6 @@ namespace commands
         console::register_command("cp",      cmd_cp);
         console::register_command("mv",      cmd_mv);
         console::register_command("rmdir",   cmd_rmdir);
-        console::register_command("exec",    cmd_exec);
         console::register_command("acpi",    cmd_acpi);
         console::register_command("reboot",  cmd_reboot);
         console::register_command("shutdown", cmd_shutdown);

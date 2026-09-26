@@ -30,7 +30,7 @@ static char* argv_buf[CONSOLE_MAX_ARGS];
 // Deferred command queue. The keyboard handler only enqueues a command;
 // console::poll() executes it later from the main kernel loop (process
 // context). This keeps heavy synchronous work (USB I/O, page mapping for
-// `exec`) out of the keyboard IRQ, where it would block all interrupts
+// a program start) out of the keyboard IRQ, where it would block all interrupts
 // and could lose the PIC EOI.
 static char pending_line[CONSOLE_INPUT_MAX];
 static volatile bool pending_valid = false;
@@ -167,7 +167,9 @@ static void exec(const char* line)
         }
     }
 
-    screen::printf("\n\rUnknown command: %s", cmd_name);
+    // Not a built-in command: a program of that name.
+    if (!commands::run_app(argc, (const char**)argv_buf))
+        screen::printf("Unknown command: %s", cmd_name);
 }
 
 // Keyboard event handler
@@ -225,7 +227,7 @@ static void on_key(keyboard_event_t e)
         history_push(cmd_line);
         history_browse = -1;
 
-        // Defer execution to the console task. Running `exec` (and other
+        // Defer execution to the console task. Starting a program (and other
         // heavy commands) here would execute inside the keyboard IRQ.
         // The prompt is printed by poll() after the command finishes.
         if (!pending_valid)
@@ -505,7 +507,7 @@ namespace console
         // because the xHCI driver measured its timeouts in `pause`
         // instructions and any preemption blew through them. Those timeouts
         // are wall-clock now (see delay_ms in xhci.cpp), which both fixes
-        // the real problem and is a hard requirement for `exec`: an app in
+        // the real problem and is a hard requirement for programs: an app in
         // ring 3 needs the timer and keyboard IRQs to keep arriving.
         exec(local_line);
 

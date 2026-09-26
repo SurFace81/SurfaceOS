@@ -30,9 +30,10 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   libc) is still in the tree until it is removed.
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
-  lsblk, exec /apps/<name>, hardware info commands
-- Programs: sdkcheck (the SDK tables); the tests are being rewritten on
-  the SDK
+  lsblk, hardware info commands; a program runs by its name (looked up
+  in /apps) or by its path
+- Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
+  tables); the tests are being rewritten on the SDK
  
 # Project Structure
  

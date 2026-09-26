@@ -137,7 +137,7 @@ type_cmd "cd /apps"; sleep 3
 # 1. sdkcheck: a program on the SurfaceOS SDK - the tables it starts with
 #    and Console->Print; its SfStatus becomes the exit status.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec sdkcheck"
+type_cmd "sdkcheck"
 wait_for "sdkcheck: " 20; result $? "sdkcheck finished"
 grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no failed checks"
 wait_session_end $WANT 15; result $? "sdkcheck exits"
@@ -162,7 +162,7 @@ wait_for "umount: ok usb1p1" 10; result $? "umount succeeds once nothing holds i
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec sdkcheck"
+type_cmd "sdkcheck"
 wait_session_end $WANT 15; result $? "program between meminfo samples ended"
 type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)

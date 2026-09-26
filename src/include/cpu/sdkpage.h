@@ -40,6 +40,11 @@ namespace sdkpage
     // SFCALL_CONSOLE_PRINT (Text): write a NUL-terminated string to the
     // console.
     void console_print(user_regs* regs, iret_frame* iret);
+
+    // SFCALL_CONSOLE_READLINE (Buffer, Size, Length): sleep until the user
+    // types a line and copy it without the line break, NUL-terminated and
+    // cut to Size - 1 bytes. Length may be null.
+    void console_readline(user_regs* regs, iret_frame* iret);
 }
 
 #endif // SDKPAGE_H

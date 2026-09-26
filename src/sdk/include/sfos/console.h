@@ -7,10 +7,10 @@
 //
 //   Print     write Text (UTF-8, NUL-terminated) at the cursor.
 //   ReadLine  read one line typed by the user into Buffer (Size bytes,
-//             including the terminating NUL; the line break is not stored).
-//             *Length gets the line's length. SF_ABORTED when the user
-//             pressed Ctrl+C instead, SF_END_OF_FILE when there is no more
-//             input.
+//             including the terminating NUL; the line break is not stored,
+//             a longer line is cut). *Length, when Length is not null, gets
+//             the stored length. SF_ABORTED when the user pressed Ctrl+C
+//             instead, SF_END_OF_FILE after Ctrl+D on an empty line.
 typedef struct SfConsole SfConsole;
 
 struct SfConsole
