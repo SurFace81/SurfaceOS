@@ -58,6 +58,7 @@ namespace term
     // Everything below writes to the selected screen (0..TERM_SCREENS-1);
     // the panel shows another one, or the same.
     void select(uint32_t n);
+    uint32_t selected();
     void show(uint32_t n);
     uint32_t shown_screen();
 
@@ -87,8 +88,14 @@ namespace term
     void show_cursor();
     void hide_cursor();
 
-    // Default foreground for cells written from now on.
+    // Default foreground (and background) for cells written from now on.
     void set_fg(uint8_t idx);
+    void set_colors(uint8_t fg, uint8_t bg);
+
+    // Cells at a place, the cursor left alone: one in the given colours,
+    // or a run of text in the current ones, cut at the right edge.
+    void put_cell(uint32_t x, uint32_t y, char ch, uint8_t fg, uint8_t bg);
+    void write_at(uint32_t x, uint32_t y, const char* s, uint64_t len);
 
     // Rasterise everything dirty (title bar included) into the back buffer
     // and update the cursor's blink state. Called from the timer before

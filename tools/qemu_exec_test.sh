@@ -154,6 +154,25 @@ wait_for "sdkcheck input: child got screens" 10
 result $? "keys typed on screen 2 did not reach screen 1"
 wait_session_end $WANT 15
 
+# 1b. Keys through the console protocol: in SF_CONSOLE_RAW every key comes
+#     to ReadKey, Ctrl+C too; in a ReadLine, Ctrl+C ends it (SF_ABORTED).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck keys"
+wait_for "press keys, q ends" 20; result $? "sdkcheck keys switched to SF_CONSOLE_RAW"
+key a
+wait_for "sdkcheck key: code 30 mods 0 char 97" 10; result $? "ReadKey: a letter"
+key ctrl-c
+wait_for "sdkcheck key: code 46 mods 2 char 3" 10; result $? "ReadKey: Ctrl+C is a key in SF_CONSOLE_RAW"
+key up
+wait_for "sdkcheck key: code 200 mods 0 char 0" 10; result $? "ReadKey: an arrow"
+key q
+wait_session_end $WANT 15; result $? "sdkcheck keys ends on q"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"; sleep 2
+key ctrl-c
+wait_for "sdkcheck input: aborted" 10; result $? "Ctrl+C ends a ReadLine with SF_ABORTED"
+wait_session_end $WANT 15
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))
@@ -164,8 +183,9 @@ grep -aq "sfstest: [0-9]* passed, 0 failed" "$LOG"; result $? "sfstest: no faile
 wait_session_end $WANT 15; result $? "sfstest exits"
 
 # 3. threadtest: however a program with several threads ends, all of them
-#    end - a fault in one (SIGSEGV = 11), ^C (SIGINT = 2), or the last
-#    thread leaving after the first (its status 42, wait format 42 << 8).
+#    end - a fault in one (SIGSEGV = 11), the kill key Ctrl+Alt+Backspace
+#    (SIGKILL = 9), or the last thread leaving after the first (its status
+#    42, wait format 42 << 8).
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest fault"
 wait_session_end $WANT 15; result $? "threadtest fault ends"
@@ -173,9 +193,9 @@ wait_session_end $WANT 15; result $? "threadtest fault ends"
 
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest spin"; sleep 3
-monitor "sendkey ctrl-c"
-wait_session_end $WANT 15; result $? "threadtest spin ends on ^C"
-[ "$(last_status)" = "2" ]; result $? "^C ends every thread (SIGINT)"
+monitor "sendkey ctrl-alt-backspace"
+wait_session_end $WANT 15; result $? "threadtest spin ends on the kill key"
+[ "$(last_status)" = "9" ]; result $? "the kill key ends every thread (SIGKILL)"
 
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest lastexit"
@@ -190,19 +210,19 @@ grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "threadtest stress: [0-9]* passed, 0 failed" "$LOG"; result $? "threadtest stress: no failed checks"
 wait_session_end $WANT 15; result $? "threadtest stress exits"
 
-# ^C reaches the programs a program started: they share its console.
+# The kill key ends the programs a program started too.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 STARTED_BEFORE=$(grep -ac "started threadtest" "$LOG")
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest group"; sleep 4
-monitor "sendkey ctrl-c"
-wait_session_end $WANT 15; result $? "threadtest group ends on ^C"
+monitor "sendkey ctrl-alt-backspace"
+wait_session_end $WANT 15; result $? "threadtest group ends on the kill key"
 [ "$(grep -ac "started threadtest" "$LOG")" = "$((STARTED_BEFORE + 2))" ]; result $? "it started two programs of its own"
 sleep 2; type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
-result $? "^C ended them too (all their memory is back: $FRAMES_BEFORE -> $FRAMES_AFTER)"
+result $? "the kill key ended them too (all their memory is back: $FRAMES_BEFORE -> $FRAMES_AFTER)"
 
 # 4. mount puts every partition of the second disk under /mount; umount
 #    refuses while the FS is in use (the console cwd holds its root), and

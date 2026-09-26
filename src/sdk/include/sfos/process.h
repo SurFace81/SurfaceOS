@@ -14,7 +14,7 @@
 //            process.
 //   Start    start program Name (from /apps) with ArgCount strings Args as
 //            its arguments - it sees Args[0] as its App->Args[1]. It shares
-//            this program's screen (Ctrl+C reaches both) and runs on when
+//            this program's screen and runs on when
 //            this program ends. *Handle refers to it for Wait. SF_NOT_FOUND
 //            for no such program.
 //
@@ -24,7 +24,7 @@
 //            the input, a ReadLine of the new program waits for its turn.
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
-//            was stopped short (a fault, Ctrl+C). Handle is used up.
+//            was stopped short (a fault, the kill key). Handle is used up.
 typedef struct SfProcess SfProcess;
 
 struct SfProcess

@@ -214,6 +214,11 @@ namespace process
     // waits (wait_for_input) until its process is the one; false when a
     // signal ended the wait.
     pid_t screen_input_owner(uint32_t screen);
+
+    // The calling process's screen, and its console mode (sfconsole.cpp).
+    uint32_t current_screen();
+    bool     console_raw();
+    void     set_console_raw(bool raw);
     bool  wait_for_input();
     pid_t cur_pgrp();
 

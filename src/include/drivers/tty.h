@@ -31,20 +31,11 @@ namespace tty
     // Producer side (called from the keyboard IRQ).
     void on_key(keyboard_event_t e);
 
-    // A key that ISIG turns into a signal (^C, ^backslash, ^Z) was pressed.
-    // Returns the signal number once and then 0, so the process layer can
-    // post it to the foreground group at the next ring-3 boundary. The
-    // conversion deliberately does not happen in the keyboard IRQ: posting
-    // walks the process table, and the IRQ can land anywhere.
-    int take_signal();
-
-    // Ctrl+Alt+Backspace: the console's emergency kill. Reported once, like
-    // take_signal. It exists because every ordinary way out can be refused
-    // by the application - ^C can be caught or have ISIG cleared, and Esc
-    // has belonged to the application since stage 4 - so a program that
-    // catches SIGINT and never exits would otherwise own the machine. It is
-    // deliberately a combination no terminal application asks for, and it
-    // bypasses termios entirely.
+    // Ctrl+Alt+Backspace: the console's emergency kill, reported once. The
+    // process layer acts on it at the next scheduling decision (the IRQ can
+    // land anywhere). Every other key, Ctrl+C included, belongs to the
+    // program, so without it a program that never ends would own the
+    // machine.
     bool take_kill();
 
     // The foreground process group: who ^C goes to, and who is allowed to

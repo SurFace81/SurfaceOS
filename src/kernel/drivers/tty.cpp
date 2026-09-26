@@ -20,11 +20,7 @@ namespace
     volatile uint32_t head = 0;
     volatile uint32_t tail = 0;
 
-    // Set by the keyboard IRQ, consumed in syscall context. The flush that
-    // ISIG implies happens there too: emptying the line buffer from an
-    // interrupt could land in the middle of a read assembling it.
-    volatile int  pending_sig = 0;
-    volatile bool flush_pending = false;
+    // Set by the keyboard IRQ, consumed at the next scheduling decision.
     volatile bool kill_flag = false;
 
     pid_t fg = 0;                       // foreground process group
@@ -410,8 +406,6 @@ namespace tty
     {
         head = 0;
         tail = 0;
-        pending_sig = 0;
-        flush_pending = false;
         kill_flag = false;
         fg = 0;
         line_len_ = 0;
@@ -439,26 +433,9 @@ namespace tty
             return;
         }
 
-        // ISIG keys never reach the application: they become signals for
-        // the foreground group. Esc used to end the session here, which
-        // made it impossible for an application to see Esc or any escape
-        // sequence built on it.
-        if (e.type == KEY_PRESS && (cur.c_lflag & ISIG) && e.KeyChar != 0)
-        {
-            uint8_t ch = (uint8_t)e.KeyChar;
-            int s = 0;
-            if      (ch == cur.c_cc[VINTR]) s = SIGINT;
-            else if (ch == cur.c_cc[VQUIT]) s = SIGQUIT;
-            else if (ch == cur.c_cc[VSUSP]) s = SIGTSTP;
-
-            if (s)
-            {
-                pending_sig = s;
-                if (!(cur.c_lflag & NOFLSH))
-                    flush_pending = true;
-                return;
-            }
-        }
+        // Ctrl+C, Ctrl+\ and Ctrl+Z are keys like any other: every program
+        // is a SurfaceOS one, and what they mean is up to it (in a ReadLine,
+        // Ctrl+C ends the line - sfconsole.cpp). No ISIG signals any more.
 
         uint32_t next = (head + 1) % RING_SIZE;
         if (next == tail)
@@ -475,28 +452,6 @@ namespace tty
             return false;
         kill_flag = false;
         return true;
-    }
-
-    int take_signal()
-    {
-        int s = pending_sig;
-        if (!s)
-            return 0;
-        pending_sig = 0;
-
-        if (flush_pending)
-        {
-            flush_pending = false;
-            // POSIX: unless NOFLSH, an ISIG key discards everything typed
-            // but not yet read.
-            tail = head;
-            rq_clear();
-            raw_short  = false;
-            line_len_  = 0;
-            line_cur   = 0;
-            line_ready = false;
-        }
-        return s;
     }
 
     pid_t fg_pgrp()              { return fg; }

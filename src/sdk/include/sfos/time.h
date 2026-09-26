@@ -8,8 +8,8 @@
 //   GetTime    *Time gets the date and time of the machine's clock.
 //   GetUptime  *Milliseconds gets the time since the system started: for
 //              measuring how long something takes.
-//   Sleep      do nothing for Milliseconds. SF_ABORTED when the user
-//              interrupted it.
+//   Sleep      do nothing for Milliseconds. SF_ABORTED when it was cut
+//              short.
 typedef struct SfDateTime
 {
     uint16_t Year;          // 2026

@@ -58,6 +58,14 @@
 #define SFCALL_WAIT                  24  // (uint64_t Handle, uint64_t TimeoutMs): any waitable handle
 #define SFCALL_PROCESS_START         25  // (const char* Name, uint64_t ArgCount, const char* const* Args, uint64_t* Handle, uint64_t Flags)
 #define SFCALL_PROCESS_WAIT          26  // (uint64_t Handle, SfStatus* Status)
-#define SFCALL_COUNT                 27
+#define SFCALL_CONSOLE_GET_SIZE      27  // (uint32_t* Columns, uint32_t* Rows)
+#define SFCALL_CONSOLE_SET_CURSOR    28  // (uint32_t Column, uint32_t Row, uint8_t Visible)
+#define SFCALL_CONSOLE_SET_COLOR     29  // (uint8_t Foreground, uint8_t Background)
+#define SFCALL_CONSOLE_WRITE_AT      30  // (uint32_t Column, uint32_t Row, const char* Text)
+#define SFCALL_CONSOLE_DRAW          31  // (uint32_t Column, uint32_t Row, uint32_t Width, uint32_t Height, const SfCell* Cells)
+#define SFCALL_CONSOLE_READ_KEY      32  // (SfKey* Key)
+#define SFCALL_CONSOLE_SET_MODE      33  // (uint64_t Mode)
+#define SFCALL_CONSOLE_SET_TITLE     34  // (const char* Text)
+#define SFCALL_COUNT                 35
 
 #endif // ABI_SFCALL_H

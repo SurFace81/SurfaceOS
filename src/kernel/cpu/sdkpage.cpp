@@ -7,9 +7,7 @@
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
-#include "../../include/drivers/tty.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/sdkimage.h"
 #include "../../sdk/include/sfos.h"
 
@@ -148,97 +146,5 @@ namespace sdkpage
 
         *out_start = start;
         return true;
-    }
-
-    void console_print(user_regs* regs, iret_frame*)
-    {
-        const uint64_t CHUNK = 1024;
-        char* buf = (char*)kmalloc(CHUNK);
-        if (!buf)
-        {
-            regs->rax = SF_OUT_OF_RESOURCES;
-            return;
-        }
-
-        // Any length, a chunk at a time: -2 means the chunk is full and the
-        // text goes on.
-        uint64_t text = regs->rdi;
-        for (;;)
-        {
-            sint64_t len = uaccess::strncpy_from_user(buf, text, CHUNK);
-            if (len == -1)
-            {
-                regs->rax = SF_INVALID_PARAMETER;
-                break;
-            }
-            if (len >= 0)
-            {
-                tty::write(buf, (uint64_t)len);
-                regs->rax = SF_SUCCESS;
-                break;
-            }
-            tty::write(buf, CHUNK - 1);
-            text += CHUNK - 1;
-        }
-        kfree(buf);
-    }
-
-    void console_readline(user_regs* regs, iret_frame*)
-    {
-        uint64_t buffer = regs->rdi;
-        uint64_t size   = regs->rsi;
-        uint64_t length = regs->rdx;
-        if (!size)
-        {
-            regs->rax = SF_INVALID_PARAMETER;
-            return;
-        }
-
-        // Only the input owner of the screen reads keys; anyone else waits
-        // for its turn (sfos/process.h, Start).
-        if (!process::wait_for_input())
-        {
-            regs->rax = SF_ABORTED;
-            return;
-        }
-
-        // The tty's line is at most 1 KiB, so one read takes all of it.
-        const uint64_t LINE = 1024;
-        char* line = (char*)kmalloc(LINE);
-        if (!line)
-        {
-            regs->rax = SF_OUT_OF_RESOURCES;
-            return;
-        }
-
-        sint64_t n;
-        while ((n = tty::read(line, LINE)) == -EAGAIN)
-        {
-            if (!tty::wait_readable())
-            {
-                // Ctrl+C (or ^Z) ended the wait.
-                kfree(line);
-                regs->rax = SF_ABORTED;
-                return;
-            }
-        }
-        if (n == 0)
-        {
-            kfree(line);
-            regs->rax = SF_END_OF_FILE;
-            return;
-        }
-
-        uint64_t len = (uint64_t)n;
-        if (line[len - 1] == '\n')
-            len--;
-        if (len > size - 1)
-            len = size - 1;             // a longer line is cut
-        line[len] = '\0';
-
-        bool ok = uaccess::copy_to_user(buffer, line, len + 1) &&
-                  (!length || uaccess::copy_to_user(length, &len, sizeof(len)));
-        kfree(line);
-        regs->rax = ok ? SF_SUCCESS : SF_INVALID_PARAMETER;
     }
 }

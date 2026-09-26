@@ -6,6 +6,7 @@
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/sffile.h"
 #include "../../include/cpu/sftime.h"
+#include "../../include/cpu/sfconsole.h"
 #include "../../include/cpu/sfsync.h"
 #include "../../include/drivers/uart.h"
 
@@ -60,8 +61,6 @@ namespace sfcall
         init_cpu();
 
         set_handler(SFCALL_EXIT, process::sf_exit);
-        set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);
-        set_handler(SFCALL_CONSOLE_READLINE, sdkpage::console_readline);
         set_handler(SFCALL_THREAD_CREATE, process::sf_thread_create);
         set_handler(SFCALL_THREAD_EXIT, process::sf_thread_exit);
         set_handler(SFCALL_THREAD_JOIN, process::sf_thread_join);
@@ -73,6 +72,7 @@ namespace sfcall
         set_handler(SFCALL_MEMORY_FREE_PAGES, process::sf_free_pages);
         sffile::init();
         sftime::init();
+        sfconsole::init();
         sfsync::init();
         uart::printf("boot: syscall instruction enabled\n");
     }

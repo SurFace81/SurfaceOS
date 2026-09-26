@@ -36,6 +36,47 @@ static SfStatus ConsoleReadLine(SfConsole*, char* Buffer, uint64_t Size, uint64_
     return SfCall(SFCALL_CONSOLE_READLINE, (uint64_t)Buffer, Size, (uint64_t)Length);
 }
 
+static SfStatus ConsoleGetSize(SfConsole*, uint32_t* Columns, uint32_t* Rows)
+{
+    return SfCall(SFCALL_CONSOLE_GET_SIZE, (uint64_t)Columns, (uint64_t)Rows);
+}
+
+static SfStatus ConsoleSetCursor(SfConsole*, uint32_t Column, uint32_t Row, uint8_t Visible)
+{
+    return SfCall(SFCALL_CONSOLE_SET_CURSOR, Column, Row, Visible);
+}
+
+static SfStatus ConsoleSetColor(SfConsole*, uint8_t Foreground, uint8_t Background)
+{
+    return SfCall(SFCALL_CONSOLE_SET_COLOR, Foreground, Background);
+}
+
+static SfStatus ConsoleWriteAt(SfConsole*, uint32_t Column, uint32_t Row, const char* Text)
+{
+    return SfCall(SFCALL_CONSOLE_WRITE_AT, Column, Row, (uint64_t)Text);
+}
+
+static SfStatus ConsoleDraw(SfConsole*, uint32_t Column, uint32_t Row, uint32_t Width,
+                            uint32_t Height, const SfCell* Cells)
+{
+    return SfCall(SFCALL_CONSOLE_DRAW, Column, Row, Width, Height, (uint64_t)Cells);
+}
+
+static SfStatus ConsoleReadKey(SfConsole*, SfKey* Key)
+{
+    return SfCall(SFCALL_CONSOLE_READ_KEY, (uint64_t)Key);
+}
+
+static SfStatus ConsoleSetMode(SfConsole*, uint64_t Mode)
+{
+    return SfCall(SFCALL_CONSOLE_SET_MODE, Mode);
+}
+
+static SfStatus ConsoleSetTitle(SfConsole*, const char* Text)
+{
+    return SfCall(SFCALL_CONSOLE_SET_TITLE, (uint64_t)Text);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -111,6 +152,14 @@ static const SfConsole SdkConsole =
     { SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole) },
     ConsolePrint,
     ConsoleReadLine,
+    ConsoleGetSize,
+    ConsoleSetCursor,
+    ConsoleSetColor,
+    ConsoleWriteAt,
+    ConsoleDraw,
+    ConsoleReadKey,
+    ConsoleSetMode,
+    ConsoleSetTitle,
 };
 
 const SfFiles SdkFiles =

@@ -15,6 +15,10 @@
 //                                      exactly those arguments, | 6 if not
 //   sdkcheck late                      prints a line after 300 ms
 //   sdkcheck reader                    reads a line, says what it got
+//                                      ("... aborted" after Ctrl+C)
+//
+// Run as `sdkcheck keys`, it switches the console to SF_CONSOLE_RAW and
+// reports every key ("sdkcheck key: code C mods M char N") until 'q'.
 //
 // Run as `sdkcheck input`, it starts `sdkcheck reader` with its input
 // (SF_START_GIVE_INPUT) and then reads a line of its own: the first line
@@ -389,6 +393,8 @@ static SfStatus ReadAndReport(SfConsole* Console, const char* Who)
 {
     char Line[64];
     SfStatus Status = Console->ReadLine(Console, Line, sizeof(Line), nullptr);
+    if (Status == SF_ABORTED)
+        Print("sdkcheck input: aborted\n");
     if (SF_ERROR(Status))
         return Status;
     Print("sdkcheck input: ");
@@ -397,6 +403,67 @@ static SfStatus ReadAndReport(SfConsole* Console, const char* Who)
     Print(Line);
     Print("\n");
     return SF_SUCCESS;
+}
+
+// sdkcheck keys: see the top of the file.
+static SfStatus RunKeys(SfConsole* Console)
+{
+    Console->SetMode(Console, SF_CONSOLE_RAW);
+    Print("sdkcheck keys: press keys, q ends\n");
+    for (;;)
+    {
+        SfKey Key;
+        SfStatus Status = Console->ReadKey(Console, &Key);
+        if (SF_ERROR(Status))
+            return Status;
+        Print("sdkcheck key: code ");
+        PrintNumber(Key.Code);
+        Print(" mods ");
+        PrintNumber(Key.Mods);
+        Print(" char ");
+        PrintNumber((uint8_t)Key.Char);
+        Print("\n");
+        if (Key.Char == 'q')
+            break;
+    }
+    Console->SetMode(Console, SF_CONSOLE_LINE);
+    return SF_SUCCESS;
+}
+
+// The console calls beyond Print: the sizes, the cursor, colours, cells,
+// the title and the modes (ReadKey is `sdkcheck keys`).
+static void CheckConsole(SfConsole* Console)
+{
+    uint32_t Columns = 0, Rows = 0;
+    Check("GetSize gives a screen of some size",
+          Console->GetSize(Console, &Columns, &Rows) == SF_SUCCESS && Columns >= 40 && Rows >= 10);
+    Check("SetColor takes colours 0..15",
+          Console->SetColor(Console, SF_COLOR_BRIGHT | SF_COLOR_GREEN, SF_COLOR_BLACK) == SF_SUCCESS);
+    Check("SetColor of 16 is SF_INVALID_PARAMETER",
+          Console->SetColor(Console, 16, SF_COLOR_BLACK) == SF_INVALID_PARAMETER);
+    Console->SetColor(Console, SF_COLOR_WHITE, SF_COLOR_BLACK);
+    Check("WriteAt on the screen works",
+          Console->WriteAt(Console, 0, 0, "sdkcheck was here, cut at the edge") == SF_SUCCESS);
+    Check("WriteAt off the screen is SF_INVALID_PARAMETER",
+          Console->WriteAt(Console, Columns, 0, "x") == SF_INVALID_PARAMETER);
+    SfCell Cells[4] = { { 'o', SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_WHITE) },
+                        { 'k', SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_WHITE) },
+                        { '!', SF_CELL_COLOR(SF_COLOR_RED, SF_COLOR_WHITE) },
+                        { '!', SF_CELL_COLOR(SF_COLOR_RED, SF_COLOR_WHITE) } };
+    Check("Draw of 2x2 cells, part of them off the screen, works",
+          Console->Draw(Console, Columns - 1, Rows - 1, 2, 2, Cells) == SF_SUCCESS);
+    Check("Draw without cells is SF_INVALID_PARAMETER",
+          Console->Draw(Console, 0, 0, 1, 1, nullptr) == SF_INVALID_PARAMETER);
+    Check("SetCursor off the screen is SF_INVALID_PARAMETER",
+          Console->SetCursor(Console, 0, Rows, 1) == SF_INVALID_PARAMETER);
+    Check("SetTitle works", Console->SetTitle(Console, "checking") == SF_SUCCESS);
+    Check("SetMode of 7 is SF_INVALID_PARAMETER",
+          Console->SetMode(Console, 7) == SF_INVALID_PARAMETER);
+    char Line[8];
+    Check("in SF_CONSOLE_RAW, ReadLine is SF_UNSUPPORTED",
+          Console->SetMode(Console, SF_CONSOLE_RAW) == SF_SUCCESS &&
+          Console->ReadLine(Console, Line, sizeof(Line), nullptr) == SF_UNSUPPORTED &&
+          Console->SetMode(Console, SF_CONSOLE_LINE) == SF_SUCCESS);
 }
 
 // sdkcheck input: see the top of the file.
@@ -504,6 +571,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return RunAsChild(App, Sys);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "input"))
         return RunInput(Sys);
+    if (App && App->ArgCount >= 2 && SameText(App->Args[1], "keys"))
+        return RunKeys(Sys->Console);
 
     Print("sdkcheck - the tables SfMain gets\n");
 
@@ -512,6 +581,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Check("SfSystem has the Console field", SF_HAS_FIELD(Sys, SfSystem, Console));
     Check("SfConsole: signature, revision 1.x, size",
           HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, sizeof(SfConsole)));
+    if (SF_HAS_FIELD(Con, SfConsole, SetTitle))
+        CheckConsole(Con);
     Check("SfApp: signature, revision 1.x, size",
           App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, sizeof(SfApp)));
     Check("App->Name is the program's name", App && SameText(App->Name, "sdkcheck"));

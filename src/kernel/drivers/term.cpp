@@ -704,6 +704,11 @@ namespace term
             S = &screens[n];
     }
 
+    uint32_t selected()
+    {
+        return (uint32_t)(S - screens);
+    }
+
     void show(uint32_t n)
     {
         if (n >= TERM_SCREENS || shown == &screens[n])
@@ -892,6 +897,30 @@ namespace term
     void hide_cursor() { S->cursor_on = false; }
 
     void set_fg(uint8_t idx) { S->fg = idx & 0x0F; }
+
+    void set_colors(uint8_t fg, uint8_t bg)
+    {
+        S->fg = fg & 0x0F;
+        S->bg = bg & 0x0F;
+    }
+
+    void put_cell(uint32_t x, uint32_t y, char ch, uint8_t fg, uint8_t bg)
+    {
+        if (!S->grid || x >= cur_cols || y >= cur_rows)
+            return;
+        term_cell* c = cell_at(x, y);
+        c->ch   = (uint8_t)ch;
+        c->fg   = fg & 0x0F;
+        c->bg   = bg & 0x0F;
+        c->attr = 0;
+        mark_row(y);
+    }
+
+    void write_at(uint32_t x, uint32_t y, const char* s, uint64_t len)
+    {
+        for (uint64_t i = 0; i < len && x + i < cur_cols; i++)
+            put_cell(x + (uint32_t)i, y, s[i], S->fg, S->bg);
+    }
 
     void invalidate()
     {

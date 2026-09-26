@@ -2,13 +2,13 @@
 //
 //   threadtest fault     a thread touches address 0 while the others spin
 //                        and sleep: the whole program ends (SIGSEGV)
-//   threadtest spin      threads spin and sleep until Ctrl+C, which ends
-//                        the whole program
+//   threadtest spin      threads spin and sleep until the kill key
+//                        (Ctrl+Alt+Backspace) ends the whole program
 //   threadtest lastexit  the first thread leaves with Exit; the program
 //                        lives on until the last thread ends, with its
 //                        status (exit status 42)
 //   threadtest group     starts two `threadtest spin` of its own and
-//                        sleeps: Ctrl+C ends all three programs
+//                        sleeps: the kill key ends all three programs
 //   threadtest stress    3 rounds of 8 threads at once, each mixing a
 //                        mutex-guarded counter, heap blocks, pages taken and
 //                        given back (TLB shootdowns while the others run)
@@ -274,7 +274,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     }
     else if (SameText(Mode, "spin"))
     {
-        Print("threadtest spin: press Ctrl+C to end all the threads\n");
+        Print("threadtest spin: press Ctrl+Alt+Backspace to end all the threads\n");
         Start(Spin);
         Start(Spin);
         Start(SleepLong);
@@ -288,7 +288,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     }
     else if (SameText(Mode, "group"))
     {
-        Print("threadtest group: two more threadtest programs; Ctrl+C ends all three\n");
+        Print("threadtest group: two more threadtest programs; Ctrl+Alt+Backspace ends all three\n");
         const char* Spin[] = { "spin" };
         for (int i = 0; i < 2; i++)
         {

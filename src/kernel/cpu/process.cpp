@@ -159,6 +159,7 @@ namespace process
         // screen's input when it owns it (input owners, below).
         uint32_t    screen;
         pid_t       input_giver;
+        bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
 
         uint64_t    cr3;
         uint64_t    brk_start;      // end of the ELF image
@@ -682,6 +683,22 @@ namespace process
     static bool owns_input(void*)
     {
         return current && input_owner[current->screen] == current->pid;
+    }
+
+    uint32_t current_screen()
+    {
+        return current ? current->screen : 0;
+    }
+
+    bool console_raw()
+    {
+        return current && current->console_raw;
+    }
+
+    void set_console_raw(bool raw)
+    {
+        if (current)
+            current->console_raw = raw;
     }
 
     pid_t screen_input_owner(uint32_t screen)
@@ -1396,17 +1413,12 @@ namespace process
         return count;
     }
 
-    // The tty turns ^C, ^\\ and ^Z into a signal for the foreground group.
-    // The conversion happens here rather than in the keyboard IRQ: posting
-    // touches the process table, and the IRQ can land anywhere.
+    // The kill key, noticed here rather than in the keyboard IRQ: acting on
+    // it touches the process table, and the IRQ can land anywhere.
     static void tty_signals()
     {
         if (tty::take_kill())
             kill_requested = true;
-
-        int n;
-        while ((n = tty::take_signal()) != 0)
-            signal_group(tty::fg_pgrp(), n);
     }
 
     static void stop_process(Process* p, int n)
