@@ -7,7 +7,13 @@
 // are sfstest's.
 //
 // It leaves one thread asleep for good when SfMain returns: ending the
-// program has to end that thread too.
+// program has to end that thread too. And it starts itself as a child that
+// outlives it ("sdkcheck: the child outlived its parent").
+//
+// As a child of itself (Process->Start):
+//   sdkcheck child <word> <two words>  returns SF_ERROR_BIT | 5 when it got
+//                                      exactly those arguments, | 6 if not
+//   sdkcheck late                      prints a line after 300 ms
 //
 // Run as `sdkcheck <file> <word>`, with a file that does not exist yet
 // and a word that is no file, it also checks the argN: roots. The exit status is the
@@ -342,6 +348,50 @@ static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
         Pong->Close(Pong);
 }
 
+// --- Processes -------------------------------------------------------------
+
+static void CheckStart(SfProcess* Process)
+{
+    const char* Args[] = { "child", "word", "two words" };
+    uint64_t Handle = 0;
+    SfStatus Status = SF_SUCCESS;
+    Check("Start runs a program",
+          Process->Start(Process, "sdkcheck", 3, Args, &Handle) == SF_SUCCESS);
+    Check("Wait gives what it returned (and it got its arguments)",
+          Process->Wait(Process, Handle, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 5));
+    Check("a Handle is used up by Wait: again is SF_BAD_HANDLE",
+          Process->Wait(Process, Handle, &Status) == SF_BAD_HANDLE);
+
+    uint64_t Handles[3] = {};
+    bool Ok = true;
+    for (int i = 0; i < 3; i++)
+        Ok = Ok && Process->Start(Process, "sdkcheck", 3, Args, &Handles[i]) == SF_SUCCESS;
+    for (int i = 0; i < 3; i++)
+        Ok = Ok && Process->Wait(Process, Handles[i], &Status) == SF_SUCCESS &&
+             Status == (SF_ERROR_BIT | 5);
+    Check("three programs side by side", Ok);
+
+    Check("Start of no such program is SF_NOT_FOUND",
+          Process->Start(Process, "nosuch", 0, nullptr, &Handle) == SF_NOT_FOUND);
+    Check("Start of a path is SF_INVALID_PARAMETER",
+          Process->Start(Process, "../apps/sdkcheck", 0, nullptr, &Handle) ==
+          SF_INVALID_PARAMETER);
+}
+
+// sdkcheck child|late: see the top of the file.
+static SfStatus RunAsChild(SfApp* App, SfSystem* Sys)
+{
+    if (SameText(App->Args[1], "late"))
+    {
+        Sys->Time->Sleep(Sys->Time, 300);
+        Sys->Console->Print(Sys->Console, "sdkcheck: the child outlived its parent\n");
+        return SF_SUCCESS;
+    }
+    bool Same = App->ArgCount == 4 && SameText(App->Args[0], "sdkcheck") &&
+                SameText(App->Args[2], "word") && SameText(App->Args[3], "two words");
+    return SF_ERROR_BIT | (Same ? 5 : 6);
+}
+
 static void CheckMemory(SfMemory* Memory)
 {
     // Pages: zeroed, writable, given back.
@@ -408,6 +458,9 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     if (!Sys || !Sys->Console)
         return SF_INVALID_PARAMETER;        // nothing to report through
     Con = Sys->Console;
+    if (App && App->ArgCount >= 2 &&
+        (SameText(App->Args[1], "child") || SameText(App->Args[1], "late")))
+        return RunAsChild(App, Sys);
 
     Print("sdkcheck - the tables SfMain gets\n");
 
@@ -443,6 +496,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
           HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, sizeof(SfProcess)));
     if (App && SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process && Sys->Files)
         CheckArgs(App, Sys->Process, Sys->Files);
+    if (SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process)
+        CheckStart(Sys->Process);
 
     Check("SfTime: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time &&
@@ -470,6 +525,13 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         // Left asleep for good: returning from SfMain ends it.
         uint64_t Id = 0;
         Sys->Thread->Create(Sys->Thread, SleepEntry, (void*)1000000000ULL, &Id);
+    }
+    if (SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process)
+    {
+        // A child that outlives this program (not waited for).
+        const char* Late[] = { "late" };
+        uint64_t Handle = 0;
+        Sys->Process->Start(Sys->Process, "sdkcheck", 1, Late, &Handle);
     }
 
     Print("sdkcheck: ");

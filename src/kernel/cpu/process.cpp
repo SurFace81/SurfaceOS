@@ -126,6 +126,8 @@ namespace process
         // signalled or killed, runs kernel code on its task only.
         bool        kernel;
         int         exit_status;    // valid in Zombie
+        SfStatus    sf_status;      // what SfMain or the last thread returned;
+                                    // SF_ABORTED when something else ended it
 
         // Job control: set when the process is stopped, cleared when the
         // parent reports it. cont_pending does the same for SIGCONT.
@@ -192,6 +194,7 @@ namespace process
         pid_t      pid;
         bool       exited;
         int        status;      // exit status once exited (wait format)
+        SfStatus   sf_status;   // the same as an SfStatus (SfProcess Wait)
         bool       stop_unseen; // stopped since the last wait that asked
         wait_queue changed;     // woken on exit and on every stop
         bool       used;        // pool slot taken
@@ -234,6 +237,7 @@ namespace process
             o->pid         = pid;
             o->exited      = false;
             o->status      = 0;
+            o->sf_status   = SF_ABORTED;
             o->stop_unseen = false;
             o->changed.head = nullptr;
             o->used        = true;
@@ -251,6 +255,7 @@ namespace process
             return;
         o->exited = true;
         o->status = status;
+        o->sf_status = p->sf_status;
         wait::wake_up(&o->changed);
         p->obj = nullptr;
         kobj::put(&o->hdr);
@@ -467,6 +472,7 @@ namespace process
             if (next_pid <= 0)
                 next_pid = 1;
             p->pgid = p->pid;           // its own group until setpgid says otherwise
+            p->sf_status = SF_ABORTED;
             p->obj = proc_obj_new(p->pid);
             if (!p->obj)
             {
@@ -1637,7 +1643,12 @@ namespace process
             if (next)
                 switch_thread(next);
             else
+            {
+                // Nobody runs on a free slot's stack now: hand those back
+                // (a thread can end long after the console's program has).
+                reclaim_kernel_stacks();
                 asm volatile("sti; hlt");
+            }
         }
     }
 
@@ -1678,8 +1689,8 @@ namespace process
             return;                     // alloc already released it
     }
 
-    // Load `path` with the collected argv/envp and allocate a runnable
-    // process for it. ppid is left at 0; state is Runnable.
+    // Load `path` with the collected argv/envp and allocate a process for
+    // it, with its roots. ppid is left at 0; it is not started yet.
     static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots)
     {
         Image img;
@@ -2073,6 +2084,7 @@ namespace process
         int code = 0;
         if (SF_ERROR(s))
             code = (s & 0xFF) ? (int)(s & 0xFF) : 1;
+        current->sf_status = s;
         terminate(current, exit_code_status(code));
         reschedule(regs, iret);
     }
@@ -2958,6 +2970,116 @@ namespace process
 
         release_range(addr, pages);
         regs->rax = 0;
+    }
+
+    // SFCALL_PROCESS_START (Name, ArgCount, Args, *Handle): start program
+    // /apps/<Name> with Args after its name, and hand back a handle to it.
+    // The new process shares the caller's console: it joins the caller's
+    // process group (^C reaches both). Its ppid stays 0 - the caller
+    // follows it through the handle, so it never lingers as a zombie.
+    void sf_process_start(user_regs* regs, iret_frame*)
+    {
+        char name[NAME_MAX + 1];
+        sint64_t len = uaccess::strncpy_from_user(name, regs->rdi, sizeof(name));
+        bool ok = len > 0;
+        for (sint64_t i = 0; ok && i < len; i++)
+            ok = name[i] != '/';
+        uint64_t argc = regs->rsi;
+        if (!ok || argc > 256)
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+
+        static const char prefix[] = "/apps/";
+        char path[sizeof(prefix) + NAME_MAX];
+        copy_bytes((uint8_t*)path, (const uint8_t*)prefix, sizeof(prefix) - 1);
+        copy_bytes((uint8_t*)path + sizeof(prefix) - 1, (const uint8_t*)name,
+                   (uint64_t)len + 1);
+        vnode* v = nullptr;
+        if (vfs::lookup(path, nullptr, &v, false) != 0)
+        {
+            regs->rax = SF_NOT_FOUND;
+            return;
+        }
+        vfs::unref(v);
+
+        ArgEnv ae;
+        if (!ae.init())
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        int rc = ae.push_kstr(false, name);
+        for (uint64_t i = 0; rc == 0 && i < argc; i++)
+        {
+            uint64_t str = 0;
+            rc = uaccess::copy_from_user(&str, regs->rdx + i * 8, 8) ? ae.push_user(false, str)
+                                                                     : -EFAULT;
+        }
+        Process* p = rc == 0 ? launch(path, &ae, nullptr) : nullptr;
+        ae.destroy();
+        if (!p)
+        {
+            regs->rax = rc == 0 || rc == -ENOMEM || rc == -E2BIG ? SF_OUT_OF_RESOURCES
+                                                                 : SF_INVALID_PARAMETER;
+            return;
+        }
+
+        p->pgid = current->pgid;
+        Thread* t = first_thread(p);
+        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
+        start(p);                       // runs once this call is back in ring 3
+
+        sint32_t h = -1;
+        if (open(&current->handles, p->pid, 0, &h) != 0)
+        {
+            terminate(p, signal_status(SIGKILL));
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        uint64_t handle = (uint64_t)h;
+        if (!uaccess::copy_to_user(regs->r10, &handle, sizeof(handle)))
+        {
+            handles::close(&current->handles, h);   // it runs on regardless
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        uart::printf("process: pid %u started %s (pid %u)\n",
+                     (uint32_t)current->pid, p->name, (uint32_t)p->pid);
+        regs->rax = SF_SUCCESS;
+    }
+
+    // SFCALL_PROCESS_WAIT (Handle, *Status): sleep until the process has
+    // ended, store its SfStatus and close the handle.
+    void sf_process_wait(user_regs* regs, iret_frame*)
+    {
+        sint64_t rc = 0;
+        sint32_t h  = regs->rdi < HANDLE_TABLE_SIZE ? (sint32_t)regs->rdi : -1;
+        kobject* o  = handles::get(&current->handles, h, obj_type::Process, &rc);
+        if (!o)
+        {
+            regs->rax = SF_BAD_HANDLE;
+            return;
+        }
+
+        // Our own reference: another thread may close the handle meanwhile.
+        kobj::get(o);
+        rc = objects::wait(o, 0);
+        SfStatus status = ((proc_obj*)o)->sf_status;
+        kobj::put(o);
+        if (rc != 0)
+        {
+            regs->rax = rc == -EINTR ? SF_ABORTED : SF_BAD_HANDLE;
+            return;
+        }
+        if (regs->rsi && !uaccess::copy_to_user(regs->rsi, &status, sizeof(status)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        handles::close(&current->handles, h);
+        regs->rax = SF_SUCCESS;
     }
 
     // SFCALL_PROCESS_GET_ID (*Id).

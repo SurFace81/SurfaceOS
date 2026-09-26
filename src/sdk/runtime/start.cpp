@@ -67,6 +67,18 @@ static SfStatus ProcessGetArgs(SfProcess*, uint64_t Id, char* Buffer, uint64_t* 
                   (uint64_t)Count);
 }
 
+static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
+                             const char* const* Args, uint64_t* Handle)
+{
+    return SfCall(SFCALL_PROCESS_START, (uint64_t)Name, ArgCount, (uint64_t)Args,
+                  (uint64_t)Handle);
+}
+
+static SfStatus ProcessWait(SfProcess*, uint64_t Handle, SfStatus* Status)
+{
+    return SfCall(SFCALL_PROCESS_WAIT, Handle, (uint64_t)Status);
+}
+
 // --- Threads -----------------------------------------------------------------
 
 static SfStatus ThreadCreate(SfThread*, SfThreadEntry Entry, void* Arg, uint64_t* Id)
@@ -130,6 +142,8 @@ static const SfProcess SdkProcess =
     { SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess) },
     ProcessGetId,
     ProcessGetArgs,
+    ProcessStart,
+    ProcessWait,
 };
 
 static const SfThread SdkThread =

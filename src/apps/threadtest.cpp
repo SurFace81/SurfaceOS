@@ -7,6 +7,8 @@
 //   threadtest lastexit  the first thread leaves with Exit; the program
 //                        lives on until the last thread ends, with its
 //                        status (exit status 42)
+//   threadtest group     starts two `threadtest spin` of its own and
+//                        sleeps: Ctrl+C ends all three programs
 //
 // Each mode prints what it expects; the exit status tells what happened.
 
@@ -91,7 +93,19 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         Start(Last);
         Sys->Thread->Exit(Sys->Thread, SF_SUCCESS);
     }
+    else if (SameText(Mode, "group"))
+    {
+        Print("threadtest group: two more threadtest programs; Ctrl+C ends all three\n");
+        const char* Spin[] = { "spin" };
+        for (int i = 0; i < 2; i++)
+        {
+            uint64_t Handle = 0;
+            if (SF_ERROR(Sys->Process->Start(Sys->Process, "threadtest", 1, Spin, &Handle)))
+                Print("threadtest: Start failed\n");
+        }
+        SleepLong(nullptr);
+    }
     else
-        Print("usage: threadtest fault | spin | lastexit\n");
+        Print("usage: threadtest fault | spin | lastexit | group\n");
     return SF_INVALID_PARAMETER;
 }

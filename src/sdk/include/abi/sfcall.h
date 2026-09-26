@@ -56,6 +56,8 @@
 #define SFCALL_EVENT_SET             22  // (uint64_t Handle)
 #define SFCALL_EVENT_RESET           23  // (uint64_t Handle)
 #define SFCALL_WAIT                  24  // (uint64_t Handle, uint64_t TimeoutMs): any waitable handle
-#define SFCALL_COUNT                 25
+#define SFCALL_PROCESS_START         25  // (const char* Name, uint64_t ArgCount, const char* const* Args, uint64_t* Handle)
+#define SFCALL_PROCESS_WAIT          26  // (uint64_t Handle, SfStatus* Status)
+#define SFCALL_COUNT                 27
 
 #endif // ABI_SFCALL_H

@@ -137,7 +137,9 @@ namespace process
     void sf_thread_create(user_regs* regs, iret_frame* iret);
     void sf_thread_exit(user_regs* regs, iret_frame* iret);
     void sf_thread_join(user_regs* regs, iret_frame* iret);
-    // SFCALL_PROCESS_GET_ID / GET_ARGS: SfStatus results.
+    // SFCALL_PROCESS_START / WAIT / GET_ID / GET_ARGS: SfStatus results.
+    void sf_process_start(user_regs* regs, iret_frame* iret);
+    void sf_process_wait(user_regs* regs, iret_frame* iret);
     void sf_get_id     (user_regs* regs, iret_frame* iret);
     void sf_get_args   (user_regs* regs, iret_frame* iret);
     // SFCALL_MEMORY_ALLOCATE_PAGES / FREE_PAGES: SfStatus results.

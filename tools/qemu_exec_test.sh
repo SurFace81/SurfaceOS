@@ -8,7 +8,8 @@
 #   2. sfstest                    -> files through the SDK, the roots' sandbox;
 #                                    leaves data for qemu_verify.sh
 #   3. threadtest                 -> a fault in one thread, ^C and the last
-#                                    thread's exit end the whole program
+#                                    thread's exit end the whole program; ^C
+#                                    ends the programs it started too
 #   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
 set -u
@@ -155,6 +156,19 @@ WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest lastexit"
 wait_session_end $WANT 15; result $? "threadtest lastexit ends"
 [ "$(last_status)" = "$((42 << 8))" ]; result $? "the last thread's status is the program's"
+
+# ^C reaches the programs a program started: they share its console.
+type_cmd "meminfo"; sleep 3
+FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest group"; sleep 4
+monitor "sendkey ctrl-c"
+wait_session_end $WANT 15; result $? "threadtest group ends on ^C"
+[ "$(grep -ac "started threadtest" "$LOG")" = "2" ]; result $? "it started two programs of its own"
+sleep 2; type_cmd "meminfo"; sleep 3
+FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
+[ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
+result $? "^C ended them too (all their memory is back: $FRAMES_BEFORE -> $FRAMES_AFTER)"
 
 # 4. mount puts every partition of the second disk under /mount; umount
 #    refuses while the FS is in use (the console cwd holds its root), and
