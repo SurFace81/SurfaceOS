@@ -8,10 +8,9 @@ set -e
 cd "$(dirname "$0")/.."
 TIMEOUT=${1:-30}
 IMG=test_disk.img
-LAYOUT=${LAYOUT:-gpt}
 
 rm -f uart.log
-bash tools/make_test_image.sh "$IMG" "sdkcheck" "$LAYOUT"
+bash tools/make_test_image.sh "$IMG" "sdkcheck"
 
 timeout "$TIMEOUT" qemu-system-x86_64 \
     -chardev file,id=uart0,path=uart.log \

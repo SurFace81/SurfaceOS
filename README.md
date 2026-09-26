@@ -13,8 +13,9 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Linux x86_64-compatible syscall ABI: same numbers, structures and
   -errno results (int 0x80 entry until stage 6)
 - Block layer: blkdev registry (USB MSD today, AHCI/NVMe-shaped),
-  MBR/GPT/superfloppy partition parsing, LRU sector cache with dirty
-  tracking and flush, 512 and 4096-byte sectors
+  GPT/MBR/superfloppy partition parsing (SurfaceOS itself lives on GPT;
+  the others are for mounting ordinary sticks), LRU sector cache with
+  dirty tracking and flush, 512 and 4096-byte sectors
 - VFS: vnode cache, mount table (FAT32 root + devfs), POSIX namei
   (`/`-separated paths, `.`, `..` across mount points, LFN)
 - FAT32 with long file names (UTF-8, case preserved), FSInfo-based
@@ -48,7 +49,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
  
 ```
 src/
-  boot/       — UEFI bootloader (C, MinGW) and BIOS stub (NASM)
+  boot/       — UEFI bootloader (C, MinGW)
   kernel/     — kernel source (C++, freestanding)
     cpu/      — GDT, IDT, IRQ, paging, PCI, syscall dispatch, process,
                 ELF loader, uaccess, sys_fs (fd syscalls)
@@ -66,10 +67,9 @@ src/
   apps/       — programs: <name>.cpp is one program, <name>/ is one
                 program of all the .cpp files in it
 tools/
-  mkimg.py            — image builder: superfloppy|mbr|gpt, 512/4K sectors
-  qemu_exec_test.sh   — full QEMU regression suite (LAYOUT=..., SECTOR=...)
+  mkimg.py            — image builder: GPT, one FAT32 EFI System Partition
+  qemu_exec_test.sh   — full QEMU regression suite
   qemu_verify.sh      — reboot + persistence + host fsck.fat
-  qemu_matrix.sh      — all layouts x all checks
 ```
 
 # Build & Run
@@ -94,20 +94,16 @@ tools/
 
 5. Open SurfaceOS folder: 
     - Create folder `./tmp`
-    - Run in terminal: `make run`  (GPT image by default; `make run LAYOUT=superfloppy`)
+    - Run in terminal: `make run`
 
 # Tests
 
 - `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, sfstest,
   mount/umount on a second disk and a leak check, asserts on the serial
   log.
-  `LAYOUT=superfloppy|mbr|gpt`, `SECTOR=512|4096` (4096 implies a 512 MiB
-  superfloppy image).
 - `bash tools/qemu_verify.sh` — after the suite: reboots its image, runs
   `sfstest verify`, host `fsck.fat -n`.
-- `bash tools/qemu_matrix.sh` — the suite and the verify pass across every
-  layout, plus host `fsck.fat -n` of each image.
 
 # Writing to a real stick
 
-`make usb DEV=/dev/sdX` (default LAYOUT=gpt; the whole device is overwritten)
+`make usb DEV=/dev/sdX` (GPT; the whole device is overwritten)

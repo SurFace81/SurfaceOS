@@ -49,7 +49,7 @@ namespace
     }
 
     // Case-insensitive compare of two UTF-8 names (ASCII folding - what
-    // every simple FAT driver does; fstest checks the ASCII cases).
+    // every simple FAT driver does; sfstest checks the ASCII cases).
     bool eq_nocase(const char* a, const char* b)
     {
         for (uint32_t i = 0; ; i++)

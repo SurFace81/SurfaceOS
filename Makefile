@@ -29,11 +29,7 @@ QEMU_UEFI	= 	qemu-system-x86_64 \
 				-device usb-storage,drive=usbstick \
 				-device pci-serial,chardev=uart0 \
 				-no-reboot -no-shutdown
-QEMU_BIOS	= qemu-system-x86_64 -monitor stdio -serial file:uart.log -m 64M -cpu qemu64 # -no-reboot -no-shutdown
 DISK_IMG	= surfaceos.img
-# Disk layout: superfloppy (legacy, BIOS stub), mbr or gpt (default - how a
-# real USB stick looks; UEFI boot). Passed to tools/mkimg.py.
-LAYOUT		?= gpt
 IMG_SIZE_MIB	?= 64
 
 SOURCES		=  	bin/kernel/kernel.o \
@@ -122,12 +118,9 @@ APP_BINS	= $(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC)) \
 APP_OBJS	= $(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC))
 APP_LDFLAGS	= -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib
 
-.PHONY: run clean create_disk version usb
+.PHONY: run clean version usb
 
 # Bootloader
-bin/boot/bios/%.bin: src/boot/bios/%.asm
-	mkdir -p $(dir $@)
-	$(NASM) $(NFLAGS) -o $@ $<
 
 bin/boot/efi/%.o: src/boot/efi/%.c
 	mkdir -p $(dir $@)
@@ -261,21 +254,21 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 
-# Disk image: built by tools/mkimg.py (pyfatfs, no sudo). LAYOUT=gpt|mbr|
-# superfloppy, IMG_SIZE_MIB=64. Apps land in /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/boot/bios/stub.bin bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
+# Disk image: GPT with one FAT32 EFI System Partition, built by
+# tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
+# /apps/<name> (LFN).
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
 		bin/kernel/data/stdfont.fnt \
 		$(APP_BINS) \
-		--layout=$(LAYOUT) --size=$(IMG_SIZE_MIB) \
-		--bios-stub=bin/boot/bios/stub.bin
+		--size=$(IMG_SIZE_MIB)
 
 run: $(DISK_IMG)
 	$(QEMU_UEFI) -drive id=usbstick,if=none,format=raw,file=$(DISK_IMG)
 
-# Write the image to a real stick: make usb DEV=/dev/sdX [LAYOUT=gpt]
+# Write the image to a real stick: make usb DEV=/dev/sdX
 usb: $(DISK_IMG)
 	@test -n "$(DEV)" || { echo "usage: make usb DEV=/dev/sdX"; false; }
 	@ls -l $(DEV)
@@ -283,14 +276,9 @@ usb: $(DISK_IMG)
 	sudo dd if=$(DISK_IMG) of=$(DEV) bs=4M conv=fsync status=progress
 	@echo "Done. The stick can be removed."
 
-create_disk:
-	@rm -rf $(DISK_IMG)
-
 clean:
-	@rm -rf bin/boot/bios/*.bin
 	@rm -rf bin/boot/efi/*.o
 	@rm -rf bin/boot/efi/*.EFI
-	@rm -rf disk/EFI/Boot/*.EFI
 	@rm -rf bin/kernel/*.o bin/kernel/*.bin
 	@rm -rf bin/kernel/data/*.fnt
 	@rm -rf bin/kernel/cpu/*.o bin/kernel/drivers/*.o bin/kernel/stdlib/*.o

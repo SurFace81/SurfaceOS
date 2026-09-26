@@ -23,30 +23,9 @@ MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
 APPS="sdkcheck sfstest"
-# LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
-LAYOUT=${LAYOUT:-gpt}
-# SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
-SECTOR=${SECTOR:-512}
-# A 4K-sector FAT32 needs >= 65536 sectors to get a 32-bit TotalSectors:
-# at least 256 MiB.
-if [ "$SECTOR" != "512" ]; then
-    IMG_SIZE=${IMG_SIZE:-512}
-else
-    IMG_SIZE=${IMG_SIZE:-64}
-fi
 
-bash tools/make_test_image.sh "$IMG" "$APPS" "$LAYOUT" "$IMG_SIZE" "$SECTOR"
+bash tools/make_test_image.sh "$IMG" "$APPS"
 bash tools/make_data_disk.sh "$DATA_IMG"
-
-# QEMU device for a non-512 sector size: usb-storage does not forward
-# logical_block_size to its child scsi-hd, so the 4K device is built as
-# usb-bot + explicit scsi-hd. Note: the 4K image must be >= 256 MiB for
-# mkfs.fat to produce a valid FAT32 (64 MiB fits in TotalSectors16).
-if [ "$SECTOR" = "512" ]; then
-    USB_DEV="-device usb-storage,drive=usbstick"
-else
-    USB_DEV="-device usb-bot,id=msd -device scsi-hd,bus=msd.0,drive=usbstick,logical_block_size=$SECTOR,physical_block_size=$SECTOR"
-fi
 
 rm -f "$LOG" /tmp/scr_*.ppm
 rm -f "$MON"
@@ -58,7 +37,7 @@ qemu-system-x86_64 \
     -device qemu-xhci \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
-    $USB_DEV \
+    -device usb-storage,drive=usbstick \
     -drive id=data,if=none,format=raw,file="$DATA_IMG" \
     -device usb-storage,drive=data \
     -display none -no-reboot -no-shutdown \
