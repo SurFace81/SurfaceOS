@@ -113,16 +113,30 @@ static void cmd_cpuid(int argc, const char** argv)
 
     screen::printf("\n\r");
     screen::printf("\n\r CPU:            %s", name);
-    screen::printf("\n\r Base freq:      %u MHz", cpuid::get_base_freq());
-    screen::printf("\n\r Max freq:       %u MHz", cpuid::get_max_freq());
-    screen::printf("\n\r Bus freq:       %u MHz", cpuid::get_bus_freq());
-    screen::printf("\n\r Logical cores:  %u", topo.logical_cores);
-    screen::printf("\n\r Physical cores: %u", topo.physical_cores);
+    if (cpuid::get_base_freq())
+    {
+        screen::printf("\n\r Base freq:      %u MHz", cpuid::get_base_freq());
+        screen::printf("\n\r Max freq:       %u MHz", cpuid::get_max_freq());
+        screen::printf("\n\r Bus freq:       %u MHz", cpuid::get_bus_freq());
+    }
+    else
+        screen::printf("\n\r Frequencies:    not reported by the CPU");
+    screen::printf("\n\r Logical CPUs:   %u", topo.logical_cores);
+    screen::printf("\n\r Physical cores: %u%s", topo.physical_cores,
+                   topo.hybrid ? " (performance + efficiency)" : "");
     screen::printf("\n\r Sockets:        %u", topo.packages);
     screen::printf("\n\r Hyperthreading: %s", topo.hyperthreading ? "Yes" : "No");
-    screen::printf("\n\r L1 cache:       %u KB", cache.l1d_size + cache.l1i_size);
-    screen::printf("\n\r L2 cache:       %u KB", cache.l2_size);
-    screen::printf("\n\r L3 cache:       %u KB", cache.l3_size);
+    const char* whose = topo.hybrid ? "of the core this runs on" : "per core";
+    if (!cache.l1d_size && !cache.l2_size)
+        screen::printf("\n\r Caches:         not reported by the CPU");
+    else
+    {
+        screen::printf("\n\r L1 cache:       %u KB data + %u KB code, %s",
+                       cache.l1d_size, cache.l1i_size, whose);
+        screen::printf("\n\r L2 cache:       %u KB, %s", cache.l2_size, whose);
+        if (cache.l3_size)
+            screen::printf("\n\r L3 cache:       %u KB, shared", cache.l3_size);
+    }
 }
 
 static void cmd_lspci(int argc, const char** argv)

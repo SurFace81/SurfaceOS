@@ -1,4 +1,5 @@
 #include "../../include/cpu/cpuid.h"
+#include "../../include/acpi/acpi.h"
 
 namespace cpuid {
     static void cpuid(uint32_t function, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
@@ -7,6 +8,13 @@ namespace cpuid {
             : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
             : "a"(function)
         );
+    }
+
+    static void cpuid_sub(uint32_t leaf, uint32_t sub, uint32_t* eax, uint32_t* ebx,
+                          uint32_t* ecx, uint32_t* edx) {
+        asm volatile("cpuid"
+                     : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+                     : "a"(leaf), "c"(sub));
     }
 
     void get_cpu_name(char* cpu_name) {
@@ -92,16 +100,23 @@ namespace cpuid {
         uint32_t eax, ebx, ecx, edx;
         *cache = {};
 
-        cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
-        if (eax < 0x04) return;
+        // Intel describes its caches in leaf 4, AMD in 0x8000001D - the
+        // same layout.
+        uint32_t leaf = 0;
+        cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
+        if (eax >= 0x8000001D) {
+            cpuid_sub(0x8000001D, 0, &eax, &ebx, &ecx, &edx);
+            if (eax & 0x1F)
+                leaf = 0x8000001D;
+        }
+        if (!leaf) {
+            cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
+            if (eax < 0x04) return;
+            leaf = 0x04;
+        }
 
         for (uint32_t i = 0; i < 16; i++) {
-            ecx = i;
-            asm volatile(
-                "cpuid"
-                : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                : "a"(0x04), "c"(i)
-            );
+            cpuid_sub(leaf, i, &eax, &ebx, &ecx, &edx);
 
             uint32_t cache_type = eax & 0x1F;
             if (cache_type == 0) break;
@@ -135,33 +150,64 @@ namespace cpuid {
         }
     }
     
+    // Counted from the CPUs the MADT lists: an APIC id holds the thread,
+    // core and package numbers as bit fields, and CPUID leaf 0x1F (or 0xB)
+    // tells their widths. Counting distinct core numbers is right on a
+    // hybrid CPU too, where some cores run two threads and some one.
     void get_cpu_topology(CPUTopology* topology) {
         uint32_t eax, ebx, ecx, edx;
-        uint32_t threads_per_core = 1;
-        uint32_t cores_per_package = 1;
-        
-        for (uint32_t level = 0; level < 4; ++level) {
-            asm volatile(
-                "cpuid"
-                : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                : "a"(0x1F), "c"(level)
-            );
+        uint32_t smt_shift = 0;         // APIC id >> smt_shift: the core
+        uint32_t pkg_shift = 8;         // APIC id >> pkg_shift: the package
 
-            uint32_t level_type = (ecx >> 8) & 0xFF;
-            if (level_type == 0) break;
-
-            uint32_t processors_at_level = ebx & 0xFFFF;
-
-            if (level_type == 1) {
-                threads_per_core = processors_at_level;
-            } else if (level_type == 2) {
-                cores_per_package = processors_at_level;
+        cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
+        uint32_t max_leaf = eax;
+        uint32_t leaf = max_leaf >= 0x1F ? 0x1F : (max_leaf >= 0x0B ? 0x0B : 0);
+        if (leaf) {
+            for (uint32_t level = 0; level < 8; level++) {
+                cpuid_sub(leaf, level, &eax, &ebx, &ecx, &edx);
+                uint32_t type = (ecx >> 8) & 0xFF;
+                if (type == 0)
+                    break;
+                if (type == 1)          // SMT: the bits below the core
+                    smt_shift = eax & 0x1F;
+                pkg_shift = eax & 0x1F; // the last level's shift is the package's
             }
         }
 
-        topology->logical_cores = cores_per_package;
-        topology->physical_cores = cores_per_package / threads_per_core;
-        topology->packages = 1;
-        topology->hyperthreading = topology->logical_cores > topology->physical_cores;
+        const acpi::madt_info* m = acpi::madt();
+        uint32_t cores[acpi::MAX_CPUS], packages[acpi::MAX_CPUS];
+        uint32_t ncores = 0, npackages = 0, logical = 0;
+        for (uint32_t i = 0; m->present && i < m->cpu_count; i++) {
+            if (!m->cpus[i].enabled)
+                continue;
+            logical++;
+            uint32_t core = m->cpus[i].apic_id >> smt_shift;
+            uint32_t pkg  = m->cpus[i].apic_id >> pkg_shift;
+            bool seen = false;
+            for (uint32_t j = 0; j < ncores; j++)
+                seen = seen || cores[j] == core;
+            if (!seen)
+                cores[ncores++] = core;
+            seen = false;
+            for (uint32_t j = 0; j < npackages; j++)
+                seen = seen || packages[j] == pkg;
+            if (!seen)
+                packages[npackages++] = pkg;
+        }
+        if (!logical) {                 // no MADT: just this CPU
+            logical = ncores = npackages = 1;
+        }
+
+        topology->logical_cores  = logical;
+        topology->physical_cores = ncores;
+        topology->packages       = npackages;
+        topology->hyperthreading = logical > ncores;
+
+        cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
+        topology->hybrid = false;
+        if (max_leaf >= 7) {
+            cpuid_sub(7, 0, &eax, &ebx, &ecx, &edx);
+            topology->hybrid = (edx >> 15) & 1;
+        }
     }
 }
