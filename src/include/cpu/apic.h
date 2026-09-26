@@ -28,6 +28,12 @@ namespace apic
 
     // This CPU's APIC id.
     uint32_t id();
+
+    // Let the local APIC's timer drive the tick instead of the PIT. It is
+    // calibrated against the running PIT to the same rate, so pit::ticks()
+    // and everything measured in them stay as they are; then the PIT's IRQ
+    // is masked. False (the PIT goes on) when the APIC is not in use.
+    bool start_timer();
 }
 
 // The local APIC's spurious-interrupt vector (interrupts.asm): no EOI.

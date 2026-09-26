@@ -6,6 +6,7 @@
 #include "../../include/cpu/paging.h"
 #include "../../include/acpi/acpi.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/drivers/pit.h"
 
 namespace
 {
@@ -18,6 +19,11 @@ namespace
     const uint32_t LAPIC_LVT_TIMER = 0x320;
     const uint32_t LAPIC_LVT_LINT0 = 0x350;
     const uint32_t LAPIC_LVT_ERROR = 0x370;
+    const uint32_t LAPIC_TIMER_INIT = 0x380;
+    const uint32_t LAPIC_TIMER_CUR  = 0x390;
+    const uint32_t LAPIC_TIMER_DIV  = 0x3E0;
+    const uint32_t TIMER_DIV_16     = 0x3;
+    const uint32_t LVT_PERIODIC     = 1U << 17;
 
     const uint32_t SVR_ENABLE    = 1U << 8;
     const uint32_t LVT_MASKED    = 1U << 16;
@@ -218,5 +224,47 @@ namespace apic
     uint32_t id()
     {
         return bsp_id;
+    }
+
+    bool start_timer()
+    {
+        if (!on)
+            return false;
+        idt::set_entry(IRQ_BASE + IRQ_APIC_TIMER, (uint64_t)irq16, IDT_FLAG_INTERRUPT_GATE);
+        lapic_write(LAPIC_TIMER_DIV, TIMER_DIV_16);
+        lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
+
+        // Count down from the top across CALIBRATION PIT ticks, starting
+        // on a tick edge.
+        const uint32_t CALIBRATION = 100;
+        uint64_t t = pit::ticks();
+        while (pit::ticks() == t)
+            asm volatile("pause");
+        lapic_write(LAPIC_TIMER_INIT, 0xFFFFFFFF);
+        t = pit::ticks();
+        while (pit::ticks() - t < CALIBRATION)
+            asm volatile("pause");
+        uint32_t elapsed = 0xFFFFFFFF - lapic_read(LAPIC_TIMER_CUR);
+        lapic_write(LAPIC_TIMER_INIT, 0);
+
+        uint32_t per_tick = elapsed / CALIBRATION;
+        if (!per_tick)
+        {
+            uart::printf("apic: the local APIC timer does not count, staying on the PIT\n");
+            return false;
+        }
+
+        // The PIT falls silent and the local APIC ticks in its place.
+        mask_irq(IRQ0_TIMER);
+        lapic_write(LAPIC_LVT_TIMER, LVT_PERIODIC | (IRQ_BASE + IRQ_APIC_TIMER));
+        lapic_write(LAPIC_TIMER_INIT, per_tick);
+
+        // ARAT: the timer keeps running in deep C-states. Without it a CPU
+        // idling in one could miss ticks; hlt (all the kernel uses) is C1.
+        uint32_t eax, ebx, ecx, edx;
+        asm volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(6), "c"(0));
+        uart::printf("apic: local APIC timer drives the tick, %u counts per tick%s\n",
+                     per_tick, (eax & (1U << 2)) ? "" : " (no ARAT)");
+        return true;
     }
 }

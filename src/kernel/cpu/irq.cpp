@@ -168,6 +168,10 @@ namespace irq {
 // Common IRQ handler
 void irq_handler(struct interrupt_frame *frame) {
     uint8_t irq_line = frame->int_no - IRQ_BASE;
+
+    // The local APIC's timer ticks in place of the PIT: the same tick.
+    if (irq_line == IRQ_APIC_TIMER)
+        irq_line = IRQ0_TIMER;
     
     if (!apic::active() && irq::is_spurious_irq(irq_line)) {
         if (irq_line == 15) {

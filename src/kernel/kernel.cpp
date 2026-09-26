@@ -398,6 +398,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
     pit::calibrate();
     uart::printf("boot: pit calibrated at %u Hz\n", pit::real_frequency());
+    apic::start_timer();
 
     usb::init();
     uart::printf("boot: usb ready\n");

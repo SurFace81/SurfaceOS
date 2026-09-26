@@ -22,6 +22,8 @@
 #define IRQ13_FPU           13
 #define IRQ14_PRIMARY_ATA   14
 #define IRQ15_SECONDARY_ATA 15
+#define IRQ_APIC_TIMER      16  // not an ISA line: the local APIC's timer,
+                                // which stands in for IRQ 0 (apic.h)
 
 // PIC ports
 #define PIC1_COMMAND    0x20
@@ -86,6 +88,7 @@ extern "C" void irq12(void);
 extern "C" void irq13(void);
 extern "C" void irq14(void);
 extern "C" void irq15(void);
+extern "C" void irq16(void);
 
 // Common IRQ handler (called from assembly)
 extern "C" void irq_handler(struct interrupt_frame *frame);

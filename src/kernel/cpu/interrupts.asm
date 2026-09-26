@@ -168,6 +168,7 @@ IRQ 12, 44   ; PS/2 Mouse
 IRQ 13, 45   ; FPU
 IRQ 14, 46   ; Primary ATA
 IRQ 15, 47   ; Secondary ATA
+IRQ 16, 48   ; Local APIC timer (apic.cpp)
 
 ; Syscall handler (int 0x80)
 global syscall_entry
