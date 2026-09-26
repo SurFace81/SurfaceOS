@@ -44,12 +44,22 @@ struct term_cell
     uint8_t attr;       // TERM_*
 };
 
+// Screens: each has its own cells, cursor, colours and parser state, and
+// the panel shows one of them (Alt+F1..F9 in a later step).
+#define TERM_SCREENS    9
+
 namespace term
 {
-    // Allocates the grid for the whole panel once; resize() then selects a
-    // sub-rectangle of it, so a viewport change never reallocates.
+    // Allocates every screen's grid for the whole panel once; resize() then
+    // selects a sub-rectangle of it, so a viewport change never reallocates.
     bool init(uint32_t panel_cols, uint32_t panel_rows);
     void resize(uint32_t cols, uint32_t rows);
+
+    // Everything below writes to the selected screen (0..TERM_SCREENS-1);
+    // the panel shows another one, or the same.
+    void select(uint32_t n);
+    void show(uint32_t n);
+    uint32_t shown_screen();
 
     uint32_t cols();
     uint32_t rows();
