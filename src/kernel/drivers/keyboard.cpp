@@ -148,7 +148,8 @@ namespace keyboard {
     // The kernel's keys; neither the press nor its release reaches anyone:
     //   Alt+F1..F9   show screen 1..9;
     //   Ctrl+Alt+C   end every program on the shown screen, whatever it is
-    //                doing - nothing a program does can keep it alive.
+    //                doing - nothing a program does can keep it alive;
+    //   Ctrl+Alt+Z   pause them, and pressed again, let them go on.
     static const uint8_t KEY_C = 46;
     static uint8_t system_held = 0;     // the key whose release to swallow
 
@@ -167,6 +168,11 @@ namespace keyboard {
         if (code == KEY_C && ctrl_held()) {
             system_held = code;
             process::end_screen_programs(term::shown_screen());
+            return true;
+        }
+        if (code == KEY_Z && ctrl_held()) {
+            system_held = code;
+            process::pause_screen_programs(term::shown_screen());
             return true;
         }
         return false;

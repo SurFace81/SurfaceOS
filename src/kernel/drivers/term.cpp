@@ -68,6 +68,7 @@ namespace
         // --- title bar ----------------------------------------------------
         char       program[32];     // who runs on it; "" for none
         char       subtitle[64];    // the program's own words
+        bool       paused;          // its programs are paused (Ctrl+Alt+Z)
     };
 
     Screen  screens[TERM_SCREENS];
@@ -131,6 +132,8 @@ namespace
             p = append(p, end, " | ");
             p = append(p, end, shown->subtitle);
         }
+        if (shown->paused)
+            p = append(p, end, " | paused");
         *p = 0;
 
         uint32_t h = clock_minutes / 60, m = clock_minutes % 60;
@@ -728,7 +731,17 @@ namespace term
     {
         copy_text(S->program, sizeof(S->program), name);
         S->subtitle[0] = 0;         // it was the previous program's
+        S->paused = false;
         if (S == shown)
+            title_dirty = true;
+    }
+
+    void set_paused(uint32_t n, bool paused)
+    {
+        if (n >= TERM_SCREENS)
+            return;
+        screens[n].paused = paused;
+        if (&screens[n] == shown)
             title_dirty = true;
     }
 

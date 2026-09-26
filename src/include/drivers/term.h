@@ -67,6 +67,8 @@ namespace term
     // subtitle.
     void set_program(const char* name);
     void set_subtitle(const char* text);
+    // Screen n's programs are paused (Ctrl+Alt+Z): "| paused" at the end.
+    void set_paused(uint32_t n, bool paused);
 
     uint32_t cols();
     uint32_t rows();

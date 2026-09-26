@@ -20,6 +20,9 @@
 // Run as `sdkcheck keys`, it switches the console to SF_CONSOLE_RAW and
 // reports every key ("sdkcheck key: code C mods M char N") until 'q'.
 //
+// Run as `sdkcheck ticks`, it prints "sdkcheck tick N" every 200 ms for
+// half a minute: something to pause (Ctrl+Alt+Z) and watch stand still.
+//
 // Run as `sdkcheck input`, it starts `sdkcheck reader` with its input
 // (SF_START_GIVE_INPUT) and then reads a line of its own: the first line
 // typed goes to the child, the second - once the child has ended - back
@@ -405,6 +408,19 @@ static SfStatus ReadAndReport(SfConsole* Console, const char* Who)
     return SF_SUCCESS;
 }
 
+// sdkcheck ticks: see the top of the file.
+static SfStatus RunTicks(SfTime* Time)
+{
+    for (uint64_t Tick = 1; Tick <= 150; Tick++)
+    {
+        Print("sdkcheck tick ");
+        PrintNumber(Tick);
+        Print("\n");
+        Time->Sleep(Time, 200);
+    }
+    return SF_SUCCESS;
+}
+
 // sdkcheck keys: see the top of the file.
 static SfStatus RunKeys(SfConsole* Console)
 {
@@ -573,6 +589,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return RunInput(Sys);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "keys"))
         return RunKeys(Sys->Console);
+    if (App && App->ArgCount >= 2 && SameText(App->Args[1], "ticks"))
+        return RunTicks(Sys->Time);
 
     Print("sdkcheck - the tables SfMain gets\n");
 

@@ -178,6 +178,28 @@ key ctrl-alt-c
 wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a program waiting in ReadLine"
 [ "$(last_status)" = "9" ]; result $? "  as SIGKILL (9)"
 
+# 1c. Ctrl+Alt+Z pauses the programs on the screen, pressed again it lets
+#     them go on; a paused program still ends on Ctrl+Alt+C.
+ticks() { grep -ac "sdkcheck tick " "$LOG"; }
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck ticks"
+wait_for "sdkcheck tick 3" 10; result $? "sdkcheck ticks is ticking"
+key ctrl-alt-z; sleep 1
+T1=$(ticks); sleep 2; T2=$(ticks)
+[ "$T1" = "$T2" ]; result $? "Ctrl+Alt+Z pauses it ($T1 -> $T2 ticks)"
+key ctrl-alt-z; sleep 2; T3=$(ticks)
+[ "$T3" -gt "$T2" ]; result $? "pressed again, it goes on ($T2 -> $T3 ticks)"
+key ctrl-alt-z; sleep 1
+key ctrl-alt-c
+wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a paused program"
+[ "$(last_status)" = "9" ]; result $? "  as SIGKILL (9)"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"; sleep 2
+key ctrl-alt-z; sleep 1; key ctrl-alt-z; sleep 1
+type_cmd "after"
+wait_for "sdkcheck input: child got after" 10; result $? "a pause does not cut a ReadLine short"
+wait_session_end $WANT 15
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))

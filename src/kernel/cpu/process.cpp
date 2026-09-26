@@ -214,8 +214,7 @@ namespace process
         bool       exited;
         int        status;      // exit status once exited (wait format)
         SfStatus   sf_status;   // the same as an SfStatus (SfProcess Wait)
-        bool       stop_unseen; // stopped since the last wait that asked
-        wait_queue changed;     // woken on exit and on every stop
+        wait_queue changed;     // woken on exit
         bool       used;        // pool slot taken
     };
 
@@ -257,7 +256,6 @@ namespace process
             o->exited      = false;
             o->status      = 0;
             o->sf_status   = SF_ABORTED;
-            o->stop_unseen = false;
             o->changed.head = nullptr;
             o->used        = true;
             return o;
@@ -344,6 +342,12 @@ namespace process
     // for none. Acted on at the next scheduling decision - the keyboard IRQ
     // can land anywhere.
     static volatile sint32_t end_screen = -1;
+    static volatile sint32_t pause_screen = -1;     // Ctrl+Alt+Z, the same way
+
+    static inline bool screen_request()
+    {
+        return end_screen >= 0 || pause_screen >= 0;
+    }
 
     // The console is a kernel process; while it runs a program it sleeps on
     // a handle to it until the program exits. The program's ppid stays 0
@@ -691,6 +695,11 @@ namespace process
     void end_screen_programs(uint32_t screen)
     {
         end_screen = (sint32_t)screen;
+    }
+
+    void pause_screen_programs(uint32_t screen)
+    {
+        pause_screen = (sint32_t)screen;
     }
 
     uint32_t current_screen()
@@ -1340,6 +1349,33 @@ namespace process
         }
     }
 
+    // Ctrl+Alt+Z: the programs on the screen pause - every thread of each,
+    // SIGSTOP, which nothing can catch either - or, when they are paused,
+    // go on (SIGCONT). The title bar says so.
+    static void pause_programs_on(uint32_t screen)
+    {
+        bool any = false, paused = false;
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+            if (alive(p) && !p->kernel && p->screen == screen)
+            {
+                any = true;
+                paused |= p->state == State::Stopped || (p->sig.pending & SIGMASK(SIGSTOP));
+            }
+        }
+        if (!any)
+            return;
+
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+            if (alive(p) && !p->kernel && p->screen == screen)
+                post_signal(p, paused ? SIGCONT : SIGSTOP);
+        }
+        term::set_paused(screen, !paused);
+    }
+
     // -----------------------------------------------------------------------
     // Signals
     // -----------------------------------------------------------------------
@@ -1421,11 +1457,6 @@ namespace process
 
     static void stop_process(Process* p, int n)
     {
-        if (p->obj)
-        {
-            p->obj->stop_unseen = true;
-            wait::wake_up(&p->obj->changed);
-        }
         p->state = State::Stopped;
         p->stop_status  = stop_code(n);
         p->stop_pending = true;
@@ -1588,6 +1619,12 @@ namespace process
         {
             end_screen = -1;
             end_programs_on((uint32_t)s);
+        }
+        s = pause_screen;
+        if (s >= 0)
+        {
+            pause_screen = -1;
+            pause_programs_on((uint32_t)s);
         }
         service_signals();
         return pick_next();
@@ -1956,47 +1993,18 @@ namespace process
         return handles::install(t, &p->obj->hdr, flags, 0, out);
     }
 
-    struct wait_req
-    {
-        proc_obj* o;
-        bool      stops;
-    };
-
-    static bool proc_changed(void* arg)
-    {
-        wait_req* r = (wait_req*)arg;
-        return r->o->exited || (r->stops && r->o->stop_unseen);
-    }
-
-    sint64_t wait(handle_table* t, sint32_t h, int* status, bool* stopped)
+    sint64_t wait(handle_table* t, sint32_t h, int* status)
     {
         sint64_t rc = 0;
         proc_obj* o = (proc_obj*)handles::get(t, h, obj_type::Process, &rc);
         if (!o)
             return rc;
 
-        if (!stopped)
-        {
-            // Just the exit: the generic wait on a waitable object.
-            rc = objects::wait_handle(t, h, 0);
-            if (rc == 0)
-                *status = o->status;
-            return rc;
-        }
-
-        // The handle keeps the object alive while this sleeps.
-        wait_req r = { o, true };
-        if (!wait::wait_event(&o->changed, proc_changed, &r, 0))
-            return -EINTR;
-
-        *stopped = !o->exited;
-        if (o->exited)
-        {
+        // The generic wait on a waitable object; the handle keeps it alive.
+        rc = objects::wait_handle(t, h, 0);
+        if (rc == 0)
             *status = o->status;
-            return 0;
-        }
-        o->stop_unseen = false;         // reported
-        return 0;
+        return rc;
     }
 
     // -----------------------------------------------------------------------
@@ -2063,17 +2071,7 @@ namespace process
         // The program is runnable now; sleep until it has exited. Its
         // children are not waited for: an orphan keeps running on its own.
         int status = 0;
-        for (;;)
-        {
-            bool stopped = false;
-            wait(&console_proc->handles, h, &status, &stopped);
-            if (!stopped)
-                break;
-
-            // Stopped (a stop signal with the default action). Nothing can
-            // continue it yet: there is no fg command.
-            screen::printf("\n[stopped - press Ctrl+Alt+C to end it]\n");
-        }
+        wait(&console_proc->handles, h, &status);
         handles::close(&console_proc->handles, h);
         reclaim_kernel_stacks();
 
@@ -2101,7 +2099,7 @@ namespace process
             return;
         end_if_doomed(regs, iret);
 
-        if (end_screen >= 0)
+        if (screen_request())
         {
             reschedule(regs, iret);     // does not return
             return;
@@ -2168,7 +2166,7 @@ namespace process
 
     void syscall_return(user_regs* regs, iret_frame* iret)
     {
-        if (end_screen >= 0)
+        if (screen_request())
         {
             reschedule(regs, iret);
             return;

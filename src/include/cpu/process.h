@@ -123,11 +123,10 @@ namespace process
     // open: put a handle to live process `pid` into t (lowest free slot).
     //   0, -ESRCH (no such process), -EMFILE.
     // wait: sleep until the process behind handle h has exited and store
-    //   its exit status. With `stopped` it also returns when the process
-    //   stops (once per stop), with *stopped telling which it was.
+    //   its exit status. A pause (Ctrl+Alt+Z) does not end the wait.
     //   0, -EBADF (not a process handle), -EINTR (a signal ended the wait).
     sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out);
-    sint64_t wait(handle_table* t, sint32_t h, int* status, bool* stopped = nullptr);
+    sint64_t wait(handle_table* t, sint32_t h, int* status);
 
     // Console only. Loads `path` as a new process (ppid 0) and sleeps on a
     // handle to it until it has exited - its children are not waited for.
@@ -218,6 +217,9 @@ namespace process
     // Ctrl+Alt+C: end every program on `screen` at the next scheduling
     // decision (called from the keyboard IRQ).
     void end_screen_programs(uint32_t screen);
+    // Ctrl+Alt+Z: pause every program on `screen`, or let them go on when
+    // they are paused; the same way.
+    void pause_screen_programs(uint32_t screen);
 
     // The calling process's screen, and its console mode (sfconsole.cpp).
     uint32_t current_screen();

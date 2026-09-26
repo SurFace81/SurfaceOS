@@ -47,7 +47,9 @@ namespace
             return;
         }
 
-        // Woken early only by the user (Ctrl+C).
+        // Cut short only when the program is ended. A pause (Ctrl+Alt+Z)
+        // does not stop the clock: past the deadline by then, it returns
+        // right after the program goes on.
         regs->rax = wait::sleep_until(pit::deadline_ms(ms)) ? SF_SUCCESS : SF_ABORTED;
     }
 }
