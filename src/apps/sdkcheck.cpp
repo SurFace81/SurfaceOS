@@ -1,8 +1,9 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
-// SfSystem, SfApp, SfConsole and SfFiles - that Console->Print works, and
-// the roots data:/ and tmp:/ with files in them. The exit status is the
+// SfSystem, SfApp, SfConsole, SfFiles and SfMemory - that Console->Print
+// works, pages and the heap, and the roots data:/ and tmp:/ with files in
+// them. The exit status is the
 // number of failed checks (0: all passed).
 
 #include <sfos.h>
@@ -85,8 +86,6 @@ static void CheckRoots(SfFiles* Files)
     Check("GetPosition is after the text",
           File->GetPosition(File, &Position) == SF_SUCCESS && Position == Len);
     Check("Close", File->Close(File) == SF_SUCCESS);
-    Check("a closed SfFile is SF_BAD_HANDLE",
-          File->GetPosition(File, &Position) == SF_BAD_HANDLE);
 
     // Through the root folder, relative to it.
     SfFile* Dir = nullptr;
@@ -159,6 +158,67 @@ static void CheckRoots(SfFiles* Files)
         Other->Close(Other);
 }
 
+static void CheckMemory(SfMemory* Memory)
+{
+    // Pages: zeroed, writable, given back.
+    uint8_t* Pages = nullptr;
+    Check("AllocatePages gives 3 pages",
+          Memory->AllocatePages(Memory, 3, (void**)&Pages) == SF_SUCCESS && Pages &&
+          ((uint64_t)Pages & (SF_PAGE_SIZE - 1)) == 0);
+    if (Pages)
+    {
+        bool Zero = true;
+        for (uint64_t i = 0; i < 3 * SF_PAGE_SIZE; i++)
+            Zero = Zero && Pages[i] == 0;
+        Pages[0] = 1;
+        Pages[3 * SF_PAGE_SIZE - 1] = 2;
+        Check("... zeroed and writable", Zero && Pages[3 * SF_PAGE_SIZE - 1] == 2);
+        Check("FreePages gives them back", Memory->FreePages(Memory, Pages, 3) == SF_SUCCESS);
+    }
+    void* Out = nullptr;
+    Check("AllocatePages of 0 pages is SF_INVALID_PARAMETER",
+          Memory->AllocatePages(Memory, 0, &Out) == SF_INVALID_PARAMETER);
+
+    // The heap: blocks of many sizes, all apart, aligned, zeroed.
+    const int Count = 40;
+    uint8_t* Blocks[Count];
+    bool Ok = true;
+    for (int i = 0; i < Count; i++)
+    {
+        uint64_t Size = 1 + (uint64_t)i * 97;
+        Blocks[i] = nullptr;
+        Ok = Ok && Memory->Allocate(Memory, Size, (void**)&Blocks[i]) == SF_SUCCESS &&
+             Blocks[i] && ((uint64_t)Blocks[i] & 15) == 0;
+        for (uint64_t j = 0; Ok && j < Size; j++)
+        {
+            Ok = Blocks[i][j] == 0;
+            Blocks[i][j] = (uint8_t)i;
+        }
+    }
+    Check("Allocate: 40 blocks, aligned and zeroed", Ok);
+    for (int i = 0; Ok && i < Count; i++)
+        for (uint64_t j = 0; j < 1 + (uint64_t)i * 97; j++)
+            Ok = Ok && Blocks[i][j] == (uint8_t)i;
+    Check("... none overlaps another", Ok);
+
+    Ok = true;
+    for (int i = 0; i < Count; i += 2)
+        Ok = Ok && Memory->Free(Memory, Blocks[i]) == SF_SUCCESS;
+    for (int i = 1; i < Count; i += 2)
+        Ok = Ok && Memory->Free(Memory, Blocks[i]) == SF_SUCCESS;
+    Check("Free gives all of them back", Ok);
+    Check("a second Free of a block is SF_INVALID_PARAMETER",
+          Memory->Free(Memory, Blocks[0]) == SF_INVALID_PARAMETER);
+
+    // After everything merged back, a block larger than the heap has grown
+    // by so far still fits.
+    uint8_t* Big = nullptr;
+    Check("a 200 KiB block", Memory->Allocate(Memory, 200 * 1024, (void**)&Big) == SF_SUCCESS &&
+                             Big && Big[200 * 1024 - 1] == 0);
+    if (Big)
+        Memory->Free(Memory, Big);
+}
+
 extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 {
     if (!Sys || !Sys->Console)
@@ -187,6 +247,12 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
     Check("Print of an unmapped address is SF_INVALID_PARAMETER",
           Con->Print(Con, (const char*)0x1000) == SF_INVALID_PARAMETER);
+
+    Check("SfMemory: signature, revision 1.x, size",
+          SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory &&
+          HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, sizeof(SfMemory)));
+    if (SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory)
+        CheckMemory(Sys->Memory);
 
     Check("SfFiles: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&

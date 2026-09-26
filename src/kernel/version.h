@@ -4,8 +4,8 @@
 #define VERSION_MAJOR 0
 #define VERSION_MINOR 0
 #define VERSION_PATCH 1
-#define VERSION_BUILD 169
+#define VERSION_BUILD 170
 
-#define VERSION_STRING "0.0.1.169"
+#define VERSION_STRING "0.0.1.170"
 
 #endif

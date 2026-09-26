@@ -25,8 +25,10 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - devfs (outside the directory tree, no /dev): null, zero, tty, console;
   canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
 - SurfaceOS SDK (<sfos.h>): a program implements SfMain(SfApp*, SfSystem*)
-  and reaches the system through tables the kernel fills in (SDK pages);
-  entered with the syscall instruction. Files go through roots: data:/
+  and reaches the system through tables of the SDK runtime
+  (src/sdk/runtime), which the kernel maps into every program and which
+  enters the kernel with the syscall instruction. Sys->Memory gives pages
+  and a heap. Files go through roots: data:/
   (the program's own /files/<name>, created on first start) and tmp:/
   (/tmp, unique names from CreateUnique); no path leads above its root.
   The old POSIX layer (int 0x80, libc) is still in the tree until it is
@@ -36,7 +38,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables, roots and files); the tests are being rewritten on the SDK
+  tables, memory, roots and files); the tests are being rewritten on the SDK
  
 # Project Structure
  
@@ -54,8 +56,9 @@ src/
     mm/       — physical memory, heap
     stdlib/   — stdio, string
   include/    — kernel-side headers (cpu/, dev/, fs/, drivers/, mm/)
-  sdk/        — include/sfos.h + sfos/ (the SDK), sfos.ld (program link
-                script); the old POSIX layer: abi/, libc/, linker.ld
+  sdk/        — include/sfos.h + sfos/ (the SDK), runtime/ (the code
+                behind the SDK tables), sfos.ld (program link script);
+                the old POSIX layer: abi/, libc/, linker.ld
   apps/       — programs: <name>.cpp is one program, <name>/ is one
                 program of all the .cpp files in it
 tools/

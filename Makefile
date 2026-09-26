@@ -13,6 +13,7 @@ CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -mgeneral-regs-only -mcmodel=kernel -fno-pic \
 			  -I./src/kernel
 LD			= x86_64-elf-ld
+OBJCOPY		= x86_64-elf-objcopy
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
 # pmemsave XXXX - YYYY mem.dmp 	-	dump of phys memory
@@ -109,7 +110,7 @@ bin/sdk/crt0.o: src/sdk/libc/crt0.S
 	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
 
 # Programs, all built against <sfos.h> (no libc, no start-up code: the
-# kernel starts them through the SDK code page, which calls SfMain):
+# kernel starts them in the SDK runtime, which calls SfMain):
 #   src/apps/<name>.cpp   a program of one file        -> bin/apps/<name>.bin
 #   src/apps/<name>/      one program of all its .cpp  -> bin/apps/<name>.bin
 APP_ONE_SRC	= $(wildcard src/apps/*.cpp)
@@ -190,6 +191,24 @@ bin/kernel/cpu/%.asm.o: src/kernel/cpu/%.asm
 	mkdir -p $(dir $@)
 	$(NASM) -f elf64 -o $@ $<
 
+
+# SDK runtime: the code behind the SDK tables, linked at the SDK's address
+# (abi/sdkimage.h) and built into the kernel (sdkpage.asm).
+RUNTIME_SRC   = $(wildcard src/sdk/runtime/*.cpp)
+RUNTIME_OBJS  = $(patsubst src/sdk/runtime/%.cpp,bin/sdk/runtime/%.o,$(RUNTIME_SRC))
+RUNTIME_FLAGS = $(SDK_FLAGS) -mcmodel=large -fno-pic -fno-stack-protector
+
+bin/sdk/runtime/%.o: src/sdk/runtime/%.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(RUNTIME_FLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/sdk/runtime.elf: $(RUNTIME_OBJS) src/sdk/runtime/runtime.ld
+	$(LD) -m elf_x86_64 -nostdlib -T src/sdk/runtime/runtime.ld -o $@ $(RUNTIME_OBJS)
+
+bin/sdk/runtime.bin: bin/sdk/runtime.elf
+	$(OBJCOPY) -O binary -j .text $< $@
+
+bin/kernel/cpu/sdkpage.asm.o: bin/sdk/runtime.bin
 
 # SDK objects
 bin/sdk/%.o: src/sdk/libc/%.cpp
@@ -277,10 +296,10 @@ clean:
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
-	@rm -rf bin/sdk/*.o bin/sdk/*.a
+	@rm -rf bin/sdk/*.o bin/sdk/*.a bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(SDK_ALL_OBJ:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(SDK_ALL_OBJ:.o=.d) $(RUNTIME_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d

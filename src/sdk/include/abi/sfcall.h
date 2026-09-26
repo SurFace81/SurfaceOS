@@ -28,19 +28,21 @@
 #define SF_ALREADY_EXISTS       (SF_ERROR_BIT | 10)
 #define SF_DEVICE_ERROR         (SF_ERROR_BIT | 11)
 
-// Call numbers. The table grows from 0; the SDK code page makes these
-// calls, programs never do directly.
-#define SFCALL_EXIT                0   // (SfStatus) - does not return
-#define SFCALL_CONSOLE_PRINT       1   // (const char* Text)
-#define SFCALL_CONSOLE_READLINE    2   // (char* Buffer, uint64_t Size, uint64_t* Length)
-#define SFCALL_FILES_OPEN          3   // (SfFiles*, const char* Path, uint64_t Mode, SfFile** Out)
-#define SFCALL_FILES_CREATE_UNIQUE 4   // (SfFiles*, SfFile** Out, char* Path, uint64_t PathSize)
-#define SFCALL_FILE_OPEN           5   // (SfFile* This, const char* Path, uint64_t Mode, SfFile** Out)
-#define SFCALL_FILE_CLOSE          6   // (SfFile* This)
-#define SFCALL_FILE_READ           7   // (SfFile* This, void* Buffer, uint64_t* Size)
-#define SFCALL_FILE_WRITE          8   // (SfFile* This, const void* Buffer, uint64_t* Size)
-#define SFCALL_FILE_GET_POSITION   9   // (SfFile* This, uint64_t* Position)
-#define SFCALL_FILE_SET_POSITION   10  // (SfFile* This, uint64_t Position)
-#define SFCALL_COUNT               11
+// Call numbers. The table grows from 0; the SDK runtime makes these calls,
+// programs never do directly. A file is its handle number.
+#define SFCALL_EXIT                  0   // (SfStatus) - does not return
+#define SFCALL_CONSOLE_PRINT         1   // (const char* Text)
+#define SFCALL_CONSOLE_READLINE      2   // (char* Buffer, uint64_t Size, uint64_t* Length)
+#define SFCALL_FILES_OPEN            3   // (const char* Path, uint64_t Mode, uint64_t* Handle)
+#define SFCALL_FILES_CREATE_UNIQUE   4   // (uint64_t* Handle, char* Path, uint64_t PathSize)
+#define SFCALL_FILE_OPEN             5   // (uint64_t Dir, const char* Path, uint64_t Mode, uint64_t* Handle)
+#define SFCALL_FILE_CLOSE            6   // (uint64_t Handle)
+#define SFCALL_FILE_READ             7   // (uint64_t Handle, void* Buffer, uint64_t* Size)
+#define SFCALL_FILE_WRITE            8   // (uint64_t Handle, const void* Buffer, uint64_t* Size)
+#define SFCALL_FILE_GET_POSITION     9   // (uint64_t Handle, uint64_t* Position)
+#define SFCALL_FILE_SET_POSITION     10  // (uint64_t Handle, uint64_t Position)
+#define SFCALL_MEMORY_ALLOCATE_PAGES 11  // (uint64_t Count, void** Address)
+#define SFCALL_MEMORY_FREE_PAGES     12  // (void* Address, uint64_t Count)
+#define SFCALL_COUNT                 13
 
 #endif // ABI_SFCALL_H

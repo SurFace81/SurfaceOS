@@ -3,53 +3,28 @@
 #include "../../include/cpu/sdkpage.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/paging.h"
-#include "../../include/obj/object.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/tty.h"
+#include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
+#include "../../sdk/include/abi/sdkimage.h"
 #include "../../sdk/include/sfos.h"
 
-extern "C" const uint8_t sdk_code_start[];
-extern "C" const uint8_t sdk_code_end[];
-extern "C" const uint8_t sdk_start[];
-extern "C" const uint8_t sdk_console_print[];
-extern "C" const uint8_t sdk_console_readline[];
-extern "C" const uint8_t sdk_files_open[];
-extern "C" const uint8_t sdk_files_create_unique[];
-extern "C" const uint8_t sdk_file_open[];
-extern "C" const uint8_t sdk_file_close[];
-extern "C" const uint8_t sdk_file_read[];
-extern "C" const uint8_t sdk_file_write[];
-extern "C" const uint8_t sdk_file_get_position[];
-extern "C" const uint8_t sdk_file_set_position[];
+extern "C" const uint8_t sdk_runtime_start[];
+extern "C" const uint8_t sdk_runtime_end[];
 
 namespace
 {
-    // The code page every process maps (PAGE_SHARED).
-    uint64_t code_frame = 0;
+    const uint64_t CODE_PAGES_MAX = SDK_CODE_MAX / PAGE_SIZE_4K;
 
-    // The data page, as the program sees it.
-    struct sdk_data
-    {
-        SfSystem  Sys;
-        SfApp     App;
-        SfConsole Console;
-        SfFiles   Files;
-        char      Name[64];
-    };
-
-    static_assert(sizeof(sdk_data) <= PAGE_SIZE_4K, "the SDK data fits one page");
-    static_assert(HANDLE_TABLE_SIZE * sizeof(SfFile) == PAGE_SIZE_4K,
-                  "one SfFile table per handle slot fills the files page");
-
-    // User address of a stub, given where the code page is mapped.
-    uint64_t stub(const uint8_t* sym)
-    {
-        return USER_SDK_CODE + (uint64_t)(sym - sdk_code_start);
-    }
+    // The runtime's code, copied once; every process maps these frames.
+    uint64_t code_frames[CODE_PAGES_MAX];
+    uint64_t code_pages  = 0;
+    uint64_t start       = 0;       // SdkHeader.Start
+    uint64_t state_pages = 0;
 
     // Map one zeroed page at vaddr; its kernel (direct-map) address, or
     // nullptr.
@@ -67,81 +42,66 @@ namespace
         }
         return k;
     }
-
-    void header(SfTableHeader* h, uint64_t signature, uint32_t revision, uint32_t size)
-    {
-        h->Signature = signature;
-        h->Revision  = revision;
-        h->Size      = size;
-    }
 }
 
 namespace sdkpage
 {
     void init()
     {
-        uint64_t code_len = (uint64_t)(sdk_code_end - sdk_code_start);
-        uint64_t frame = pmm::alloc_frame();
-        if (!frame || code_len > PAGE_SIZE_4K)
-            return;                 // install() then fails every program
-        uint8_t* code = (uint8_t*)phys_to_virt(frame);
-        memory::memset(code, 0x00, PAGE_SIZE_4K);
-        memory::memcpy(code, sdk_code_start, code_len);
-        code_frame = frame;
+        uint64_t len = (uint64_t)(sdk_runtime_end - sdk_runtime_start);
+        const SdkHeader* h = (const SdkHeader*)sdk_runtime_start;
+        if (len < sizeof(SdkHeader) || len > SDK_CODE_MAX ||
+            h->Magic != SDK_HEADER_MAGIC || h->StateStart != SDK_STATE_ADDRESS ||
+            h->StateEnd < h->StateStart || h->StateEnd - h->StateStart > SDK_CODE_MAX)
+        {
+            uart::printf("sdkpage: the SDK runtime is broken, programs cannot start\n");
+            return;
+        }
+
+        uint64_t pages = (len + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
+        for (uint64_t i = 0; i < pages; i++)
+        {
+            uint64_t frame = pmm::alloc_frame();
+            if (!frame)
+                return;             // install() then fails every program
+            uint8_t* page = (uint8_t*)phys_to_virt(frame);
+            uint64_t off = i * PAGE_SIZE_4K;
+            uint64_t n = len - off < PAGE_SIZE_4K ? len - off : PAGE_SIZE_4K;
+            memory::memset(page, 0x00, PAGE_SIZE_4K);
+            memory::memcpy(page, sdk_runtime_start + off, n);
+            code_frames[i] = frame;
+        }
+        code_pages  = pages;
+        start       = h->Start;
+        state_pages = (h->StateEnd - h->StateStart + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
+        uart::printf("sdkpage: SDK runtime %u bytes, %u state pages\n",
+                     (uint32_t)len, (uint32_t)state_pages);
     }
 
-    bool install(const char* name, Entry* out)
+    bool install(const char* name, uint64_t* out_start)
     {
-        // R + X, and not the process's own frame.
-        if (!code_frame || !paging::map_user_page(USER_SDK_CODE, code_frame, PAGE_SHARED))
+        if (!code_pages)
             return false;
 
-        sdk_data* d = (sdk_data*)map_page(USER_SDK_DATA, PAGE_NX);  // R
-        SfFile* files = (SfFile*)map_page(USER_SDK_FILES, PAGE_NX); // R
-        if (!d || !files)
+        // R + X, and not the process's own frames.
+        for (uint64_t i = 0; i < code_pages; i++)
+            if (!paging::map_user_page(SDK_CODE_ADDRESS + i * PAGE_SIZE_4K, code_frames[i],
+                                       PAGE_SHARED))
+                return false;
+
+        SdkStartInfo* info = (SdkStartInfo*)map_page(SDK_INFO_ADDRESS, PAGE_NX);    // R
+        if (!info)
             return false;
-
-        // One SfFile table per handle slot, all alike (sffile.h).
-        for (uint32_t h = 0; h < HANDLE_TABLE_SIZE; h++)
-        {
-            SfFile* f = &files[h];
-            header(&f->Hdr, SF_FILE_SIGNATURE, SF_FILE_REVISION, sizeof(SfFile));
-            f->Open        = (SfStatus (*)(SfFile*, const char*, uint64_t, SfFile**))
-                             stub(sdk_file_open);
-            f->Close       = (SfStatus (*)(SfFile*))stub(sdk_file_close);
-            f->Read        = (SfStatus (*)(SfFile*, void*, uint64_t*))stub(sdk_file_read);
-            f->Write       = (SfStatus (*)(SfFile*, const void*, uint64_t*))stub(sdk_file_write);
-            f->GetPosition = (SfStatus (*)(SfFile*, uint64_t*))stub(sdk_file_get_position);
-            f->SetPosition = (SfStatus (*)(SfFile*, uint64_t))stub(sdk_file_set_position);
-        }
-        const uint64_t base = USER_SDK_DATA;
-
         uint32_t n = 0;
-        for (; name[n] && n < sizeof(d->Name) - 1; n++)
-            d->Name[n] = name[n];
-        d->Name[n] = '\0';
+        for (; name[n] && n < sizeof(info->Name) - 1; n++)
+            info->Name[n] = name[n];
+        info->Name[n] = '\0';
 
-        header(&d->Console.Hdr, SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole));
-        d->Console.Print    = (SfStatus (*)(SfConsole*, const char*))stub(sdk_console_print);
-        d->Console.ReadLine = (SfStatus (*)(SfConsole*, char*, uint64_t, uint64_t*))
-                              stub(sdk_console_readline);
+        for (uint64_t i = 0; i < state_pages; i++)
+            if (!map_page(SDK_STATE_ADDRESS + i * PAGE_SIZE_4K, PAGE_WRITE | PAGE_NX))
+                return false;
 
-        header(&d->Files.Hdr, SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles));
-        d->Files.Open         = (SfStatus (*)(SfFiles*, const char*, uint64_t, SfFile**))
-                                stub(sdk_files_open);
-        d->Files.CreateUnique = (SfStatus (*)(SfFiles*, SfFile**, char*, uint64_t))
-                                stub(sdk_files_create_unique);
-
-        header(&d->App.Hdr, SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp));
-        d->App.Name = (const char*)(base + __builtin_offsetof(sdk_data, Name));
-
-        header(&d->Sys.Hdr, SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem));
-        d->Sys.Console = (SfConsole*)(base + __builtin_offsetof(sdk_data, Console));
-        d->Sys.Files   = (SfFiles*)(base + __builtin_offsetof(sdk_data, Files));
-
-        out->start = stub(sdk_start);
-        out->app   = base + __builtin_offsetof(sdk_data, App);
-        out->sys   = base + __builtin_offsetof(sdk_data, Sys);
+        *out_start = start;
         return true;
     }
 

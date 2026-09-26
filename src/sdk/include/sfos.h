@@ -10,7 +10,9 @@
 //
 //     Sys->Console->Print(Sys->Console, "hello\n");
 //
-// No libc and no call numbers: the kernel fills the tables in.
+// No libc and no call numbers: the SDK runtime behind the tables comes
+// with the system (src/sdk/runtime), the program only links against these
+// headers.
 
 #include "sfos/status.h"
 #include "sfos/table.h"
@@ -18,6 +20,7 @@
 #include "sfos/console.h"
 #include "sfos/file.h"
 #include "sfos/files.h"
+#include "sfos/memory.h"
 #include "sfos/system.h"
 
 #endif // SFOS_H

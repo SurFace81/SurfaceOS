@@ -7,7 +7,7 @@
 // with this header.
 //
 //   Signature  eight ASCII characters naming the table, for sanity checks
-//   Revision   SF_REVISION(major, minor) of the layout the kernel filled in
+//   Revision   SF_REVISION(major, minor) of the layout the system filled in
 //   Size       bytes of the whole table as filled in
 //
 // Rule: a table only ever grows at the end. A program built against an
@@ -33,7 +33,7 @@ SF_STATIC_ASSERT(sizeof(SfTableHeader) == 16, "SfTableHeader layout");
      ((uint64_t)(uint8_t)(e) << 32) | ((uint64_t)(uint8_t)(f) << 40) | \
      ((uint64_t)(uint8_t)(g) << 48) | ((uint64_t)(uint8_t)(h) << 56))
 
-// Is the field `f` of table `t` (type T) inside what the kernel filled in?
+// Is the field `f` of table `t` (type T) inside what the system filled in?
 #define SF_HAS_FIELD(t, T, f) \
     ((t)->Hdr.Size >= SF_OFFSET_OF(T, f) + sizeof(((T*)0)->f))
 

@@ -43,15 +43,26 @@ namespace
         }
     }
 
-    // The file behind an SfFile pointer, or nullptr.
-    file* from_table(uint64_t table)
+    // The file behind handle h, or nullptr.
+    file* from_handle(uint64_t h)
     {
-        if (table < USER_SDK_FILES || table >= USER_SDK_FILES + PAGE_SIZE_4K ||
-            (table - USER_SDK_FILES) % sizeof(SfFile))
+        if (h >= HANDLE_TABLE_SIZE)
             return nullptr;
-        sint32_t h = (sint32_t)((table - USER_SDK_FILES) / sizeof(SfFile));
         sint64_t rc;
-        return filesys::fd_get(process::cur_handles(), h, &rc);
+        return filesys::fd_get(process::cur_handles(), (sint32_t)h, &rc);
+    }
+
+    // Hand the new handle h to the program at user_out; on failure the
+    // handle is closed again.
+    SfStatus give_handle(sint64_t h, uint64_t user_out)
+    {
+        uint64_t v = (uint64_t)h;
+        if (!uaccess::copy_to_user(user_out, &v, sizeof(v)))
+        {
+            filesys::fd_close(process::cur_handles(), (sint32_t)h);
+            return SF_INVALID_PARAMETER;
+        }
+        return SF_SUCCESS;
     }
 
     // Copy a path in from the program: a kmalloc'ed string, or nullptr.
@@ -72,7 +83,7 @@ namespace
         return path;
     }
 
-    // Open `path` below `base` with SF_FILE_* `mode`; *out gets the SfFile.
+    // Open `path` below `base` with SF_FILE_* `mode`; *out gets the handle.
     SfStatus open_below(vnode* base, const char* path, uint64_t mode, uint64_t user_out)
     {
         const uint64_t known = SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE |
@@ -100,21 +111,14 @@ namespace
                                      0644, vfs::LOOKUP_BENEATH);
         if (h < 0)
             return status(h);
-
-        uint64_t table = sffile::table_address((sint32_t)h);
-        if (!uaccess::copy_to_user(user_out, &table, sizeof(table)))
-        {
-            filesys::fd_close(process::cur_handles(), (sint32_t)h);
-            return SF_INVALID_PARAMETER;
-        }
-        return SF_SUCCESS;
+        return give_handle(h, user_out);
     }
 
-    // Files->Open(This, Path, Mode, Out): "root:/path".
+    // (Path, Mode, *Handle): "root:/path".
     void files_open(user_regs* regs, iret_frame*)
     {
         SfStatus st = SF_SUCCESS;
-        char* path = fetch_path(regs->rsi, &st);
+        char* path = fetch_path(regs->rdi, &st);
         if (!path)
         {
             regs->rax = st;
@@ -137,11 +141,11 @@ namespace
             rest++;
 
         vnode* root = process::cur_root(path);
-        regs->rax = root ? open_below(root, rest, regs->rdx, regs->r10) : SF_NOT_FOUND;
+        regs->rax = root ? open_below(root, rest, regs->rsi, regs->rdx) : SF_NOT_FOUND;
         kfree(path);
     }
 
-    // Files->CreateUnique(This, Out, Path, PathSize).
+    // (*Handle, Path, PathSize).
     void files_create_unique(user_regs* regs, iret_frame*)
     {
         vnode* tmp = process::cur_root("tmp");
@@ -179,34 +183,32 @@ namespace
 
             // The path back to the program: "tmp:/<name>".
             bool ok = true;
-            if (regs->rdx)
+            if (regs->rsi)
             {
                 char full[40] = "tmp:/";
                 uint32_t len = 5;
                 for (uint32_t i = 0; name[i]; i++)
                     full[len++] = name[i];
                 full[len++] = '\0';
-                ok = regs->r10 >= len && uaccess::copy_to_user(regs->rdx, full, len);
+                ok = regs->rdx >= len && uaccess::copy_to_user(regs->rsi, full, len);
             }
-            uint64_t table = sffile::table_address((sint32_t)h);
-            ok = ok && uaccess::copy_to_user(regs->rsi, &table, sizeof(table));
+            // On failure the name stays taken: the file exists, empty.
             if (!ok)
             {
-                // The name stays taken: the file exists, empty.
                 filesys::fd_close(process::cur_handles(), (sint32_t)h);
                 regs->rax = SF_INVALID_PARAMETER;
                 return;
             }
-            regs->rax = SF_SUCCESS;
+            regs->rax = give_handle(h, regs->rdi);
             return;
         }
         regs->rax = SF_OUT_OF_RESOURCES;
     }
 
-    // File->Open(This, Path, Mode, Out): relative to a directory.
+    // (Dir, Path, Mode, *Handle): relative to a directory.
     void file_open(user_regs* regs, iret_frame*)
     {
-        file* dir = from_table(regs->rdi);
+        file* dir = from_handle(regs->rdi);
         if (!dir)
         {
             regs->rax = SF_BAD_HANDLE;
@@ -225,19 +227,18 @@ namespace
 
     void file_close(user_regs* regs, iret_frame*)
     {
-        if (!from_table(regs->rdi))
+        if (!from_handle(regs->rdi))
         {
             regs->rax = SF_BAD_HANDLE;
             return;
         }
-        sint32_t h = (sint32_t)((regs->rdi - USER_SDK_FILES) / sizeof(SfFile));
-        regs->rax = status(filesys::fd_close(process::cur_handles(), h));
+        regs->rax = status(filesys::fd_close(process::cur_handles(), (sint32_t)regs->rdi));
     }
 
-    // Read and Write: (This, Buffer, *Size) - *Size in and out.
+    // Read and Write: (Handle, Buffer, *Size) - *Size in and out.
     void file_transfer(user_regs* regs, bool write)
     {
-        file* f = from_table(regs->rdi);
+        file* f = from_handle(regs->rdi);
         if (!f)
         {
             regs->rax = SF_BAD_HANDLE;
@@ -266,7 +267,7 @@ namespace
 
     void file_get_position(user_regs* regs, iret_frame*)
     {
-        file* f = from_table(regs->rdi);
+        file* f = from_handle(regs->rdi);
         if (!f)
         {
             regs->rax = SF_BAD_HANDLE;
@@ -278,7 +279,7 @@ namespace
 
     void file_set_position(user_regs* regs, iret_frame*)
     {
-        file* f = from_table(regs->rdi);
+        file* f = from_handle(regs->rdi);
         if (!f)
         {
             regs->rax = SF_BAD_HANDLE;
@@ -333,11 +334,6 @@ namespace sffile
         }
         if (vfs::lookup("/tmp", nullptr, tmp, true) != 0)
             *tmp = nullptr;
-    }
-
-    uint64_t table_address(sint32_t h)
-    {
-        return USER_SDK_FILES + (uint64_t)h * sizeof(SfFile);
     }
 
     void init()

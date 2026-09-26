@@ -3,41 +3,30 @@
 
 #include "types.h"
 
-// The SDK pages every program is started with.
+// The SDK pages every program is started with (abi/sdkimage.h).
 //
-//   USER_SDK_CODE   read + execute: the SDK's code - the start-up stub that
-//                   calls SfMain and ends the process, and the protocol
-//                   functions (Console->Print, ...), each a `syscall`.
-//                   One frame for the whole system, filled from the kernel
-//                   image (sdkpage.asm) at boot and mapped PAGE_SHARED into
-//                   every process.
-//   USER_SDK_DATA   read-only: the tables SfMain gets - SfSystem, SfApp,
-//                   SfConsole, SfFiles - filled in by the kernel for this
-//                   process.
-//   USER_SDK_FILES  read-only: one SfFile table per handle slot (sffile.h).
+//   code    the SDK runtime (src/sdk/runtime): its code and its constant
+//           tables. One set of frames for the whole system, copied from
+//           the kernel image (sdkpage.asm) at boot and mapped PAGE_SHARED,
+//           read + execute, into every process.
+//   info    SdkStartInfo of this process, read-only.
+//   state   the runtime's variables, zeroed, read + write.
 //
-// The program never writes either page; the kernel fills them through the
-// direct map before the process first runs.
+// The console calls of the runtime end up here too.
 
 struct user_regs;
 struct iret_frame;
 
 namespace sdkpage
 {
-    struct Entry
-    {
-        uint64_t start;     // where the process starts (the stub)
-        uint64_t app;       // SfApp* for SfMain
-        uint64_t sys;       // SfSystem* for SfMain
-    };
-
-    // Set up the shared code frame. Called once from kmain.
+    // Check the runtime and set up the shared code frames. Called once
+    // from kmain.
     void init();
 
-    // Map the three pages in the current address space and fill the data page
-    // for program `name`. false when out of memory (the caller destroys
-    // the space).
-    bool install(const char* name, Entry* out);
+    // Map the SDK pages of program `name` in the current address space;
+    // *start gets where the process starts. false when out of memory (the
+    // caller destroys the space).
+    bool install(const char* name, uint64_t* start);
 
     // SFCALL_CONSOLE_PRINT (Text): write a NUL-terminated string to the
     // console.

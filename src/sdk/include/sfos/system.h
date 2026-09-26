@@ -5,12 +5,14 @@
 #include "app.h"
 #include "console.h"
 #include "files.h"
+#include "memory.h"
 
 // The system table: everything a program can ask of the system, handed to
 // SfMain. Services are tables of their own, reached from here.
 //
 //   Console   the program's console.
 //   Files     the program's roots: data:/, tmp:/.
+//   Memory    pages and the heap.
 //
 // More services (Memory, Time, Process, ...) are added at the end in later
 // revisions; check Hdr.Size (SF_HAS_FIELD) before using one that came
@@ -20,6 +22,7 @@ typedef struct SfSystem
     SfTableHeader Hdr;
     SfConsole*    Console;
     SfFiles*      Files;
+    SfMemory*     Memory;
 } SfSystem;
 
 #define SF_SYSTEM_SIGNATURE SF_SIGNATURE('S', 'F', 'S', 'Y', 'S', 'T', 'E', 'M')
@@ -27,7 +30,8 @@ typedef struct SfSystem
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Console) == 16, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Files) == 24, "SfSystem layout");
-SF_STATIC_ASSERT(sizeof(SfSystem) == 32, "SfSystem layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Memory) == 32, "SfSystem layout");
+SF_STATIC_ASSERT(sizeof(SfSystem) == 40, "SfSystem layout");
 
 // The program's entry point. What it returns becomes the exit status its
 // parent sees.

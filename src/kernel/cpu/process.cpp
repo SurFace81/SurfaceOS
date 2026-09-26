@@ -590,8 +590,8 @@ namespace process
         uint64_t image_end;
         uint64_t rsp;           // initial stack pointer
 
-        // Where the program starts (the SDK code page) and its tables.
-        sdkpage::Entry sdk;
+        // Where the program starts: in the SDK runtime.
+        uint64_t sdk_start;
     };
 
     // Map [vaddr, vaddr+size) with zeroed 4 KiB user pages (active space).
@@ -715,12 +715,12 @@ namespace process
             }
         }
 
-        // Every program starts through the SDK pages with an empty, 16-byte
-        // aligned stack. (Its arguments are not passed on yet: `ae` reaches
-        // the program with SfApp's argument fields.)
+        // Every program starts in the SDK runtime with an empty stack, as
+        // right after a call. (Its arguments are not passed on yet: `ae`
+        // reaches the program with SfApp's argument fields.)
         (void)ae;
-        uint64_t rsp = USER_STACK_TOP;
-        sdkpage::Entry sdk = { 0, 0, 0 };
+        uint64_t rsp = USER_STACK_TOP - 8;
+        uint64_t sdk = 0;
         if (ok)
         {
             char name[sizeof(Process::name)];
@@ -745,7 +745,7 @@ namespace process
         out->entry     = lr.entry;
         out->image_end = lr.image_end;
         out->rsp       = rsp;
-        out->sdk       = sdk;
+        out->sdk_start = sdk;
         return 0;
     }
 
@@ -756,11 +756,9 @@ namespace process
         p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
         copy_name(p->name, path);
-        // sdk_start(App, Sys, SfMain): see sdkpage.asm.
-        initial_context(&p->ctx, img->sdk.start, img->rsp);
-        p->ctx.regs.rdi = img->sdk.app;
-        p->ctx.regs.rsi = img->sdk.sys;
-        p->ctx.regs.rdx = img->entry;
+        // SdkStart(SfMain): see abi/sdkimage.h.
+        initial_context(&p->ctx, img->sdk_start, img->rsp);
+        p->ctx.regs.rdi = img->entry;
         copy_bytes(p->fpu, fpu_template, sizeof(p->fpu));
     }
 
@@ -2696,6 +2694,56 @@ namespace process
 
         release_range(addr, pages);
         regs->rax = 0;
+    }
+
+    // SFCALL_MEMORY_ALLOCATE_PAGES (Count, *Address): zeroed pages,
+    // read + write, from the mmap region.
+    void sf_allocate_pages(user_regs* regs, iret_frame*)
+    {
+        uint64_t pages = regs->rdi;
+        if (!pages || pages > (USER_MMAP_LIMIT - USER_MMAP_BASE) / PAGE_SIZE_4K)
+        {
+            regs->rax = pages ? SF_OUT_OF_RESOURCES : SF_INVALID_PARAMETER;
+            return;
+        }
+        uint64_t addr = find_free_range(current, pages);
+        if (!addr)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        if (!map_user_region(addr, pages * PAGE_SIZE_4K, PAGE_WRITE | PAGE_NX))
+        {
+            release_range(addr, pages);
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        if (!uaccess::copy_to_user(regs->rsi, &addr, sizeof(addr)))
+        {
+            release_range(addr, pages);
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        current->mmap_cursor = addr + pages * PAGE_SIZE_4K;
+        if (current->mmap_cursor >= USER_MMAP_LIMIT)
+            current->mmap_cursor = USER_MMAP_BASE;
+        regs->rax = SF_SUCCESS;
+    }
+
+    // SFCALL_MEMORY_FREE_PAGES (Address, Count).
+    void sf_free_pages(user_regs* regs, iret_frame*)
+    {
+        uint64_t addr  = regs->rdi;
+        uint64_t pages = regs->rsi;
+        if (!pages || (addr & (PAGE_SIZE_4K - 1)) ||
+            pages > (USER_MMAP_LIMIT - USER_MMAP_BASE) / PAGE_SIZE_4K ||
+            !range_in(addr, pages * PAGE_SIZE_4K, USER_MMAP_BASE, USER_MMAP_LIMIT))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        release_range(addr, pages);
+        regs->rax = SF_SUCCESS;
     }
 
     void sys_mprotect(user_regs* regs, iret_frame*)

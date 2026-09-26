@@ -20,8 +20,9 @@ struct vnode;
 //   image_end           heap, grows up via SYS_BRK          (up to USER_MMAP_BASE)
 //   0x0000000010000000  anonymous mmap window               (USER_MMAP_SIZE)
 //   ...                 unused
-//   0x00007FFF00000000  SDK code page, R+X  (sdkpage.h)
-//   0x00007FFF00001000  SDK data page, R    (the tables SfMain gets)
+//   0x00007FFF00000000  SDK runtime code, R+X, shared   (abi/sdkimage.h)
+//   0x00007FFF00100000  SDK start info, R
+//   0x00007FFF00200000  SDK runtime variables, RW
 //   ...                 unused
 //   stack bottom        stack, grows down, NX               (USER_STACK_SIZE)
 //   0x00007FFFFFFFF000  USER_STACK_TOP; one unmapped guard page above it
@@ -32,8 +33,8 @@ struct vnode;
 // stack sits at the top of the half so either can grow without moving the
 // other. paging::map_user_page enforces [USER_MIN, USER_LIMIT).
 //
-// A program starts with an empty stack; what it is told (SfApp, SfSystem)
-// lives in the SDK data page.
+// A program starts with an empty stack in the SDK runtime, mapped at
+// SDK_CODE_ADDRESS and above (abi/sdkimage.h, sdkpage.h).
 #define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/linker.ld
 #define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
 #define USER_MMAP_BASE      0x10000000ULL
@@ -41,9 +42,6 @@ struct vnode;
 #define USER_MMAP_LIMIT     (USER_MMAP_BASE + USER_MMAP_SIZE)
 #define USER_STACK_SIZE     (1024 * 1024)           // 1 MiB: args + program stack
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
-#define USER_SDK_CODE       0x00007FFF00000000ULL
-#define USER_SDK_DATA       (USER_SDK_CODE + PAGE_SIZE_4K)
-#define USER_SDK_FILES      (USER_SDK_CODE + 2 * PAGE_SIZE_4K)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
@@ -124,6 +122,9 @@ namespace process
     void sys_exit      (user_regs* regs, iret_frame* iret);
     // SFCALL_EXIT (SfStatus): the SurfaceOS ABI's exit.
     void sf_exit       (user_regs* regs, iret_frame* iret);
+    // SFCALL_MEMORY_ALLOCATE_PAGES / FREE_PAGES: SfStatus results.
+    void sf_allocate_pages(user_regs* regs, iret_frame* iret);
+    void sf_free_pages (user_regs* regs, iret_frame* iret);
     void sys_exit_group(user_regs* regs, iret_frame* iret);
     void sys_read_key  (user_regs* regs, iret_frame* iret);
     void sys_brk       (user_regs* regs, iret_frame* iret);
