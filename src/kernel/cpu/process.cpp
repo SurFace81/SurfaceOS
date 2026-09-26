@@ -30,6 +30,7 @@
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/tty.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/term.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/fs/devfs.h"
@@ -1740,6 +1741,7 @@ namespace process
         task::prepare_kernel(&t->task, "console", kstack_top(t), entry, nullptr);
         start(p);
         console_proc = p;
+        term::set_program("console");
     }
 
     void run_cpu()
@@ -1989,10 +1991,7 @@ namespace process
 
         screen::hide_cursor();
         screen::clear();
-        screen::draw_title_bar(p->name);
-        uint32_t bar_h = screen::title_bar_height();
-        screen::push_viewport(screen::vp_x(), screen::vp_y() + bar_h,
-                              screen::vp_w(), screen::vp_h() - bar_h);
+        term::set_program(p->name);
 
         uart::printf("console: program start, pid %u %s entry=%llx cpu %u\n",
                      (uint32_t)p->pid, p->name, entry, p->cpu);
@@ -2016,7 +2015,7 @@ namespace process
 
         uart::printf("console: program end, status %u\n", (uint32_t)status);
 
-        screen::pop_viewport();
+        term::set_program("console");
         screen::clear();
         screen::show_cursor();
         keyboard::set_keyboard_callback(prev_callback);

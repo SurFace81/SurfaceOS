@@ -12,6 +12,7 @@
 #include "../../include/drivers/tty.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/drivers/rtc.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 
@@ -63,11 +64,80 @@ namespace
         uint32_t   nparams;
         bool       param_seen;      // distinguishes "ESC[m" from "ESC[0m"
         char       priv;            // '?', '>' or '<' right after the '['
+
+        // --- title bar ----------------------------------------------------
+        char       program[32];     // who runs on it; "" for none
+        char       subtitle[64];    // the program's own words
     };
 
     Screen  screens[TERM_SCREENS];
     Screen* S     = &screens[0];    // output goes here
     Screen* shown = &screens[0];    // on the panel
+
+    // The title bar is drawn again when the shown screen's text or the
+    // minute on the clock changes.
+    bool     title_dirty = true;
+    uint32_t clock_minutes = ~0U;   // hours * 60 + minutes, as last drawn
+    uint64_t clock_second = ~0ULL;  // uptime second the RTC was last read
+
+    void copy_text(char* dst, uint32_t size, const char* src)
+    {
+        uint32_t i = 0;
+        for (; src && src[i] && i + 1 < size; i++)
+            dst[i] = src[i];
+        dst[i] = 0;
+    }
+
+    char* append(char* p, char* end, const char* s)
+    {
+        while (*s && p < end)
+            *p++ = *s++;
+        return p;
+    }
+
+    // "F1 | console | subtitle" on the left, "15:30" on the right.
+    void draw_title()
+    {
+        // The clock: the RTC is read once a second at most.
+        uint64_t second = pit::uptime_ms() / 1000;
+        if (second != clock_second)
+        {
+            clock_second = second;
+            rtc_time t;
+            rtc::read(&t);
+            uint32_t m = t.hours * 60U + t.minutes;
+            if (m != clock_minutes)
+            {
+                clock_minutes = m;
+                title_dirty = true;
+            }
+        }
+        if (!title_dirty)
+            return;
+        title_dirty = false;
+
+        char left[128];
+        char* p = left;
+        char* end = left + sizeof(left) - 1;
+        char num[3] = { 'F', (char)('1' + (shown - screens)), 0 };
+        p = append(p, end, num);
+        if (shown->program[0])
+        {
+            p = append(p, end, " | ");
+            p = append(p, end, shown->program);
+        }
+        if (shown->subtitle[0])
+        {
+            p = append(p, end, " | ");
+            p = append(p, end, shown->subtitle);
+        }
+        *p = 0;
+
+        uint32_t h = clock_minutes / 60, m = clock_minutes % 60;
+        char right[6] = { (char)('0' + h / 10), (char)('0' + h % 10), ':',
+                          (char)('0' + m / 10), (char)('0' + m % 10), 0 };
+        screen::draw_title_bar(left, right);
+    }
 
     inline term_cell* cell_at(uint32_t x, uint32_t y)
     {
@@ -641,11 +711,27 @@ namespace term
         shown = &screens[n];
         cursor_inverted = false;    // redrawn from the new screen's cells
         mark_panel();
+        title_dirty = true;
     }
 
     uint32_t shown_screen()
     {
         return (uint32_t)(shown - screens);
+    }
+
+    void set_program(const char* name)
+    {
+        copy_text(S->program, sizeof(S->program), name);
+        S->subtitle[0] = 0;         // it was the previous program's
+        if (S == shown)
+            title_dirty = true;
+    }
+
+    void set_subtitle(const char* text)
+    {
+        copy_text(S->subtitle, sizeof(S->subtitle), text);
+        if (S == shown)
+            title_dirty = true;
     }
 
     uint32_t cols() { return cur_cols; }
@@ -810,12 +896,15 @@ namespace term
     void invalidate()
     {
         mark_panel();
+        title_dirty = true;
     }
 
     void render()
     {
         if (!shown->grid)
             return;
+
+        draw_title();
 
         // Lift the cursor first: it is an inversion of whatever was under
         // it, so it has to come off before anything repaints that cell.

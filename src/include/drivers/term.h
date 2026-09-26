@@ -61,6 +61,12 @@ namespace term
     void show(uint32_t n);
     uint32_t shown_screen();
 
+    // The selected screen's part of the title bar, which the system draws:
+    // "F<n> | program | subtitle ... hh:mm". A new program clears the
+    // subtitle.
+    void set_program(const char* name);
+    void set_subtitle(const char* text);
+
     uint32_t cols();
     uint32_t rows();
 
@@ -84,8 +90,9 @@ namespace term
     // Default foreground for cells written from now on.
     void set_fg(uint8_t idx);
 
-    // Rasterise everything dirty into the back buffer and update the
-    // cursor's blink state. Called from the timer before screen::flush().
+    // Rasterise everything dirty (title bar included) into the back buffer
+    // and update the cursor's blink state. Called from the timer before
+    // screen::flush().
     void render();
     // Mark the whole grid dirty (after a viewport change or a repaint).
     void invalidate();

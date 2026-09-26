@@ -76,16 +76,9 @@ namespace screen
     // Virtual address the framebuffer is mapped at (kernel device window).
     uint64_t vram_base();
 
-    void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-    void pop_viewport();
-    void draw_title_bar(const char* title);
-    uint32_t title_bar_height();  // px, ~2.5% of screen height
-
-    uint32_t vp_x();
-    uint32_t vp_y();
-    uint32_t vp_w();
-    uint32_t vp_h();
-
+    // The system title bar above the text area (term.cpp decides what it
+    // says): `left` from the left edge, `right` against the right one.
+    void draw_title_bar(const char* left, const char* right);
 } // namespace screen
 
 #endif // SCREEN_H
