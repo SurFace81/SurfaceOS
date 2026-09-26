@@ -4,6 +4,7 @@
 #include "../../include/cpu/apic.h"
 #include "../../include/cpu/spinlock.h"
 #include "../../include/cpu/percpu.h"
+#include "../../include/cpu/smp.h"
 #include "../../include/drivers/pit.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
@@ -208,6 +209,8 @@ void irq_handler(struct interrupt_frame *frame) {
             irq_line = IRQ0_TIMER;
         else
             cpu_tick = true;
+        if (cpu::current()->index == 1)
+            smp::watch_boot_cpu();
     }
 
     if (!apic::active() && irq::is_spurious_irq(irq_line)) {

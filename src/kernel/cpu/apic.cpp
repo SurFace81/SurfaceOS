@@ -25,6 +25,7 @@ namespace
     const uint32_t ICR_PENDING      = 1U << 12;
     const uint32_t ICR_INIT         = 0x4500;   // INIT, level assert
     const uint32_t ICR_STARTUP      = 0x4600;   // startup IPI; low byte: page number
+    const uint32_t ICR_NMI          = 0x4400;
     const uint32_t LAPIC_TIMER_INIT = 0x380;
     const uint32_t LAPIC_TIMER_CUR  = 0x390;
     const uint32_t LAPIC_TIMER_DIV  = 0x3E0;
@@ -286,6 +287,11 @@ namespace apic
     void send_vector(uint32_t apic_id, uint8_t vector)
     {
         send_ipi(apic_id, vector);          // fixed delivery
+    }
+
+    void send_nmi(uint32_t apic_id)
+    {
+        send_ipi(apic_id, ICR_NMI);
     }
 
     void send_startup(uint32_t apic_id, uint64_t page)

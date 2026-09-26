@@ -547,7 +547,7 @@ namespace usb {
     usb_status get_device_info(uint8_t index, usb_device_info* out);
     uint8_t    get_block_device_count();
     usb_status get_block_device_info(uint8_t index, usb_block_device* out);
-    // Single-request limits: count <= USB_MAX_XFER_SECTORS, lba+count within
+    // Single-request limits: count sectors <= USB_MAX_XFER_BYTES, lba+count within
     // the device. Larger transfers are split by the block layer above.
     usb_status read_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, void* buffer);
     usb_status write_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, const void* buffer);
@@ -558,11 +558,10 @@ namespace usb {
     const char* get_usb_speed_str(uint8_t speed);
 }
 
-// Largest single SCSI READ(10)/WRITE(10) this driver will issue, in sectors.
-// READ(10) carries a uint16 count; the per-device DMA bounce buffer is sized
-// MAX sectors * sector_size, so the block layer must split larger requests.
-// 128 covers a 64 KiB FAT32 cluster at 512 B sectors (a single cluster read
-// must not be split by the FS layer), i.e. 512 KiB of DMA buffer per device.
-#define USB_MAX_XFER_SECTORS 128
+// Largest single SCSI READ(10)/WRITE(10) this driver will issue, in bytes:
+// what one Normal TRB carries, and the size of the per-device DMA bounce
+// buffer. The block layer splits larger requests. It covers a 64 KiB FAT32
+// cluster (a single cluster read must not be split by the FS layer).
+#define USB_MAX_XFER_BYTES 65536
 
 #endif // XHCI_H

@@ -23,6 +23,11 @@ namespace smp
     // they have. Call with the big kernel lock held (it keeps anyone from
     // switching to that space meanwhile).
     void flush_tlb(uint64_t cr3);
+
+    // On CPU 1's tick: the boot CPU counts the ticks and draws the screen.
+    // If the count stands still for 3 s, it is stuck with interrupts off;
+    // an NMI makes it report where (idt.cpp) instead of a frozen screen.
+    void watch_boot_cpu();
 }
 
 #endif // SMP_H

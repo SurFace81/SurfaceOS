@@ -41,6 +41,10 @@ namespace apic
     // Interrupt CPU `apic_id` with `vector`.
     void send_vector(uint32_t apic_id, uint8_t vector);
 
+    // A non-maskable interrupt to CPU `apic_id`: it gets through with the
+    // CPU's interrupts off.
+    void send_nmi(uint32_t apic_id);
+
     // Let the local APIC's timer drive the tick instead of the PIT. It is
     // calibrated against the running PIT to the same rate, so pit::ticks()
     // and everything measured in them stay as they are; then the PIT's IRQ

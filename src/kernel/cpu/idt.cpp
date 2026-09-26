@@ -2,6 +2,8 @@
 #include "../../include/cpu/idt.h"
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/process.h"
+#include "../../include/cpu/percpu.h"
+#include "../../include/drivers/term.h"
 
 // External function to load IDT
 extern "C" void load_idt(struct idtr* idtr_addr);
@@ -148,9 +150,23 @@ extern "C" void handle_exception(uint64_t vector, uint64_t* stack_frame, uint64_
 
     // Faults in ring 0 are bugs in this kernel; there is nothing safe to
     // resume into.
-    print("\n\rKERNEL PANIC: ");
-    print(name);
-    print("\n\r");
+    //
+    // The screen is only drawn from the boot CPU's tick, which never comes
+    // again from here (and never gets the big kernel lock if this CPU holds
+    // it): draw it now, or the machine just looks frozen.
+    //
+    // The first report is the one that matters: the watchdog's NMI (smp.cpp)
+    // comes to a CPU that already halted here, since its ticks stopped too.
+    asm volatile("cli");
+    static bool panicked = false;
+    if (panicked)
+        while (1) asm volatile("cli; hlt");
+    panicked = true;
+    screen::printf("\n\rKERNEL PANIC: %s on cpu %u\n\r", name, cpu::current()->index);
+    screen::printf("rip=%llx cr2=%llx err=%llx rsp=%llx\n\r",
+                   stack_frame[0], read_cr2(), error_code, stack_frame[3]);
+    term::render();
+    screen::flush();
 
     while (1) asm volatile("cli; hlt");
 }

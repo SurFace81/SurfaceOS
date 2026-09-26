@@ -181,6 +181,21 @@ namespace smp
         return cpus_running;
     }
 
+    void watch_boot_cpu()
+    {
+        static uint64_t last = 0;
+        static uint64_t still = 0;
+        uint64_t now = pit::ticks();
+        if (now != last)
+        {
+            last = now;
+            still = 0;
+            return;
+        }
+        if (++still == 3ULL * pit::real_frequency())
+            apic::send_nmi(cpus[0]->apic_id);
+    }
+
     void flush_tlb(uint64_t cr3)
     {
         Cpu* me = cpu::current();

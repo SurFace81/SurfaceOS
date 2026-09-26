@@ -265,6 +265,7 @@ bin/kernel/kernel.o: src/kernel/kernel.cpp version
 bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 	mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $^
+	$(LD) $(LDFLAGS) --oformat elf64-x86-64 -o bin/kernel/kernel.elf $^
 
 
 # Disk image: GPT with one FAT32 EFI System Partition, built by

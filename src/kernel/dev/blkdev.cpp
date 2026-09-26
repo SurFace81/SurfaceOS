@@ -38,7 +38,7 @@ namespace
     sint64_t usb_read(blkdev* dev, uint64_t lba, uint32_t count, void* buf)
     {
         usb_priv* p = (usb_priv*)dev->priv;
-        // read_sectors caps count at USB_MAX_XFER_SECTORS; block::read
+        // read_sectors caps a request at USB_MAX_XFER_BYTES; block::read
         // never hands us more.
         usb_status st = usb::read_sectors(p->index, (uint32_t)lba,
                                           (uint16_t)count, buf);
@@ -136,7 +136,7 @@ namespace block
             make_name(dev->name, "usb", (uint32_t)i);
             dev->sector_size        = info.block_size;
             dev->sector_count       = sectors;
-            dev->max_sectors_per_io = USB_MAX_XFER_SECTORS;
+            dev->max_sectors_per_io = USB_MAX_XFER_BYTES / info.block_size;
             dev->ops                = &usb_ops;
             usb_privs[i].index      = i;
             dev->priv               = &usb_privs[i];

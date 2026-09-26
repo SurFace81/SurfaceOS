@@ -52,9 +52,13 @@ static uint64_t read_mmio64(volatile uint64_t* reg)
 // Memory allocation with xHCI alignment and boundary requirements
 static void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary)
 {
-    if (size == 0 || alignment == 0)
+    // A block larger than `boundary` cannot help crossing one; moving it
+    // up to the next boundary would run it past the end of what kmalloc
+    // gave (and over the neighbouring heap blocks).
+    if (size == 0 || alignment == 0 || (boundary && size > boundary))
     {
-        uart::printf("xhci: bad alloc params size=%u align=%u\n", (uint32_t)size, (uint32_t)alignment);
+        uart::printf("xhci: bad alloc params size=%u align=%u boundary=%u\n", (uint32_t)size,
+                     (uint32_t)alignment, (uint32_t)boundary);
         while (1);
     }
 
@@ -338,10 +342,10 @@ static uint32_t msd_block_size[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_last_lba[MAX_MASS_STORAGE_DEVS];
 static bool msd_capacity_cached[MAX_MASS_STORAGE_DEVS];
 
-// One reusable DMA bounce buffer per device, sized
-// USB_MAX_XFER_SECTORS * sector_size. Allocating per request made every
-// FAT sector read a kmalloc + a DMA-capable carve-out; on real USB sticks
-// that dominated small-transfer latency.
+// One reusable DMA bounce buffer per device, USB_MAX_XFER_BYTES long.
+// Allocating per request made every FAT sector read a kmalloc + a
+// DMA-capable carve-out; on real USB sticks that dominated small-transfer
+// latency.
 static uint8_t* msd_dma_buf[MAX_MASS_STORAGE_DEVS];
 static uintptr_t msd_dma_phys[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_dma_size[MAX_MASS_STORAGE_DEVS];
@@ -911,7 +915,8 @@ read_csw:
 
     if (shared_csw->bCSWStatus != 0)
     {
-        uart::printf("bot: command failed status=%u\n", (uint32_t)shared_csw->bCSWStatus);
+        uart::printf("bot: command 0x%x failed status=%u\n", (uint32_t)scsi_cmd[0],
+                     (uint32_t)shared_csw->bCSWStatus);
         return (sint32_t)shared_csw->bCSWStatus;
     }
 
@@ -943,9 +948,9 @@ static bool scsi_inquiry(usb_mass_storage_dev* msd)
     {
         if (device_infos[d].slot_id == msd->slot_id)
         {
-            memory::memcpy(data + 8, (uint8_t*)device_infos[d].vendor_str, 8);
+            memory::memcpy((uint8_t*)device_infos[d].vendor_str, data + 8, 8);
             device_infos[d].vendor_str[8] = '\0';
-            memory::memcpy(data + 16, (uint8_t*)device_infos[d].product_str, 16);
+            memory::memcpy((uint8_t*)device_infos[d].product_str, data + 16, 16);
             device_infos[d].product_str[16] = '\0';
             break;
         }
@@ -1098,9 +1103,10 @@ static bool ensure_dma_buffer(uint8_t dev_index)
     if (msd_dma_buf[dev_index])
         return true;
 
-    uint32_t bs = msd_block_size[dev_index];
-    uint32_t size = (uint32_t)USB_MAX_XFER_SECTORS * bs;
-    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 4096);
+    // One Normal TRB carries it, and a TRB's buffer may not cross a 64 KiB
+    // boundary.
+    uint32_t size = USB_MAX_XFER_BYTES;
+    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 65536);
     if (!buf)
         return false;
 
@@ -2316,7 +2322,7 @@ namespace usb
 
         // One request may not exceed the reusable DMA buffer; the block layer
         // above splits larger transfers.
-        if (count > USB_MAX_XFER_SECTORS)
+        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
 
         // Bounds-check against the capacity READ CAPACITY reported: a bogus
@@ -2355,7 +2361,7 @@ namespace usb
         if (st != USB_OK)
             return st;
 
-        if (count > USB_MAX_XFER_SECTORS)
+        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
 
         if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
