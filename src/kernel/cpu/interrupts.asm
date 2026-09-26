@@ -112,6 +112,11 @@ irq_common_stub:
     add rsp, 16             ; Remove int_no and err_code (8 bytes each)
     iretq
 
+; The local APIC's spurious interrupt: nothing to handle, and no EOI.
+global apic_spurious
+apic_spurious:
+    iretq
+
 ; Define IDT handlers
 EXCEPTION_HANDLER_NO_ERROR   0    ; Divide Error - no error code
 EXCEPTION_HANDLER_NO_ERROR   1    ; Debug - no error code

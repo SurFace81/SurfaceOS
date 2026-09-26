@@ -65,6 +65,8 @@ namespace irq {
     void install_handler(int irq, irq_handler_t handler);
     void uninstall_handler(int irq);
     void pic_send_eoi(uint8_t irq);
+    // Mask every line of both 8259s.
+    void mask_all(void);
 }
 
 // Assembly interrupt stubs (defined in interrupts.asm)

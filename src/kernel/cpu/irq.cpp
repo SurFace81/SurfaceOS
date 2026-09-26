@@ -1,6 +1,7 @@
 #include "../../include/cpu/irq.h"
 #include "../../include/cpu/syscall.h"
 #include "../../include/cpu/process.h"
+#include "../../include/cpu/apic.h"
 
 alignas(8) irq_handler_t irq_handlers[16] = {0};
 
@@ -115,6 +116,10 @@ namespace irq {
     }
 
     void enable(int irq) {
+        if (apic::active()) {
+            apic::unmask_irq((uint8_t)irq);
+            return;
+        }
         uint16_t port;
         uint8_t value;
         
@@ -130,6 +135,10 @@ namespace irq {
     }
 
     void disable(int irq) {
+        if (apic::active()) {
+            apic::mask_irq((uint8_t)irq);
+            return;
+        }
         uint16_t port;
         uint8_t value;
         
@@ -160,7 +169,7 @@ namespace irq {
 void irq_handler(struct interrupt_frame *frame) {
     uint8_t irq_line = frame->int_no - IRQ_BASE;
     
-    if (irq::is_spurious_irq(irq_line)) {
+    if (!apic::active() && irq::is_spurious_irq(irq_line)) {
         if (irq_line == 15) {
             port::byte_out(PIC1_COMMAND, PIC_EOI);
         }
@@ -171,7 +180,10 @@ void irq_handler(struct interrupt_frame *frame) {
         irq_handlers[irq_line]();
     }
 
-    irq::pic_send_eoi(irq_line);
+    if (apic::active())
+        apic::eoi();
+    else
+        irq::pic_send_eoi(irq_line);
 
     if (irq_line == IRQ0_TIMER)
         process::on_timer_tick();

@@ -6,8 +6,11 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
  
 - UEFI bootloader (custom EFI loader via MinGW; passes the boot volume's
   partition start and disk signature to the kernel for automount)
-- x86_64 kernel: GDT/IDT/PIC, paging (4 KiB, per-process address spaces,
+- x86_64 kernel: GDT/IDT, local APIC + IOAPIC (xAPIC or x2APIC; the
+  8259s without a MADT), paging (4 KiB, per-process address spaces,
   W^X), TSS, ring-3 user mode
+- ACPI tables without AML: reboot/shutdown (FADT, \_S5), the CPUs and
+  interrupt controllers from the MADT (`acpi` command)
 - Preemptive scheduler (switches only at ring-3 boundaries), fork/execve/
   wait4/kill, SysV ABI process startup (argv/envp/auxv on the stack)
 - Old POSIX-shaped syscall ABI (int 0x80, -errno results): frozen - no
