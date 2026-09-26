@@ -121,6 +121,8 @@ namespace
 
     uint32_t    dmar_units = 0, dmar_disabled = 0, dmar_flags = 0;
 
+    acpi::madt_info madt_data;
+
     // --- physical memory access ---------------------------------------------
 
     // Tables normally sit in ACPI reclaim/NVS or reserved RAM, which the
@@ -390,6 +392,87 @@ namespace
 
     // --- mode switch and resets ---------------------------------------------
 
+    // --- MADT (ACPI 6.5, 5.2.12) --------------------------------------------
+
+    const uint32_t MADT_ENTRIES        = 44;   // after the header, LAPIC address, flags
+    const uint32_t MADT_PCAT_COMPAT    = 1U << 0;
+    const uint8_t  MADT_LAPIC          = 0;
+    const uint8_t  MADT_IOAPIC         = 1;
+    const uint8_t  MADT_OVERRIDE       = 2;
+    const uint8_t  MADT_LAPIC_ADDRESS  = 5;
+    const uint8_t  MADT_X2APIC         = 9;
+    const uint32_t MADT_CPU_ENABLED    = 1U << 0;
+    const uint32_t MADT_CPU_ONLINE_CAP = 1U << 1;
+
+    template <typename T>
+    T entry_field(const uint8_t* e, uint32_t off)
+    {
+        T v;
+        memory::memcpy((uint8_t*)&v, e + off, sizeof(T));
+        return v;
+    }
+
+    void add_cpu(uint32_t apic_id, uint32_t uid, uint32_t flags)
+    {
+        if (!(flags & (MADT_CPU_ENABLED | MADT_CPU_ONLINE_CAP)))
+            return;                 // not there at all
+        if (madt_data.cpu_count >= acpi::MAX_CPUS)
+            return;
+        acpi::cpu_info& c = madt_data.cpus[madt_data.cpu_count++];
+        c.apic_id        = apic_id;
+        c.acpi_uid       = uid;
+        c.enabled        = (flags & MADT_CPU_ENABLED) != 0;
+        c.online_capable = !c.enabled;
+    }
+
+    void parse_madt(const sdt_header* t)
+    {
+        const uint8_t* base = (const uint8_t*)t;
+        if (t->length < MADT_ENTRIES)
+            return;
+        madt_data.present       = true;
+        madt_data.lapic_address = entry_field<uint32_t>(base, 36);
+        madt_data.has_8259      = (entry_field<uint32_t>(base, 40) & MADT_PCAT_COMPAT) != 0;
+
+        for (uint32_t off = MADT_ENTRIES; off + 2 <= t->length; )
+        {
+            const uint8_t* e = base + off;
+            uint8_t type = e[0], len = e[1];
+            if (len < 2 || off + len > t->length)
+                break;              // malformed: stop rather than misread
+
+            if (type == MADT_LAPIC && len >= 8)
+                add_cpu(e[3], e[2], entry_field<uint32_t>(e, 4));
+            else if (type == MADT_X2APIC && len >= 16)
+                add_cpu(entry_field<uint32_t>(e, 4), entry_field<uint32_t>(e, 12),
+                        entry_field<uint32_t>(e, 8));
+            else if (type == MADT_IOAPIC && len >= 12 &&
+                     madt_data.ioapic_count < acpi::MAX_IOAPICS)
+            {
+                acpi::ioapic_info& io = madt_data.ioapics[madt_data.ioapic_count++];
+                io.id       = e[2];
+                io.address  = entry_field<uint32_t>(e, 4);
+                io.gsi_base = entry_field<uint32_t>(e, 8);
+            }
+            else if (type == MADT_OVERRIDE && len >= 10 && e[2] == 0 &&
+                     madt_data.override_count < acpi::MAX_OVERRIDES)
+            {
+                // Flags: polarity in bits 0-1, trigger mode in bits 2-3;
+                // 0 means "as the bus says" (ISA: active high, edge).
+                uint16_t flags = entry_field<uint16_t>(e, 8);
+                acpi::irq_override& o = madt_data.overrides[madt_data.override_count++];
+                o.irq        = e[3];
+                o.gsi        = entry_field<uint32_t>(e, 4);
+                o.active_low = (flags & 3) == 3;
+                o.level      = ((flags >> 2) & 3) == 3;
+            }
+            else if (type == MADT_LAPIC_ADDRESS && len >= 12)
+                madt_data.lapic_address = entry_field<uint64_t>(e, 4);
+
+            off += len;
+        }
+    }
+
     bool hardware_reduced_flag()
     {
         return (fadt_flags & FADT_FLAG_HW_REDUCED) != 0;
@@ -505,6 +588,31 @@ namespace acpi
                 s5_found = find_s5(dsdt);
         }
 
+        const sdt_header* madt_table = find_table("APIC");
+        if (madt_table && checksum((const uint8_t*)madt_table, madt_table->length))
+            parse_madt(madt_table);
+        if (madt_data.present)
+        {
+            uart::printf("acpi: MADT: %u CPU(s), LAPIC at %llx, %u IOAPIC(s), %u override(s)%s\n",
+                         madt_data.cpu_count, madt_data.lapic_address,
+                         madt_data.ioapic_count, madt_data.override_count,
+                         madt_data.has_8259 ? ", 8259 present" : "");
+            for (uint32_t i = 0; i < madt_data.cpu_count; i++)
+                uart::printf("acpi:   cpu %u: APIC id %u%s\n", i, madt_data.cpus[i].apic_id,
+                             madt_data.cpus[i].enabled ? "" : " (can be started)");
+            for (uint32_t i = 0; i < madt_data.ioapic_count; i++)
+                uart::printf("acpi:   IOAPIC id %u at %llx, GSI from %u\n",
+                             madt_data.ioapics[i].id, madt_data.ioapics[i].address,
+                             madt_data.ioapics[i].gsi_base);
+            for (uint32_t i = 0; i < madt_data.override_count; i++)
+                uart::printf("acpi:   IRQ %u -> GSI %u%s%s\n", (uint32_t)madt_data.overrides[i].irq,
+                             madt_data.overrides[i].gsi,
+                             madt_data.overrides[i].active_low ? ", active low" : "",
+                             madt_data.overrides[i].level ? ", level" : "");
+        }
+        else
+            uart::printf("acpi: no MADT\n");
+
         // Some firmware defines \_S5 in an SSDT instead.
         for (uint32_t i = 0; !s5_found && i < num_tables; i++)
             if (memory::memcmp((const uint8_t*)tables[i].sig, (const uint8_t*)"SSDT", 4) == 0 &&
@@ -522,6 +630,11 @@ namespace acpi
     bool available()
     {
         return present;
+    }
+
+    const madt_info* madt()
+    {
+        return &madt_data;
     }
 
     uint32_t table_count()

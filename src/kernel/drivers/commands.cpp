@@ -1495,6 +1495,25 @@ static void cmd_acpi(int argc, const char** argv)
                    acpi::has_reset_register() ? "yes" : "no",
                    acpi::hardware_reduced() ? ", hardware-reduced ACPI" : "");
 
+    const acpi::madt_info* m = acpi::madt();
+    if (!m->present)
+        screen::printf("\n\rMADT: none (no APIC information)");
+    else
+    {
+        screen::printf("\n\rCPUs: %u, local APIC at %llx%s", m->cpu_count, m->lapic_address,
+                       m->has_8259 ? ", 8259 PICs present too" : "");
+        for (uint32_t i = 0; i < m->cpu_count; i++)
+            screen::printf("\n\r  cpu %u: APIC id %u%s", i, m->cpus[i].apic_id,
+                           m->cpus[i].enabled ? "" : " (can be started)");
+        for (uint32_t i = 0; i < m->ioapic_count; i++)
+            screen::printf("\n\rIOAPIC id %u at %llx, GSI from %u", m->ioapics[i].id,
+                           m->ioapics[i].address, m->ioapics[i].gsi_base);
+        for (uint32_t i = 0; i < m->override_count; i++)
+            screen::printf("\n\r  IRQ %u -> GSI %u%s%s", (uint32_t)m->overrides[i].irq,
+                           m->overrides[i].gsi, m->overrides[i].active_low ? ", active low" : "",
+                           m->overrides[i].level ? ", level" : "");
+    }
+
     if (flags & BOOT_DMAR_PRESENT)
         screen::printf("\n\rVT-d: %u unit(s), remapping was %s, turned off on %u%s",
                        units, (flags & BOOT_DMAR_WAS_ENABLED) ? "on" : "off", disabled,
