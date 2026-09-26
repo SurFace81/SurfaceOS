@@ -5,8 +5,10 @@
 #
 #   1. sdkcheck args.txt word     -> the SDK tables and services, argN: roots,
 #                                    SfStatus as exit status
-#   2. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
-#   3. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
+#   2. sfstest                    -> files through the SDK, the roots' sandbox;
+#                                    leaves data for qemu_verify.sh
+#   3. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
+#   4. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
 set -u
 
 # Programs may write any bytes to the serial log: byte semantics everywhere,
@@ -20,7 +22,7 @@ DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="sdkcheck"
+APPS="sdkcheck sfstest"
 # LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
 LAYOUT=${LAYOUT:-gpt}
 # SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
@@ -145,7 +147,16 @@ grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no fai
 wait_session_end $WANT 15; result $? "sdkcheck exits"
 [ "$(last_status)" = "0" ]; result $? "its SfStatus comes back as exit status 0"
 
-# 2. mount puts every partition of the second disk under /mount; umount
+# 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
+#    leaves in data:/ is read back after a restart by qemu_verify.sh.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sfstest"
+wait_for "sfstest: " 240; result $? "sfstest finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "sfstest: [0-9]* passed, 0 failed" "$LOG"; result $? "sfstest: no failed checks"
+wait_session_end $WANT 15; result $? "sfstest exits"
+
+# 3. mount puts every partition of the second disk under /mount; umount
 #    refuses while the FS is in use (the console cwd holds its root), and
 #    succeeds once it is not, removing the mount point.
 type_cmd "mount usb1"; sleep 3
@@ -159,7 +170,7 @@ type_cmd "cd /"; sleep 2
 type_cmd "umount usb1"; sleep 3
 wait_for "umount: ok usb1p1" 10; result $? "umount succeeds once nothing holds it"
 
-# 3. per-process kernel stacks and SDK pages are handed back when a program
+# 4. per-process kernel stacks and SDK pages are handed back when a program
 #    ends: run one between two meminfo samples and compare free frames.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
@@ -172,7 +183,7 @@ echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a program leaks no physical frames"
 
-# 4. console still alive
+# 5. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"

@@ -3,7 +3,7 @@
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
 // SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime and SfProcess -
 // that Console->Print works, pages and the heap, the clock and sleeping,
-// the command line, and the roots data:/ and tmp:/ with files in them.
+// and the command line. Files are sfstest's.
 //
 // Run as `sdkcheck <file> <word>`, with a file that does not exist yet
 // and a word that is no file, it also checks the argN: roots. The exit status is the
@@ -67,98 +67,6 @@ static bool SameBytes(const char* A, const char* B, uint64_t Size)
         if (A[i] != B[i])
             return false;
     return true;
-}
-
-// Write Text to a file and read it back through a second open.
-static void CheckRoots(SfFiles* Files)
-{
-    const char Text[] = "written by sdkcheck";
-    const uint64_t Len = sizeof(Text) - 1;
-
-    SfFile*  File = nullptr;
-    uint64_t Size = Len;
-    Check("data:/ creates a file",
-          Files->Open(Files, "data:/check.txt",
-                      SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE, &File) == SF_SUCCESS &&
-          File && HeaderOk(&File->Hdr, SF_FILE_SIGNATURE, sizeof(SfFile)));
-    if (!File)
-        return;
-    Check("Write writes all of it",
-          File->Write(File, Text, &Size) == SF_SUCCESS && Size == Len);
-    uint64_t Position = 0;
-    Check("GetPosition is after the text",
-          File->GetPosition(File, &Position) == SF_SUCCESS && Position == Len);
-    Check("Close", File->Close(File) == SF_SUCCESS);
-
-    // Through the root folder, relative to it.
-    SfFile* Dir = nullptr;
-    Check("data:/ alone opens the folder",
-          Files->Open(Files, "data:/", SF_FILE_READ, &Dir) == SF_SUCCESS && Dir);
-    if (!Dir)
-        return;
-    char Buffer[64] = {};
-    Size = sizeof(Buffer);
-    File = nullptr;
-    Check("File->Open below the folder",
-          Dir->Open(Dir, "check.txt", SF_FILE_READ, &File) == SF_SUCCESS && File);
-    if (File)
-    {
-        Check("SetPosition + Read read the text back",
-              File->SetPosition(File, 8) == SF_SUCCESS &&
-              File->Read(File, Buffer, &Size) == SF_SUCCESS &&
-              Size == Len - 8 && SameBytes(Buffer, Text + 8, Size));
-        Size = sizeof(Buffer);
-        Check("Read at the end gives 0 bytes",
-              File->Read(File, Buffer, &Size) == SF_SUCCESS && Size == 0);
-        File->Close(File);
-    }
-    SfFile* Out = nullptr;
-    Check("a folder does not lead above itself",
-          Dir->Open(Dir, "../sdkcheck/check.txt", SF_FILE_READ, &Out) == SF_ACCESS_DENIED);
-    Check("nor does an absolute path",
-          Dir->Open(Dir, "/apps/sdkcheck", SF_FILE_READ, &Out) == SF_ACCESS_DENIED);
-    Dir->Close(Dir);
-
-    Check("data:/.. is SF_ACCESS_DENIED",
-          Files->Open(Files, "data:/../other/x", SF_FILE_READ, &Out) == SF_ACCESS_DENIED);
-    Check("a missing file is SF_NOT_FOUND",
-          Files->Open(Files, "data:/missing.txt", SF_FILE_READ, &Out) == SF_NOT_FOUND);
-    Check("CREATE_NEW of an existing file is SF_ALREADY_EXISTS",
-          Files->Open(Files, "data:/check.txt", SF_FILE_WRITE | SF_FILE_CREATE_NEW, &Out) ==
-          SF_ALREADY_EXISTS);
-    Check("an unknown root is SF_NOT_FOUND",
-          Files->Open(Files, "disk:/sfos/KERNEL.BIN", SF_FILE_READ, &Out) == SF_NOT_FOUND);
-    Check("a path without a root is SF_INVALID_PARAMETER",
-          Files->Open(Files, "/apps/sdkcheck", SF_FILE_READ, &Out) == SF_INVALID_PARAMETER);
-
-    // tmp:/ - a unique name, then the same file by that name.
-    char Path[32];
-    File = nullptr;
-    Check("CreateUnique makes a file in tmp:/",
-          Files->CreateUnique(Files, &File, Path, sizeof(Path)) == SF_SUCCESS && File &&
-          SameBytes(Path, "tmp:/", 5));
-    if (!File)
-        return;
-    Size = Len;
-    File->Write(File, Text, &Size);
-    File->Close(File);
-    SfFile* Again = nullptr;
-    Check("... and it opens by the path it got",
-          Files->Open(Files, Path, SF_FILE_READ, &Again) == SF_SUCCESS && Again);
-    if (Again)
-    {
-        Size = sizeof(Buffer);
-        Check("... with what was written",
-              Again->Read(Again, Buffer, &Size) == SF_SUCCESS && Size == Len);
-        Again->Close(Again);
-    }
-    SfFile* Other = nullptr;
-    char Path2[32];
-    Check("the next CreateUnique gets another name",
-          Files->CreateUnique(Files, &Other, Path2, sizeof(Path2)) == SF_SUCCESS &&
-          !SameText(Path, Path2));
-    if (Other)
-        Other->Close(Other);
 }
 
 static void CheckTime(SfTime* Time)
@@ -352,8 +260,6 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Check("SfFiles: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&
           HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, sizeof(SfFiles)));
-    if (SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files)
-        CheckRoots(Sys->Files);
 
     Print("sdkcheck: ");
     PrintNumber(Passed);

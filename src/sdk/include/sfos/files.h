@@ -9,8 +9,9 @@
 //   data:/notes.txt   the program's own folder (the system keeps one per
 //                     program and creates it on first start)
 //   tmp:/job_1        shared temporary files, emptied at every boot; its
-//                     contents cannot be listed - make a name nobody else
-//                     uses with CreateUnique
+//                     contents cannot be listed (tmp:/ itself does not
+//                     open) - make a name nobody else uses with
+//                     CreateUnique
 //   arg1:             what a path in the command line names (SfApp Args)
 //
 // No path leads above its root.

@@ -41,7 +41,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables, memory, time, arguments, roots and files); the tests are being rewritten on the SDK
+  tables, memory, time, arguments), sfstest (files through the SDK and
+  the roots' sandbox; `sfstest verify` after a restart)
  
 # Project Structure
  
@@ -97,12 +98,15 @@ tools/
 
 # Tests
 
-- `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, mount/umount
-  on a second disk and a leak check, asserts on the serial log.
+- `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, sfstest,
+  mount/umount on a second disk and a leak check, asserts on the serial
+  log.
   `LAYOUT=superfloppy|mbr|gpt`, `SECTOR=512|4096` (4096 implies a 512 MiB
   superfloppy image).
-- `bash tools/qemu_matrix.sh` — the suite across every layout, plus host
-  `fsck.fat -n` of each image.
+- `bash tools/qemu_verify.sh` — after the suite: reboots its image, runs
+  `sfstest verify`, host `fsck.fat -n`.
+- `bash tools/qemu_matrix.sh` — the suite and the verify pass across every
+  layout, plus host `fsck.fat -n` of each image.
 
 # Writing to a real stick
 

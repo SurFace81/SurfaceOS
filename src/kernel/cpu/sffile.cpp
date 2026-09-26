@@ -8,6 +8,7 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/mm/heap.h"
+#include "../../include/stdlib/string.h"
 #include "../../include/drivers/uart.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/abi/fcntl.h"
@@ -110,7 +111,9 @@ namespace
     }
 
     // Open `path` below `base` with SF_FILE_* `mode`; *out gets the handle.
-    SfStatus open_below(vnode* base, const char* path, uint64_t mode, uint64_t user_out)
+    // A path that leads back to `forbid` is SF_ACCESS_DENIED.
+    SfStatus open_below(vnode* base, const char* path, uint64_t mode, uint64_t user_out,
+                        vnode* forbid = nullptr)
     {
         sint32_t flags = open_flags(mode);
         if (flags < 0)
@@ -120,6 +123,13 @@ namespace
                                      0644, vfs::LOOKUP_BENEATH);
         if (h < 0)
             return status(h);
+        sint64_t rc;
+        file* f = filesys::fd_get(process::cur_handles(), (sint32_t)h, &rc);
+        if (forbid && f && f->vn == forbid)
+        {
+            filesys::fd_close(process::cur_handles(), (sint32_t)h);
+            return SF_ACCESS_DENIED;
+        }
         return give_handle(h, user_out);
     }
 
@@ -167,7 +177,11 @@ namespace
         if (!root)
             regs->rax = SF_NOT_FOUND;
         else if (root->type == vtype::DIR || *rest)
-            regs->rax = open_below(root, rest, regs->rsi, regs->rdx);
+        {
+            // tmp:/ itself stays closed: its contents are not to be listed.
+            vnode* forbid = strcmp(path, "tmp") == 0 ? root : nullptr;
+            regs->rax = open_below(root, rest, regs->rsi, regs->rdx, forbid);
+        }
         else
             regs->rax = open_root_file(root, regs->rsi, regs->rdx);
         kfree(path);
@@ -282,7 +296,8 @@ namespace
                            : sys_fs::read(f, regs->rsi, size);
         if (n < 0)
         {
-            regs->rax = status(n);
+            // -EBADF here: the file is not open for this.
+            regs->rax = n == -EBADF ? SF_ACCESS_DENIED : status(n);
             return;
         }
         size = (uint64_t)n;
