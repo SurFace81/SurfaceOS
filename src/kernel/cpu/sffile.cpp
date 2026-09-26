@@ -83,13 +83,13 @@ namespace
         return path;
     }
 
-    // Open `path` below `base` with SF_FILE_* `mode`; *out gets the handle.
-    SfStatus open_below(vnode* base, const char* path, uint64_t mode, uint64_t user_out)
+    // The open flags for SF_FILE_* `mode`, or -1 for a bad mode.
+    sint32_t open_flags(uint64_t mode)
     {
         const uint64_t known = SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE |
                                SF_FILE_CREATE_NEW | SF_FILE_TRUNCATE;
         if (mode & ~known)
-            return SF_INVALID_PARAMETER;
+            return -1;
 
         sint32_t flags;
         if ((mode & SF_FILE_READ) && (mode & SF_FILE_WRITE))
@@ -99,16 +99,39 @@ namespace
         else if (mode & SF_FILE_READ)
             flags = O_RDONLY;
         else
-            return SF_INVALID_PARAMETER;
+            return -1;
         if (mode & SF_FILE_CREATE)
             flags |= O_CREAT;
         if (mode & SF_FILE_CREATE_NEW)
             flags |= O_CREAT | O_EXCL;
         if (mode & SF_FILE_TRUNCATE)
             flags |= O_TRUNC;
+        return flags;
+    }
+
+    // Open `path` below `base` with SF_FILE_* `mode`; *out gets the handle.
+    SfStatus open_below(vnode* base, const char* path, uint64_t mode, uint64_t user_out)
+    {
+        sint32_t flags = open_flags(mode);
+        if (flags < 0)
+            return SF_INVALID_PARAMETER;
 
         sint64_t h = sys_fs::open_at(base, path[0] ? path : ".", flags,
                                      0644, vfs::LOOKUP_BENEATH);
+        if (h < 0)
+            return status(h);
+        return give_handle(h, user_out);
+    }
+
+    // A root that is a file (argN:) opened as itself.
+    SfStatus open_root_file(vnode* v, uint64_t mode, uint64_t user_out)
+    {
+        sint32_t flags = open_flags(mode);
+        if (flags < 0)
+            return SF_INVALID_PARAMETER;
+        if (mode & SF_FILE_CREATE_NEW)
+            return SF_ALREADY_EXISTS;
+        sint64_t h = sys_fs::open_vnode(v, flags & ~O_CREAT);
         if (h < 0)
             return status(h);
         return give_handle(h, user_out);
@@ -141,7 +164,12 @@ namespace
             rest++;
 
         vnode* root = process::cur_root(path);
-        regs->rax = root ? open_below(root, rest, regs->rsi, regs->rdx) : SF_NOT_FOUND;
+        if (!root)
+            regs->rax = SF_NOT_FOUND;
+        else if (root->type == vtype::DIR || *rest)
+            regs->rax = open_below(root, rest, regs->rsi, regs->rdx);
+        else
+            regs->rax = open_root_file(root, regs->rsi, regs->rdx);
         kfree(path);
     }
 

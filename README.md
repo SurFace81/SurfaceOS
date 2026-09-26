@@ -28,7 +28,10 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   and reaches the system through tables of the SDK runtime
   (src/sdk/runtime), which the kernel maps into every program and which
   enters the kernel with the syscall instruction. Sys->Memory gives pages
-  and a heap, Sys->Time the clock, the uptime and sleeping. Files go through roots: data:/
+  and a heap, Sys->Time the clock, the uptime and sleeping,
+  Sys->Process the command line of a process. App->Args is the command
+  line; a path in it is opened by the console and reaches the program as
+  argN:. Files go through roots: data:/
   (the program's own /files/<name>, created on first start) and tmp:/
   (/tmp, unique names from CreateUnique); no path leads above its root.
   The old POSIX layer (int 0x80, libc) is still in the tree until it is
@@ -38,7 +41,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables, memory, time, roots and files); the tests are being rewritten on the SDK
+  tables, memory, time, arguments, roots and files); the tests are being rewritten on the SDK
  
 # Project Structure
  

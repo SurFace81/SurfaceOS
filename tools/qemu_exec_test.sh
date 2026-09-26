@@ -3,7 +3,8 @@
 # serial log: the kernel mirrors app output (SYS_WRITE) and the console logs
 # every program start/end with its exit status.
 #
-#   1. sdkcheck                   -> the SDK tables, Print, SfStatus as exit status
+#   1. sdkcheck args.txt word     -> the SDK tables and services, argN: roots,
+#                                    SfStatus as exit status
 #   2. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   3. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
 set -u
@@ -134,10 +135,11 @@ wait_for "sync: ok" 10; result $? "sync flushes the cache"
 
 type_cmd "cd /apps"; sleep 3
 
-# 1. sdkcheck: a program on the SurfaceOS SDK - the tables it starts with
-#    and Console->Print; its SfStatus becomes the exit status.
+# 1. sdkcheck: a program on the SurfaceOS SDK - the tables and services it
+#    starts with, and args.txt (created by the console) as arg1:; its
+#    SfStatus becomes the exit status.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "sdkcheck"
+type_cmd "sdkcheck args.txt word"
 wait_for "sdkcheck: " 20; result $? "sdkcheck finished"
 grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no failed checks"
 wait_session_end $WANT 15; result $? "sdkcheck exits"

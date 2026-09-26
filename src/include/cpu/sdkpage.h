@@ -9,7 +9,7 @@
 //           tables. One set of frames for the whole system, copied from
 //           the kernel image (sdkpage.asm) at boot and mapped PAGE_SHARED,
 //           read + execute, into every process.
-//   info    SdkStartInfo of this process, read-only.
+//   info    SdkStartInfo of this process and its arguments, read-only.
 //   state   the runtime's variables, zeroed, read + write.
 //
 // The console calls of the runtime end up here too.
@@ -23,10 +23,12 @@ namespace sdkpage
     // from kmain.
     void init();
 
-    // Map the SDK pages of program `name` in the current address space;
-    // *start gets where the process starts. false when out of memory (the
-    // caller destroys the space).
-    bool install(const char* name, uint64_t* start);
+    // Map the SDK pages of program `name` in the current address space.
+    // `args` holds `argc` NUL-terminated strings back to back, `args_size`
+    // bytes. *start gets where the process starts. false when out of
+    // memory (the caller destroys the space).
+    bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,
+                 uint64_t* start);
 
     // SFCALL_CONSOLE_PRINT (Text): write a NUL-terminated string to the
     // console.

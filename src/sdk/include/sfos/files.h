@@ -11,6 +11,7 @@
 //   tmp:/job_1        shared temporary files, emptied at every boot; its
 //                     contents cannot be listed - make a name nobody else
 //                     uses with CreateUnique
+//   arg1:             what a path in the command line names (SfApp Args)
 //
 // No path leads above its root.
 //

@@ -32,10 +32,13 @@ typedef struct SdkHeader
     uint64_t StateEnd;      // how much of it the runtime uses
 } SdkHeader;
 
-// What the kernel tells the runtime about the process.
+// What the kernel tells the runtime about the process. The argument
+// strings and the pointers to them follow it, on the same read-only pages.
 typedef struct SdkStartInfo
 {
-    char Name[64];          // the program's name, NUL-terminated
+    char               Name[64];    // the program's name, NUL-terminated
+    uint64_t           ArgCount;
+    const char* const* Args;        // ArgCount strings
 } SdkStartInfo;
 
 #endif // ABI_SDKIMAGE_H

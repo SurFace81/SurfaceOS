@@ -49,9 +49,23 @@ static SfStatus TimeSleep(SfTime*, uint64_t Milliseconds)
     return SfCall(SFCALL_TIME_SLEEP, Milliseconds);
 }
 
+// --- Process ---------------------------------------------------------------
+
+static SfStatus ProcessGetId(SfProcess*, uint64_t* Id)
+{
+    return SfCall(SFCALL_PROCESS_GET_ID, (uint64_t)Id);
+}
+
+static SfStatus ProcessGetArgs(SfProcess*, uint64_t Id, char* Buffer, uint64_t* Size,
+                               uint64_t* Count)
+{
+    return SfCall(SFCALL_PROCESS_GET_ARGS, Id, (uint64_t)Buffer, (uint64_t)Size,
+                  (uint64_t)Count);
+}
+
 // --- The tables --------------------------------------------------------------
-// Constant: they sit on the SDK's code pages, which the program can only
-// read.
+// Constant, apart from SfApp: they sit on the SDK's code pages, which the
+// program can only read.
 
 static const SfConsole SdkConsole =
 {
@@ -84,11 +98,15 @@ static const SfTime SdkTime =
     TimeSleep,
 };
 
-static const SfApp SdkApp =
+static const SfProcess SdkProcess =
 {
-    { SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp) },
-    (const char*)(SDK_INFO_ADDRESS + SF_OFFSET_OF(SdkStartInfo, Name)),
+    { SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess) },
+    ProcessGetId,
+    ProcessGetArgs,
 };
+
+// Filled in by SdkStart from the start info.
+static SfApp SdkApp;
 
 const SfSystem SdkSystem =
 {
@@ -97,10 +115,17 @@ const SfSystem SdkSystem =
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
     (SfTime*)&SdkTime,
+    (SfProcess*)&SdkProcess,
 };
 
 extern "C" void SdkStart(SfMainFunction Main)
 {
+    const SdkStartInfo* Info = (const SdkStartInfo*)SDK_INFO_ADDRESS;
+    SdkApp.Hdr      = { SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp) };
+    SdkApp.Name     = Info->Name;
+    SdkApp.ArgCount = Info->ArgCount;
+    SdkApp.Args     = Info->Args;
+
     SfStatus Status = Main((SfApp*)&SdkApp, (SfSystem*)&SdkSystem);
     SfCall(SFCALL_EXIT, Status);
     __builtin_unreachable();            // SFCALL_EXIT does not return

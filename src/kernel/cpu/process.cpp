@@ -128,10 +128,20 @@ namespace process
         vnode*      cwd;
         uint32_t    umask;
 
-        // The directories behind the SurfaceOS roots data:/ and tmp:/
-        // (sffile.h), referenced; nullptr when missing.
-        vnode*      data_root;
-        vnode*      tmp_root;
+        // The SurfaceOS roots (sffile.h): data, tmp and argN, each a
+        // referenced directory or file. Free slots have v == nullptr.
+        struct Root
+        {
+            char   name[8];
+            vnode* v;
+        };
+        Root        roots[MAX_ROOTS];
+
+        // The command line: argc NUL-terminated strings back to back
+        // (kmalloc'ed), for SfProcess GetArgs.
+        char*       args;
+        uint32_t    args_size;
+        uint32_t    argc;
 
     };
 
@@ -311,21 +321,45 @@ namespace process
             handles::init(&p->handles);
             p->umask = 022;
             p->cwd = vfs::cwd_ref();        // inherit the system cwd
-            p->data_root = nullptr;
-            p->tmp_root  = nullptr;
+            memory::memset((uint8_t*)p->roots, 0x00, sizeof(p->roots));
+            p->args      = nullptr;
+            p->args_size = 0;
+            p->argc      = 0;
             return p;
         }
         return nullptr;
     }
 
+    // Give p root `name`, taking over one reference to v. When all slots
+    // are taken the reference is dropped.
+    static void add_root(Process* p, const char* name, vnode* v)
+    {
+        for (uint32_t i = 0; i < MAX_ROOTS; i++)
+        {
+            if (p->roots[i].v)
+                continue;
+            copy_bytes((uint8_t*)p->roots[i].name, (const uint8_t*)name,
+                       (uint64_t)strlen(name) + 1);
+            p->roots[i].v = v;
+            return;
+        }
+        vfs::unref(v);
+    }
+
+    // Release the roots and the command line.
     static void drop_roots(Process* p)
     {
-        if (p->data_root)
-            vfs::unref(p->data_root);
-        if (p->tmp_root)
-            vfs::unref(p->tmp_root);
-        p->data_root = nullptr;
-        p->tmp_root  = nullptr;
+        for (uint32_t i = 0; i < MAX_ROOTS; i++)
+        {
+            if (p->roots[i].v)
+                vfs::unref(p->roots[i].v);
+            p->roots[i].v = nullptr;
+        }
+        if (p->args)
+            kfree(p->args);
+        p->args      = nullptr;
+        p->args_size = 0;
+        p->argc      = 0;
     }
 
     static void free_process(Process* p)
@@ -592,6 +626,11 @@ namespace process
 
         // Where the program starts: in the SDK runtime.
         uint64_t sdk_start;
+
+        // Its command line (see Process::args), kmalloc'ed.
+        char*    args;
+        uint32_t args_size;
+        uint32_t argc;
     };
 
     // Map [vaddr, vaddr+size) with zeroed 4 KiB user pages (active space).
@@ -718,14 +757,37 @@ namespace process
         // Every program starts in the SDK runtime with an empty stack, as
         // right after a call. (Its arguments are not passed on yet: `ae`
         // reaches the program with SfApp's argument fields.)
-        (void)ae;
         uint64_t rsp = USER_STACK_TOP - 8;
         uint64_t sdk = 0;
+
+        // The command line, back to back: for the SDK's start info and
+        // for SfProcess GetArgs.
+        uint32_t args_size = 0;
+        for (uint32_t i = 0; i < ae->a_count; i++)
+            args_size += (uint32_t)strlen(ae->data + ae->a_off[i]) + 1;
+        char* args = (char*)kmalloc(args_size ? args_size : 1);
+        if (!args)
+        {
+            err = ENOMEM;
+            ok = false;
+        }
+        else
+        {
+            uint32_t off = 0;
+            for (uint32_t i = 0; i < ae->a_count; i++)
+            {
+                const char* a = ae->data + ae->a_off[i];
+                uint32_t len = (uint32_t)strlen(a) + 1;
+                copy_bytes((uint8_t*)args + off, (const uint8_t*)a, len);
+                off += len;
+            }
+        }
+
         if (ok)
         {
             char name[sizeof(Process::name)];
             copy_name(name, path);
-            if (!sdkpage::install(name, &sdk))
+            if (!sdkpage::install(name, args, args_size, ae->a_count, &sdk))
             {
                 err = ENOMEM;
                 ok = false;
@@ -737,6 +799,8 @@ namespace process
 
         if (!ok)
         {
+            if (args)
+                kfree(args);
             paging::destroy_address_space(as);
             return -(sint64_t)err;
         }
@@ -746,6 +810,9 @@ namespace process
         out->image_end = lr.image_end;
         out->rsp       = rsp;
         out->sdk_start = sdk;
+        out->args      = args;
+        out->args_size = args_size;
+        out->argc      = ae->a_count;
         return 0;
     }
 
@@ -756,6 +823,11 @@ namespace process
         p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
         copy_name(p->name, path);
+        if (p->args)
+            kfree(p->args);
+        p->args      = img->args;
+        p->args_size = img->args_size;
+        p->argc      = img->argc;
         // SdkStart(SfMain): see abi/sdkimage.h.
         initial_context(&p->ctx, img->sdk_start, img->rsp);
         p->ctx.regs.rdi = img->entry;
@@ -1343,9 +1415,9 @@ namespace process
                 continue;
             if (p->cwd && p->cwd->mnt == m)
                 return true;
-            if ((p->data_root && p->data_root->mnt == m) ||
-                (p->tmp_root && p->tmp_root->mnt == m))
-                return true;
+            for (uint32_t r = 0; r < MAX_ROOTS; r++)
+                if (p->roots[r].v && p->roots[r].v->mnt == m)
+                    return true;
         }
         return filesys::any_open_on(m);
     }
@@ -1448,7 +1520,7 @@ namespace process
 
     // Load `path` with the collected argv/envp and allocate a runnable
     // process for it. ppid is left at 0; state is Runnable.
-    static Process* launch(const char* path, const ArgEnv* ae)
+    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots)
     {
         Image img;
         if (load_program(path, vfs::cwd(), ae, &img) < 0)
@@ -1458,10 +1530,32 @@ namespace process
         if (!p)
         {
             paging::destroy_address_space(img.cr3);
+            kfree(img.args);
             return nullptr;
         }
         adopt_image(p, &img, path);
-        sffile::open_roots(p->name, &p->data_root, &p->tmp_root);
+
+        vnode* data = nullptr;
+        vnode* tmp  = nullptr;
+        sffile::open_roots(p->name, &data, &tmp);
+        if (data)
+            add_root(p, "data", data);
+        if (tmp)
+            add_root(p, "tmp", tmp);
+        // argN: what the console opened for argument N.
+        for (uint32_t i = 1; arg_roots && i < ae->a_count; i++)
+        {
+            if (!arg_roots[i])
+                continue;
+            char name[8] = "arg";
+            uint32_t n = 3;
+            if (i >= 10)
+                name[n++] = (char)('0' + i / 10 % 10);
+            name[n++] = (char)('0' + i % 10);
+            name[n] = '\0';
+            vfs::ref(arg_roots[i]);
+            add_root(p, name, arg_roots[i]);
+        }
         p->state = State::Runnable;
         return p;
     }
@@ -1549,7 +1643,8 @@ namespace process
     // Console
     // -----------------------------------------------------------------------
 
-    bool run(const char* path, int argc, const char* const* argv, int* exit_status)
+    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
+             int* exit_status)
     {
         if (current != console_proc)
             return false;
@@ -1568,7 +1663,7 @@ namespace process
         if (rc == 0)
             rc = push_default_env(&ae);
 
-        Process* p = rc == 0 ? launch(path, &ae) : nullptr;
+        Process* p = rc == 0 ? launch(path, &ae, arg_roots) : nullptr;
         ae.destroy();
 
         if (!p)
@@ -1735,10 +1830,9 @@ namespace process
     {
         if (!current)
             return nullptr;
-        if (strcmp(name, "data") == 0)
-            return current->data_root;
-        if (strcmp(name, "tmp") == 0)
-            return current->tmp_root;
+        for (uint32_t i = 0; i < MAX_ROOTS; i++)
+            if (current->roots[i].v && strcmp(current->roots[i].name, name) == 0)
+                return current->roots[i].v;
         return nullptr;
     }
 
@@ -1937,12 +2031,18 @@ namespace process
         child->cwd = current->cwd;
         if (child->cwd)
             vfs::ref(child->cwd);
-        child->data_root = current->data_root;
-        child->tmp_root  = current->tmp_root;
-        if (child->data_root)
-            vfs::ref(child->data_root);
-        if (child->tmp_root)
-            vfs::ref(child->tmp_root);
+        copy_bytes((uint8_t*)child->roots, (const uint8_t*)current->roots,
+                   sizeof(child->roots));
+        for (uint32_t r = 0; r < MAX_ROOTS; r++)
+            if (child->roots[r].v)
+                vfs::ref(child->roots[r].v);
+        if (current->args && (child->args = (char*)kmalloc(current->args_size)))
+        {
+            copy_bytes((uint8_t*)child->args, (const uint8_t*)current->args,
+                       current->args_size);
+            child->args_size = current->args_size;
+            child->argc      = current->argc;
+        }
 
         // Handlers and the blocked mask carry over; pending signals do not
         // (POSIX: the child starts with an empty pending set).
@@ -2694,6 +2794,43 @@ namespace process
 
         release_range(addr, pages);
         regs->rax = 0;
+    }
+
+    // SFCALL_PROCESS_GET_ID (*Id).
+    void sf_get_id(user_regs* regs, iret_frame*)
+    {
+        uint64_t id = (uint64_t)current->pid;
+        regs->rax = uaccess::copy_to_user(regs->rdi, &id, sizeof(id))
+                  ? SF_SUCCESS : SF_INVALID_PARAMETER;
+    }
+
+    // SFCALL_PROCESS_GET_ARGS (Id, Buffer, *Size, *Count).
+    void sf_get_args(user_regs* regs, iret_frame*)
+    {
+        Process* p = regs->rdi <= 0x7FFFFFFF ? find_live((pid_t)regs->rdi) : nullptr;
+        if (!p || p->kernel)
+        {
+            regs->rax = SF_NOT_FOUND;
+            return;
+        }
+
+        uint64_t size = 0;
+        if (!uaccess::copy_from_user(&size, regs->rdx, sizeof(size)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        uint64_t need  = p->args_size;
+        uint64_t count = p->argc;
+        bool fits = size >= need;
+        if (!uaccess::copy_to_user(regs->rdx, &need, sizeof(need)) ||
+            (regs->r10 && !uaccess::copy_to_user(regs->r10, &count, sizeof(count))) ||
+            (fits && need && !uaccess::copy_to_user(regs->rsi, p->args, need)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        regs->rax = fits ? SF_SUCCESS : SF_BUFFER_TOO_SMALL;
     }
 
     // SFCALL_MEMORY_ALLOCATE_PAGES (Count, *Address): zeroed pages,

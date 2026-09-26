@@ -9,9 +9,11 @@
 // The SDK runtime keeps an SfFile per open file on the program's heap;
 // the kernel calls take the file's handle number.
 //
-// Roots are directories the process holds (process::cur_root): data:/ is
-// /files/<program name>, created on first start, and tmp:/ is /tmp. Every
-// open is LOOKUP_BENEATH its root or its directory.
+// Roots are what the process holds (process::cur_root): data:/ is
+// /files/<program name>, created on first start, tmp:/ is /tmp, and argN:
+// is the file or folder argument N of the command line names (the console
+// opens it). Every open is LOOKUP_BENEATH its root or its directory; a
+// root that is a file opens as itself.
 
 struct vnode;
 struct user_regs;

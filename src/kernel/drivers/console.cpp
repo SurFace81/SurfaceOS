@@ -169,7 +169,7 @@ static void exec(const char* line)
 
     // Not a built-in command: a program of that name.
     if (!commands::run_app(argc, (const char**)argv_buf))
-        screen::printf("Unknown command: %s", cmd_name);
+        screen::printf("\n\rUnknown command: %s", cmd_name);
 }
 
 // Keyboard event handler

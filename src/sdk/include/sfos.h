@@ -22,6 +22,7 @@
 #include "sfos/files.h"
 #include "sfos/memory.h"
 #include "sfos/time.h"
+#include "sfos/process.h"
 #include "sfos/system.h"
 
 #endif // SFOS_H

@@ -154,6 +154,8 @@ namespace
     // open / creat / close
     // -----------------------------------------------------------------------
 
+    sint64_t open_target(vnode* target, sint32_t flags, bool created);
+
     // Core of open(2), openat(2) and openat2(2). lflags: vfs LOOKUP_*.
     sint64_t do_openat(vnode* base, const char* path, sint32_t flags,
                        uint32_t mode, uint32_t lflags = 0)
@@ -224,6 +226,13 @@ namespace
                 return rc;
         }
 
+        return open_target(target, flags, created);
+    }
+
+    // The rest of an open once the target is found: checks, truncation,
+    // the file and its handle. Takes over the reference to `target`.
+    sint64_t open_target(vnode* target, sint32_t flags, bool created)
+    {
         uint32_t acc = (uint32_t)flags & O_ACCMODE;
         if (target->type == vtype::DIR && acc != O_RDONLY)
         {
@@ -1821,6 +1830,12 @@ namespace sys_fs
                      uint32_t lflags)
     {
         return do_openat(base, path, flags, mode, lflags);
+    }
+
+    sint64_t open_vnode(vnode* v, sint32_t flags)
+    {
+        vfs::ref(v);
+        return open_target(v, flags, false);
     }
 
     sint64_t read(file* f, uint64_t user_buf, uint64_t count)

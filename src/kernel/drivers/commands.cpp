@@ -1301,39 +1301,95 @@ static void cmd_cd(int argc, const char** argv)
     vfs::set_cwd(v);        // takes the reference
 }
 
+// Where program `name` is: the path itself when it names a file, else
+// /apps/<name> for a bare name. false when neither exists.
+static bool find_program(const char* name, char* path, uint32_t size)
+{
+    vnode* v = nullptr;
+    if (vfs::lookup(name, vfs::cwd(), &v, false) == 0)
+    {
+        bool file = v->type == vtype::REG;
+        vfs::unref(v);
+        if (file && (uint32_t)strlen(name) < size)
+        {
+            memory::memcpy((uint8_t*)path, (const uint8_t*)name, (uint64_t)strlen(name) + 1);
+            return true;
+        }
+    }
+
+    for (const char* p = name; *p; p++)
+        if (*p == '/')
+            return false;
+    static const char prefix[] = "/apps/";
+    uint32_t n = 0;
+    for (const char* p = prefix; *p; p++)
+        path[n++] = *p;
+    for (const char* p = name; *p && n < size - 1; p++)
+        path[n++] = *p;
+    path[n] = '\0';
+    if (vfs::lookup(path, nullptr, &v, false) != 0)
+        return false;
+    bool file = v->type == vtype::REG;
+    vfs::unref(v);
+    return file;
+}
+
+// What a command-line argument names, for the program's argN: root: an
+// existing file or folder, or - when the argument looks like a file name
+// (it has a '.' or a '/') and its folder exists - a new empty file. A
+// referenced vnode, or nullptr when the argument is plain text.
+static vnode* open_arg(const char* arg)
+{
+    vnode* v = nullptr;
+    if (vfs::lookup(arg, vfs::cwd(), &v, false) == 0)
+        return v;
+
+    bool looks_like_file = false;
+    for (const char* p = arg; *p; p++)
+        if (*p == '.' || *p == '/')
+            looks_like_file = true;
+    if (!looks_like_file)
+        return nullptr;
+
+    vnode* dir = nullptr;
+    char name[NAME_MAX + 1];
+    if (vfs::lookup_parent(arg, vfs::cwd(), &dir, name) != 0)
+        return nullptr;
+    sint64_t rc = -ENOENT;
+    if (dir->type == vtype::DIR && dir->ops->create && name[0] &&
+        strcmp(name, ".") != 0 && strcmp(name, "..") != 0)
+        rc = dir->ops->create(dir, name, 0644, &v);
+    vfs::unref(dir);
+    return rc == 0 ? v : nullptr;
+}
+
 namespace commands
 {
     bool run_app(int argc, const char** argv)
     {
-        // argv becomes the program's argv, so argv[0] is its own name.
-        int status = 0;
-        screen::printf("\n\r");
-        bool ran = process::run(argv[0], argc, argv, &status);
-        if (!ran)
-        {
-            // A bare name is looked up in /apps.
-            bool has_slash = false;
-            for (const char* p = argv[0]; *p; p++)
-                if (*p == '/')
-                    has_slash = true;
-
-            if (!has_slash)
-            {
-                static const char prefix[] = "/apps/";
-                char alt[NAME_MAX + sizeof(prefix)];
-                uint32_t n = 0;
-                for (const char* p = prefix; *p; p++)
-                    alt[n++] = *p;
-                for (const char* p = argv[0]; *p && n < sizeof(alt) - 1; p++)
-                    alt[n++] = *p;
-                alt[n] = '\0';
-
-                ran = process::run(alt, argc, argv, &status);
-            }
-        }
-        if (!ran)
+        char path[PATH_MAX];
+        if (!find_program(argv[0], path, sizeof(path)))
             return false;
 
+        // argv becomes the program's argv, so argv[0] is its own name; the
+        // paths among the arguments become its argN: roots.
+        vnode* roots[CONSOLE_MAX_ARGS] = {};
+        for (int i = 1; i < argc && i < CONSOLE_MAX_ARGS; i++)
+            roots[i] = open_arg(argv[i]);
+
+        int status = 0;
+        screen::printf("\n\r");
+        bool ran = process::run(path, argc, argv, roots, &status);
+
+        for (int i = 1; i < argc && i < CONSOLE_MAX_ARGS; i++)
+            if (roots[i])
+                vfs::unref(roots[i]);
+
+        if (!ran)
+        {
+            screen::printf("%s: cannot start", argv[0]);
+            return true;
+        }
         if (WIFSIGNALED(status))
             screen::printf("%s: terminated by signal %u", argv[0], (uint32_t)WTERMSIG(status));
         else if (WEXITSTATUS(status) != 0)

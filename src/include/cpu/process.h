@@ -45,6 +45,7 @@ struct vnode;
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
+#define MAX_ROOTS           16      // data, tmp and argN of one process
 
 // ---------------------------------------------------------------------------
 // Scheduling model
@@ -108,10 +109,14 @@ namespace process
     sint64_t wait(handle_table* t, sint32_t h, int* status, bool* stopped = nullptr);
 
     // Console only. Loads `path` as a new process (ppid 0) and sleeps on a
-    // handle to it until it has exited - its children are not waited for. argv[0] should be
-    // the program name. Returns false if the program could not be started;
+    // handle to it until it has exited - its children are not waited for.
+    // argv[0] should be the program name. arg_roots, when not null, has
+    // argc entries: arg_roots[i] (i >= 1), when not null, is what argument
+    // i names, and the process gets it as root argI (the caller keeps its
+    // reference). Returns false if the program could not be started;
     // otherwise stores its exit status in *exit_status.
-    bool run(const char* path, int argc, const char* const* argv, int* exit_status);
+    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
+             int* exit_status);
 
     // --- Hooks from the trap entry points --------------------------------
 
@@ -122,6 +127,9 @@ namespace process
     void sys_exit      (user_regs* regs, iret_frame* iret);
     // SFCALL_EXIT (SfStatus): the SurfaceOS ABI's exit.
     void sf_exit       (user_regs* regs, iret_frame* iret);
+    // SFCALL_PROCESS_GET_ID / GET_ARGS: SfStatus results.
+    void sf_get_id     (user_regs* regs, iret_frame* iret);
+    void sf_get_args   (user_regs* regs, iret_frame* iret);
     // SFCALL_MEMORY_ALLOCATE_PAGES / FREE_PAGES: SfStatus results.
     void sf_allocate_pages(user_regs* regs, iret_frame* iret);
     void sf_free_pages (user_regs* regs, iret_frame* iret);

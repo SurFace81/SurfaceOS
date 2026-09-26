@@ -78,7 +78,8 @@ namespace sdkpage
                      (uint32_t)len, (uint32_t)state_pages);
     }
 
-    bool install(const char* name, uint64_t* out_start)
+    bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,
+                 uint64_t* out_start)
     {
         if (!code_pages)
             return false;
@@ -89,13 +90,50 @@ namespace sdkpage
                                        PAGE_SHARED))
                 return false;
 
-        SdkStartInfo* info = (SdkStartInfo*)map_page(SDK_INFO_ADDRESS, PAGE_NX);    // R
-        if (!info)
+        // The start info: SdkStartInfo, the Args pointers, the strings.
+        // Built here, then copied onto its read-only pages.
+        uint64_t ptrs  = sizeof(SdkStartInfo);
+        uint64_t strs  = ptrs + (uint64_t)argc * sizeof(uint64_t);
+        uint64_t total = strs + args_size;
+        if (total > SDK_CODE_MAX)
             return false;
+        uint8_t* blob = (uint8_t*)kmalloc(total);
+        if (!blob)
+            return false;
+        memory::memset(blob, 0x00, total);
+
+        SdkStartInfo* info = (SdkStartInfo*)blob;
         uint32_t n = 0;
         for (; name[n] && n < sizeof(info->Name) - 1; n++)
             info->Name[n] = name[n];
         info->Name[n] = '\0';
+        info->ArgCount = argc;
+        info->Args     = (const char* const*)(SDK_INFO_ADDRESS + ptrs);
+
+        memory::memcpy(blob + strs, (const uint8_t*)args, args_size);
+        uint64_t* arg_ptrs = (uint64_t*)(blob + ptrs);
+        uint64_t off = 0;
+        for (uint32_t i = 0; i < argc; i++)
+        {
+            arg_ptrs[i] = SDK_INFO_ADDRESS + strs + off;
+            while (off < args_size && args[off])
+                off++;
+            off++;                                  // the NUL
+        }
+
+        bool ok = true;
+        for (uint64_t page = 0; ok && page * PAGE_SIZE_4K < total; page++)
+        {
+            uint8_t* k = map_page(SDK_INFO_ADDRESS + page * PAGE_SIZE_4K, PAGE_NX);   // R
+            uint64_t start = page * PAGE_SIZE_4K;
+            uint64_t len = total - start < PAGE_SIZE_4K ? total - start : PAGE_SIZE_4K;
+            if (k)
+                memory::memcpy(k, blob + start, len);
+            ok = k != nullptr;
+        }
+        kfree(blob);
+        if (!ok)
+            return false;
 
         for (uint64_t i = 0; i < state_pages; i++)
             if (!map_page(SDK_STATE_ADDRESS + i * PAGE_SIZE_4K, PAGE_WRITE | PAGE_NX))

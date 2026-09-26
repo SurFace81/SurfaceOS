@@ -1,9 +1,12 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
-// SfSystem, SfApp, SfConsole, SfFiles, SfMemory and SfTime - that
-// Console->Print works, pages and the heap, the clock and sleeping, and
-// the roots data:/ and tmp:/ with files in them. The exit status is the
+// SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime and SfProcess -
+// that Console->Print works, pages and the heap, the clock and sleeping,
+// the command line, and the roots data:/ and tmp:/ with files in them.
+//
+// Run as `sdkcheck <file> <word>`, with a file that does not exist yet
+// and a word that is no file, it also checks the argN: roots. The exit status is the
 // number of failed checks (0: all passed).
 
 #include <sfos.h>
@@ -175,6 +178,69 @@ static void CheckTime(SfTime* Time)
     Check("... takes 300 ms (up to 400)", After - Before >= 300 && After - Before <= 400);
 }
 
+static void CheckArgs(SfApp* App, SfProcess* Process, SfFiles* Files)
+{
+    Check("Args[0] is the program", App->ArgCount >= 1 && App->Args &&
+                                    SameText(App->Args[0], "sdkcheck"));
+
+    uint64_t Id = 0;
+    Check("GetId", Process->GetId(Process, &Id) == SF_SUCCESS && Id > 0);
+
+    // GetArgs of this process: the same strings, back to back.
+    char     Buffer[256];
+    uint64_t Size = sizeof(Buffer), Count = 0;
+    bool Same = Process->GetArgs(Process, Id, Buffer, &Size, &Count) == SF_SUCCESS &&
+                Count == App->ArgCount;
+    uint64_t Off = 0;
+    for (uint64_t i = 0; Same && i < Count; i++)
+    {
+        Same = SameText(Buffer + Off, App->Args[i]);
+        while (Buffer[Off])
+            Off++;
+        Off++;
+    }
+    Check("GetArgs of this process gives App->Args", Same && Off == Size);
+    uint64_t Small = 3;
+    Check("GetArgs into too small a buffer is SF_BUFFER_TOO_SMALL",
+          Process->GetArgs(Process, Id, Buffer, &Small, nullptr) == SF_BUFFER_TOO_SMALL &&
+          Small == Size);
+    Size = sizeof(Buffer);
+    Check("GetArgs of no process is SF_NOT_FOUND",
+          Process->GetArgs(Process, 999999, Buffer, &Size, nullptr) == SF_NOT_FOUND);
+
+    if (App->ArgCount != 3)
+    {
+        Print("  (run as `sdkcheck <new file> <word>` to check arg1: and arg2:)\n");
+        return;
+    }
+
+    // arg1: the file the console made for the first argument.
+    SfFile* File = nullptr;
+    const char Text[] = "via arg1";
+    uint64_t Len = sizeof(Text) - 1;
+    Check("arg1: opens the file argument names",
+          Files->Open(Files, "arg1:", SF_FILE_READ | SF_FILE_WRITE, &File) == SF_SUCCESS && File);
+    if (File)
+    {
+        Size = sizeof(Buffer);
+        Check("... which the console created empty",
+              File->Read(File, Buffer, &Size) == SF_SUCCESS && Size == 0);
+        Size = Len;
+        File->Write(File, Text, &Size);
+        File->SetPosition(File, 0);
+        Size = sizeof(Buffer);
+        Check("... and can be written and read",
+              File->Read(File, Buffer, &Size) == SF_SUCCESS && Size == Len &&
+              SameBytes(Buffer, Text, Len));
+        File->Close(File);
+    }
+    SfFile* Out = nullptr;
+    Check("arg1:/x of a file is SF_NOT_FOUND",
+          Files->Open(Files, "arg1:/x", SF_FILE_READ, &Out) == SF_NOT_FOUND);
+    Check("a plain word gets no root: arg2: is SF_NOT_FOUND",
+          Files->Open(Files, "arg2:", SF_FILE_READ, &Out) == SF_NOT_FOUND);
+}
+
 static void CheckMemory(SfMemory* Memory)
 {
     // Pages: zeroed, writable, given back.
@@ -270,6 +336,12 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
           HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, sizeof(SfMemory)));
     if (SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory)
         CheckMemory(Sys->Memory);
+
+    Check("SfProcess: signature, revision 1.x, size",
+          SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process &&
+          HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, sizeof(SfProcess)));
+    if (App && SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process && Sys->Files)
+        CheckArgs(App, Sys->Process, Sys->Files);
 
     Check("SfTime: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time &&
