@@ -44,7 +44,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads), sfstest (files through the SDK and
-  the roots' sandbox; `sfstest verify` after a restart)
+  the roots' sandbox; `sfstest verify` after a restart), threadtest
+  (how a program with several threads ends: fault, Ctrl+C, last exit)
  
 # Project Structure
  
@@ -100,7 +101,7 @@ tools/
 # Tests
 
 - `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, sfstest,
-  mount/umount on a second disk and a leak check, asserts on the serial
+  threadtest, mount/umount on a second disk and a leak check, asserts on the serial
   log.
 - `bash tools/qemu_verify.sh` — after the suite: reboots its image, runs
   `sfstest verify`, host `fsck.fat -n`.

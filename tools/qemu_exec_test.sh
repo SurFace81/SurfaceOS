@@ -7,8 +7,10 @@
 #                                    SfStatus as exit status
 #   2. sfstest                    -> files through the SDK, the roots' sandbox;
 #                                    leaves data for qemu_verify.sh
-#   3. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
-#   4. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
+#   3. threadtest                 -> a fault in one thread, ^C and the last
+#                                    thread's exit end the whole program
+#   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
+#   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
 set -u
 
 # Programs may write any bytes to the serial log: byte semantics everywhere,
@@ -22,7 +24,7 @@ DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="sdkcheck sfstest"
+APPS="sdkcheck sfstest threadtest"
 
 bash tools/make_test_image.sh "$IMG" "$APPS"
 bash tools/make_data_disk.sh "$DATA_IMG"
@@ -135,7 +137,26 @@ grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "sfstest: [0-9]* passed, 0 failed" "$LOG"; result $? "sfstest: no failed checks"
 wait_session_end $WANT 15; result $? "sfstest exits"
 
-# 3. mount puts every partition of the second disk under /mount; umount
+# 3. threadtest: however a program with several threads ends, all of them
+#    end - a fault in one (SIGSEGV = 11), ^C (SIGINT = 2), or the last
+#    thread leaving after the first (its status 42, wait format 42 << 8).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest fault"
+wait_session_end $WANT 15; result $? "threadtest fault ends"
+[ "$(last_status)" = "11" ]; result $? "a fault in one thread ends the program (SIGSEGV)"
+
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest spin"; sleep 3
+monitor "sendkey ctrl-c"
+wait_session_end $WANT 15; result $? "threadtest spin ends on ^C"
+[ "$(last_status)" = "2" ]; result $? "^C ends every thread (SIGINT)"
+
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest lastexit"
+wait_session_end $WANT 15; result $? "threadtest lastexit ends"
+[ "$(last_status)" = "$((42 << 8))" ]; result $? "the last thread's status is the program's"
+
+# 4. mount puts every partition of the second disk under /mount; umount
 #    refuses while the FS is in use (the console cwd holds its root), and
 #    succeeds once it is not, removing the mount point.
 type_cmd "mount usb1"; sleep 3
@@ -149,7 +170,7 @@ type_cmd "cd /"; sleep 2
 type_cmd "umount usb1"; sleep 3
 wait_for "umount: ok usb1p1" 10; result $? "umount succeeds once nothing holds it"
 
-# 4. per-process kernel stacks and SDK pages are handed back when a program
+# 5. per-process kernel stacks and SDK pages are handed back when a program
 #    ends: run one between two meminfo samples and compare free frames.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
@@ -162,7 +183,7 @@ echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a program leaks no physical frames"
 
-# 5. console still alive
+# 6. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
