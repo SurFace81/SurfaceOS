@@ -45,7 +45,7 @@ namespace
 
 namespace sfcall
 {
-    void init()
+    void init_cpu()
     {
         // STAR[47:32]: the kernel CS the instruction loads (SS = CS + 8).
         // The return path is iretq, not sysret, so STAR[63:48] is unused.
@@ -53,6 +53,11 @@ namespace sfcall
         wrmsr(MSR_LSTAR, (uint64_t)sfcall_entry);
         wrmsr(MSR_SFMASK, RFLAGS_TF | RFLAGS_IF | RFLAGS_DF | RFLAGS_AC);
         wrmsr(MSR_EFER, rdmsr(MSR_EFER) | EFER_SCE);
+    }
+
+    void init()
+    {
+        init_cpu();
 
         set_handler(SFCALL_EXIT, process::sf_exit);
         set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);

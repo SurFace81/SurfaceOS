@@ -10,6 +10,10 @@ namespace idt {
     static struct interrupt_descriptor idt[IDT_ENTRIES];
     static struct idtr idt_reg;
 
+    void load() {
+        load_idt(&idt_reg);
+    }
+
     void set_entry(int index, uint64_t handler, uint8_t flags, uint8_t ist) {
         idt[index].address_low  = handler & 0xFFFF;
         idt[index].address_mid  = (handler >> 16) & 0xFFFF;

@@ -52,6 +52,10 @@ typedef struct {
     UINT32 DmarUnits;                  // DRHD units listed in DMAR
     UINT32 DmarDisabled;               // units that had remapping on, now off
     UINT32 DmarFlags;                  // DMAR_FLAG_* from acpi.h
+    // A page below 1 MiB claimed for starting the other CPUs (they start in
+    // real mode); 0 when the firmware would not give it. Mirrors
+    // BOOT_HEADER in src/include/boot/boot.h.
+    UINT64 ApTrampolineAddress;
 } SFOS_BOOT_HEADER;
 
 #pragma pack(push, 1)

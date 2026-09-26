@@ -49,6 +49,9 @@ typedef struct {
     uint32_t DmarUnits;                  // DRHD units listed in DMAR
     uint32_t DmarDisabled;               // units that had remapping on, now off
     uint32_t DmarFlags;                  // BOOT_DMAR_* below
+    // A page below 1 MiB the loader claimed from the firmware for starting
+    // the other CPUs (they start in real mode); 0 when it could not.
+    uint64_t ApTrampolineAddress;
 } BOOT_HEADER;
 
 // BOOT_HEADER.DmarFlags, mirror DMAR_FLAG_* in src/boot/efi/acpi.h

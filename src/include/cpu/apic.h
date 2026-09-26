@@ -26,8 +26,17 @@ namespace apic
     void unmask_irq(uint8_t irq);
     void mask_irq(uint8_t irq);
 
-    // This CPU's APIC id.
+    // The boot CPU's APIC id.
     uint32_t id();
+
+    // Every other CPU as it starts: turn its own local APIC on, in the
+    // boot CPU's mode, and return its APIC id.
+    uint32_t init_cpu();
+
+    // Start CPU `apic_id`: an INIT, then a startup IPI that makes it run
+    // real-mode code at physical page `page` (below 1 MiB).
+    void send_init(uint32_t apic_id);
+    void send_startup(uint32_t apic_id, uint64_t page);
 
     // Let the local APIC's timer drive the tick instead of the PIT. It is
     // calibrated against the running PIT to the same rate, so pit::ticks()

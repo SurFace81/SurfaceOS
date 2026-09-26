@@ -77,6 +77,8 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sys_fs.o \
 				bin/kernel/cpu/percpu.o \
 				bin/kernel/cpu/spinlock.o \
+				bin/kernel/cpu/smp.o \
+				bin/kernel/cpu/smp.asm.o \
 				bin/kernel/cpu/signal.o \
 				bin/kernel/cpu/process.o \
 				bin/kernel/cpu/task.o \
@@ -206,6 +208,14 @@ bin/sdk/runtime.bin: bin/sdk/runtime.elf
 	$(OBJCOPY) -O binary -j .text $< $@
 
 bin/kernel/cpu/sdkpage.asm.o: bin/sdk/runtime.bin
+
+# The other CPUs' first code: a flat binary for its low page, built into
+# the kernel (smp.asm).
+bin/kernel/cpu/ap_trampoline.bin: src/kernel/cpu/ap_trampoline.asm
+	mkdir -p $(dir $@)
+	$(NASM) -f bin -o $@ $<
+
+bin/kernel/cpu/smp.asm.o: bin/kernel/cpu/ap_trampoline.bin
 
 # SDK objects
 bin/sdk/%.o: src/sdk/libc/%.cpp

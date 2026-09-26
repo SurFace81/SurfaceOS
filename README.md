@@ -10,6 +10,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   8259s without a MADT), the local APIC timer calibrated against the PIT
   for the tick, per-CPU data (GS base, swapgs), TSS and GDT per CPU,
   spin locks and one big kernel lock (one CPU in the kernel at a time),
+  the other CPUs started (INIT-SIPI-SIPI) and halted for now,
   paging (4 KiB, per-process address spaces, W^X), ring-3 user mode
 - ACPI tables without AML: reboot/shutdown (FADT, \_S5), the CPUs and
   interrupt controllers from the MADT (`acpi` command)

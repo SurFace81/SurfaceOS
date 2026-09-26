@@ -20,6 +20,11 @@ namespace
     const uint32_t LAPIC_LVT_TIMER = 0x320;
     const uint32_t LAPIC_LVT_LINT0 = 0x350;
     const uint32_t LAPIC_LVT_ERROR = 0x370;
+    const uint32_t LAPIC_ICR_LOW    = 0x300;
+    const uint32_t LAPIC_ICR_HIGH   = 0x310;
+    const uint32_t ICR_PENDING      = 1U << 12;
+    const uint32_t ICR_INIT         = 0x4500;   // INIT, level assert
+    const uint32_t ICR_STARTUP      = 0x4600;   // startup IPI; low byte: page number
     const uint32_t LAPIC_TIMER_INIT = 0x380;
     const uint32_t LAPIC_TIMER_CUR  = 0x390;
     const uint32_t LAPIC_TIMER_DIV  = 0x3E0;
@@ -105,6 +110,35 @@ namespace
         io_write(io, IOAPIC_REDTBL + index * 2, (uint32_t)entry);
     }
 
+    // Turn this CPU's local APIC on, everything but the spurious vector
+    // masked.
+    void enable_local()
+    {
+        lapic_write(LAPIC_TPR, 0);
+        lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
+        lapic_write(LAPIC_LVT_LINT0, LVT_MASKED);   // the 8259's line: not used
+        lapic_write(LAPIC_LVT_ERROR, LVT_MASKED);
+        lapic_write(LAPIC_SVR, SVR_ENABLE | APIC_SPURIOUS_VECTOR);
+    }
+
+    uint32_t local_id()
+    {
+        return x2apic ? lapic_read(LAPIC_ID) : lapic_read(LAPIC_ID) >> 24;
+    }
+
+    void send_ipi(uint32_t apic_id, uint32_t low)
+    {
+        if (x2apic)
+        {
+            wrmsr(MSR_X2APIC + LAPIC_ICR_LOW / 16, ((uint64_t)apic_id << 32) | low);
+            return;
+        }
+        lapic_write(LAPIC_ICR_HIGH, apic_id << 24);
+        lapic_write(LAPIC_ICR_LOW, low);
+        while (lapic_read(LAPIC_ICR_LOW) & ICR_PENDING)
+            asm volatile("pause");
+    }
+
     // The GSI, polarity and trigger mode of ISA IRQ `irq`.
     void isa_route(uint8_t irq, uint32_t* gsi, bool* active_low, bool* level)
     {
@@ -186,13 +220,9 @@ namespace apic
         irq::mask_all();
 
         idt::set_entry(APIC_SPURIOUS_VECTOR, (uint64_t)apic_spurious, IDT_FLAG_INTERRUPT_GATE);
-        lapic_write(LAPIC_TPR, 0);
-        lapic_write(LAPIC_LVT_TIMER, LVT_MASKED);
-        lapic_write(LAPIC_LVT_LINT0, LVT_MASKED);   // the 8259's line: not used
-        lapic_write(LAPIC_LVT_ERROR, LVT_MASKED);
-        lapic_write(LAPIC_SVR, SVR_ENABLE | APIC_SPURIOUS_VECTOR);
+        enable_local();
 
-        bsp_id = x2apic ? lapic_read(LAPIC_ID) : lapic_read(LAPIC_ID) >> 24;
+        bsp_id = local_id();
         cpu::current()->apic_id = bsp_id;
         for (uint8_t irq = 0; irq < 16; irq++)
             route(irq, true);
@@ -226,6 +256,28 @@ namespace apic
     uint32_t id()
     {
         return bsp_id;
+    }
+
+    uint32_t init_cpu()
+    {
+        // Same mode as the boot CPU's (xAPIC to x2APIC is a legal switch;
+        // the registers of an xAPIC are the same page on every CPU).
+        uint64_t base = rdmsr(MSR_APIC_BASE) | APIC_BASE_ENABLE;
+        if (x2apic)
+            base |= APIC_BASE_EXTD;
+        wrmsr(MSR_APIC_BASE, base);
+        enable_local();
+        return local_id();
+    }
+
+    void send_init(uint32_t apic_id)
+    {
+        send_ipi(apic_id, ICR_INIT);
+    }
+
+    void send_startup(uint32_t apic_id, uint64_t page)
+    {
+        send_ipi(apic_id, ICR_STARTUP | (uint32_t)(page >> 12));
     }
 
     bool start_timer()

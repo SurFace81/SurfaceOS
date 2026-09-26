@@ -13,6 +13,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/cpu/process.h"
+#include "../../include/cpu/smp.h"
 #include "../../include/acpi/acpi.h"
 #include "../../sdk/include/abi/process.h"
 #include "../../sdk/include/abi/errno.h"
@@ -121,7 +122,7 @@ static void cmd_cpuid(int argc, const char** argv)
     }
     else
         screen::printf("\n\r Frequencies:    not reported by the CPU");
-    screen::printf("\n\r Logical CPUs:   %u", topo.logical_cores);
+    screen::printf("\n\r Logical CPUs:   %u, %u started", topo.logical_cores, smp::running());
     screen::printf("\n\r Physical cores: %u%s", topo.physical_cores,
                    topo.hybrid ? " (performance + efficiency)" : "");
     screen::printf("\n\r Sockets:        %u", topo.packages);

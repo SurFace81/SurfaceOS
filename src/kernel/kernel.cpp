@@ -13,6 +13,7 @@
 #include "../include/acpi/acpi.h"
 #include "../include/cpu/apic.h"
 #include "../include/cpu/percpu.h"
+#include "../include/cpu/smp.h"
 #include "../include/cpu/spinlock.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
@@ -402,6 +403,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
     pit::calibrate();
     uart::printf("boot: pit calibrated at %u Hz\n", pit::real_frequency());
     apic::start_timer();
+    smp::start(BootHeader->ApTrampolineAddress);
 
     usb::init();
     uart::printf("boot: usb ready\n");
