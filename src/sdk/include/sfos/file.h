@@ -4,8 +4,8 @@
 #include "table.h"
 
 // An open file or directory. Paths are relative to the SfFile they are
-// opened from and never lead above it; which roots a program gets comes
-// with the system table.
+// opened from and never lead above it. The first SfFile comes from a root
+// (Sys->Files, files.h).
 //
 //   Open         open Path below This with SF_FILE_* Mode; *Out gets the
 //                new SfFile. SF_NOT_FOUND, SF_ALREADY_EXISTS (with

@@ -1817,6 +1817,22 @@ namespace
 
 namespace sys_fs
 {
+    sint64_t open_at(vnode* base, const char* path, sint32_t flags, uint32_t mode,
+                     uint32_t lflags)
+    {
+        return do_openat(base, path, flags, mode, lflags);
+    }
+
+    sint64_t read(file* f, uint64_t user_buf, uint64_t count)
+    {
+        return do_read(f, nullptr, user_buf, count);
+    }
+
+    sint64_t write(file* f, uint64_t user_buf, uint64_t count)
+    {
+        return do_write(f, nullptr, user_buf, count);
+    }
+
     void register_handlers()
     {
         syscall::set_handler(SYS_READ,        sys_read);

@@ -26,14 +26,17 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
 - SurfaceOS SDK (<sfos.h>): a program implements SfMain(SfApp*, SfSystem*)
   and reaches the system through tables the kernel fills in (SDK pages);
-  entered with the syscall instruction. The old POSIX layer (int 0x80,
-  libc) is still in the tree until it is removed.
+  entered with the syscall instruction. Files go through roots: data:/
+  (the program's own /files/<name>, created on first start) and tmp:/
+  (/tmp, unique names from CreateUnique); no path leads above its root.
+  The old POSIX layer (int 0x80, libc) is still in the tree until it is
+  removed.
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
-  tables); the tests are being rewritten on the SDK
+  tables, roots and files); the tests are being rewritten on the SDK
  
 # Project Structure
  

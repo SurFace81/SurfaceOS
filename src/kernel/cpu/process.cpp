@@ -10,6 +10,8 @@
 #include "../../include/cpu/tss.h"
 #include "../../include/cpu/task.h"
 #include "../../include/cpu/sdkpage.h"
+#include "../../include/cpu/sffile.h"
+#include "../../include/stdlib/string.h"
 #include "../../sdk/include/sfos/status.h"
 #include "../../include/cpu/wait.h"
 #include "../../include/cpu/elf.h"
@@ -125,6 +127,11 @@ namespace process
         // and umask.
         vnode*      cwd;
         uint32_t    umask;
+
+        // The directories behind the SurfaceOS roots data:/ and tmp:/
+        // (sffile.h), referenced; nullptr when missing.
+        vnode*      data_root;
+        vnode*      tmp_root;
 
     };
 
@@ -304,9 +311,21 @@ namespace process
             handles::init(&p->handles);
             p->umask = 022;
             p->cwd = vfs::cwd_ref();        // inherit the system cwd
+            p->data_root = nullptr;
+            p->tmp_root  = nullptr;
             return p;
         }
         return nullptr;
+    }
+
+    static void drop_roots(Process* p)
+    {
+        if (p->data_root)
+            vfs::unref(p->data_root);
+        if (p->tmp_root)
+            vfs::unref(p->tmp_root);
+        p->data_root = nullptr;
+        p->tmp_root  = nullptr;
     }
 
     static void free_process(Process* p)
@@ -325,6 +344,7 @@ namespace process
             vfs::unref(p->cwd);
             p->cwd = nullptr;
         }
+        drop_roots(p);
         p->state = State::Unused;
         p->pid = 0;
     }
@@ -800,13 +820,14 @@ namespace process
 
         // POSIX: descriptors close and the cwd is released when the process
         // exits, not when the parent reaps the zombie. Other handles go with
-        // them.
+        // them, and so do the roots.
         handles::close_all(&p->handles);
         if (p->cwd)
         {
             vfs::unref(p->cwd);
             p->cwd = nullptr;
         }
+        drop_roots(p);
 
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
@@ -1324,6 +1345,9 @@ namespace process
                 continue;
             if (p->cwd && p->cwd->mnt == m)
                 return true;
+            if ((p->data_root && p->data_root->mnt == m) ||
+                (p->tmp_root && p->tmp_root->mnt == m))
+                return true;
         }
         return filesys::any_open_on(m);
     }
@@ -1439,6 +1463,7 @@ namespace process
             return nullptr;
         }
         adopt_image(p, &img, path);
+        sffile::open_roots(p->name, &p->data_root, &p->tmp_root);
         p->state = State::Runnable;
         return p;
     }
@@ -1708,6 +1733,17 @@ namespace process
         return current ? &current->handles : nullptr;
     }
 
+    vnode* cur_root(const char* name)
+    {
+        if (!current)
+            return nullptr;
+        if (strcmp(name, "data") == 0)
+            return current->data_root;
+        if (strcmp(name, "tmp") == 0)
+            return current->tmp_root;
+        return nullptr;
+    }
+
     vnode* cur_cwd()
     {
         return current ? current->cwd : nullptr;
@@ -1903,6 +1939,12 @@ namespace process
         child->cwd = current->cwd;
         if (child->cwd)
             vfs::ref(child->cwd);
+        child->data_root = current->data_root;
+        child->tmp_root  = current->tmp_root;
+        if (child->data_root)
+            vfs::ref(child->data_root);
+        if (child->tmp_root)
+            vfs::ref(child->tmp_root);
 
         // Handlers and the blocked mask carry over; pending signals do not
         // (POSIX: the child starts with an empty pending set).

@@ -43,6 +43,7 @@ struct vnode;
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
 #define USER_SDK_CODE       0x00007FFF00000000ULL
 #define USER_SDK_DATA       (USER_SDK_CODE + PAGE_SIZE_4K)
+#define USER_SDK_FILES      (USER_SDK_CODE + 2 * PAGE_SIZE_4K)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
 #define MAX_PROCESSES       32
@@ -185,6 +186,9 @@ namespace process
     vnode*    cur_cwd();                // not referenced: the process owns it
     void      set_cwd(vnode* v);        // takes one reference
     uint32_t  cur_umask();
+    // The directory behind root `name` ("data", "tmp"), or nullptr. Not
+    // referenced: the process owns it.
+    vnode*    cur_root(const char* name);
     void      set_umask(uint32_t m);
 
     // A syscall slept in the kernel (wait.h) and a signal ended the sleep

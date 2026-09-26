@@ -12,7 +12,9 @@
 //                   image (sdkpage.asm) at boot and mapped PAGE_SHARED into
 //                   every process.
 //   USER_SDK_DATA   read-only: the tables SfMain gets - SfSystem, SfApp,
-//                   SfConsole - filled in by the kernel for this process.
+//                   SfConsole, SfFiles - filled in by the kernel for this
+//                   process.
+//   USER_SDK_FILES  read-only: one SfFile table per handle slot (sffile.h).
 //
 // The program never writes either page; the kernel fills them through the
 // direct map before the process first runs.
@@ -32,7 +34,7 @@ namespace sdkpage
     // Set up the shared code frame. Called once from kmain.
     void init();
 
-    // Map both pages in the current address space and fill the data page
+    // Map the three pages in the current address space and fill the data page
     // for program `name`. false when out of memory (the caller destroys
     // the space).
     bool install(const char* name, Entry* out);

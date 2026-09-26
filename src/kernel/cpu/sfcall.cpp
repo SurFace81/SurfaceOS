@@ -3,6 +3,7 @@
 #include "../../include/cpu/sfcall.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/sdkpage.h"
+#include "../../include/cpu/sffile.h"
 #include "../../include/drivers/uart.h"
 
 namespace
@@ -53,6 +54,7 @@ namespace sfcall
         set_handler(SFCALL_EXIT, process::sf_exit);
         set_handler(SFCALL_CONSOLE_PRINT, sdkpage::console_print);
         set_handler(SFCALL_CONSOLE_READLINE, sdkpage::console_readline);
+        sffile::init();
         uart::printf("boot: syscall instruction enabled\n");
     }
 

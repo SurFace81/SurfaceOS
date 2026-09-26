@@ -17,6 +17,7 @@
 #include "sfos/app.h"
 #include "sfos/console.h"
 #include "sfos/file.h"
+#include "sfos/files.h"
 #include "sfos/system.h"
 
 #endif // SFOS_H
