@@ -1,5 +1,11 @@
 // Syscall dispatch (int 0x80), table-driven.
 //
+// FROZEN. This is the old, POSIX-shaped ABI. Programs are written against
+// the SurfaceOS SDK (<sfos.h>, the `syscall` instruction, sfcall.cpp), and
+// this layer is removed in roadmap stage 9. Until then it only has to keep
+// working: no new calls, no new flags or behaviour for existing ones - a
+// new capability goes into the SDK. Fixing a bug here is fine.
+//
 // ABI: arguments in rdi, rsi, rdx, r10, r8, r9 (Linux order). The result in
 // rax is sint64_t: >= 0 on success, -errno on failure (abi/errno.h). An
 // unknown number returns -ENOSYS.

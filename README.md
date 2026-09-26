@@ -10,8 +10,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   W^X), TSS, ring-3 user mode
 - Preemptive scheduler (switches only at ring-3 boundaries), fork/execve/
   wait4/kill, SysV ABI process startup (argv/envp/auxv on the stack)
-- Linux x86_64-compatible syscall ABI: same numbers, structures and
-  -errno results (int 0x80 entry until stage 6)
+- Old POSIX-shaped syscall ABI (int 0x80, -errno results): frozen - no
+  new calls - and removed once nothing needs it; programs use the SDK
 - Block layer: blkdev registry (USB MSD today, AHCI/NVMe-shaped),
   GPT/MBR/superfloppy partition parsing (SurfaceOS itself lives on GPT;
   the others are for mounting ordinary sticks), LRU sector cache with

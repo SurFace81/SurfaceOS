@@ -1,7 +1,9 @@
 #ifndef ABI_SYSCALL_H
 #define ABI_SYSCALL_H
 
-// Syscall ABI (int 0x80 until stage 6 adds the `syscall` instruction).
+// The old syscall ABI, entered with int 0x80. FROZEN: no new calls (see
+// src/kernel/cpu/syscall.cpp); it is removed in roadmap stage 9. Programs
+// use the SurfaceOS SDK, <sfos.h>.
 //
 //   arguments: rdi, rsi, rdx, r10, r8, r9  (Linux order, rcx is clobbered)
 //   result:    rax, sint64_t. >= 0 on success, -errno on failure
