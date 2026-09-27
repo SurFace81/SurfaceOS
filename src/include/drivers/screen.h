@@ -54,6 +54,11 @@ namespace screen
     void write(const char* s);
     void write(const char* s, uint64_t len);   // raw bytes, NUL included
     void printf(const char* fmt, ...);
+    // Take what is printed from now on into buf (size bytes, NUL-terminated
+    // by end_capture) instead of onto the screen. end_capture returns the
+    // bytes it needed, the NUL included - more than size when it was cut.
+    void     capture(char* buf, uint64_t size);
+    uint64_t end_capture();
 
     // Screen operations
     void clear();

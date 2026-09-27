@@ -379,7 +379,7 @@ static void CheckStart(SfProcess* Process)
     uint64_t Handle = 0;
     SfStatus Status = SF_SUCCESS;
     Check("Start runs a program",
-          Process->Start(Process, "sdkcheck", 3, Args, 0, &Handle) == SF_SUCCESS);
+          Process->Start(Process, "sdkcheck", 3, Args, nullptr, 0, &Handle) == SF_SUCCESS);
     Check("Wait gives what it returned (and it got its arguments)",
           Process->Wait(Process, Handle, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 5));
     Check("a Handle is used up by Wait: again is SF_BAD_HANDLE",
@@ -388,16 +388,16 @@ static void CheckStart(SfProcess* Process)
     uint64_t Handles[3] = {};
     bool Ok = true;
     for (int i = 0; i < 3; i++)
-        Ok = Ok && Process->Start(Process, "sdkcheck", 3, Args, 0, &Handles[i]) == SF_SUCCESS;
+        Ok = Ok && Process->Start(Process, "sdkcheck", 3, Args, nullptr, 0, &Handles[i]) == SF_SUCCESS;
     for (int i = 0; i < 3; i++)
         Ok = Ok && Process->Wait(Process, Handles[i], &Status) == SF_SUCCESS &&
              Status == (SF_ERROR_BIT | 5);
     Check("three programs side by side", Ok);
 
     Check("Start of no such program is SF_NOT_FOUND",
-          Process->Start(Process, "nosuch", 0, nullptr, 0, &Handle) == SF_NOT_FOUND);
+          Process->Start(Process, "nosuch", 0, nullptr, nullptr, 0, &Handle) == SF_NOT_FOUND);
     Check("Start of a path is SF_INVALID_PARAMETER",
-          Process->Start(Process, "../apps/sdkcheck", 0, nullptr, 0, &Handle) ==
+          Process->Start(Process, "../apps/sdkcheck", 0, nullptr, nullptr, 0, &Handle) ==
           SF_INVALID_PARAMETER);
 }
 
@@ -527,7 +527,7 @@ static SfStatus RunAdmin(SfSystem* Sys)
     // EndProcess: a child that would tick for half a minute.
     const char* Ticks[] = { "ticks" };
     uint64_t Handle = 0, ChildId = 0;
-    Sys->Process->Start(Sys->Process, "sdkcheck", 1, Ticks, 0, &Handle);
+    Sys->Process->Start(Sys->Process, "sdkcheck", 1, Ticks, nullptr, 0, &Handle);
     Count = 16;
     if (Admin->ListProcesses(Admin, List, &Count) == SF_SUCCESS)
         for (uint64_t i = 0; i < Count; i++)
@@ -635,7 +635,7 @@ static SfStatus RunInput(SfSystem* Sys)
 {
     const char* Args[] = { "reader" };
     uint64_t Handle = 0;
-    SfStatus Status = Sys->Process->Start(Sys->Process, "sdkcheck", 1, Args,
+    SfStatus Status = Sys->Process->Start(Sys->Process, "sdkcheck", 1, Args, nullptr,
                                           SF_START_GIVE_INPUT, &Handle);
     if (SF_ERROR(Status))
         return Status;
@@ -822,7 +822,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         // A child that outlives this program (not waited for).
         const char* Late[] = { "late" };
         uint64_t Handle = 0;
-        Sys->Process->Start(Sys->Process, "sdkcheck", 1, Late, 0, &Handle);
+        Sys->Process->Start(Sys->Process, "sdkcheck", 1, Late, nullptr, 0, &Handle);
     }
 
     Print("sdkcheck: ");

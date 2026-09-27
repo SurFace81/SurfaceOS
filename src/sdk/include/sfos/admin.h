@@ -2,6 +2,7 @@
 #define SFOS_ADMIN_H
 
 #include "table.h"
+#include "time.h"
 
 // What a program started with the admin right can do beyond everyone else
 // (the console is one): Sys->Admin, nullptr for any other program. The
@@ -26,6 +27,15 @@
 //   Restart        write every volume back and restart the machine.
 //   ShutDown       the same, and power it off. Both come back only when
 //                  they fail (SF_DEVICE_ERROR).
+//   Sync           (revision 1.1) write everything cached back to the disks.
+//   SetTime        set the machine's clock.
+//   Report         what the kernel has to say on Topic, as text into Buffer,
+//                  NUL-terminated: *Size in: its size; out: the bytes the
+//                  report takes (SF_BUFFER_TOO_SMALL when it does not fit).
+//                  Topics, each with its arguments after a space: "cpuid",
+//                  "lspci", "lsusb", "usbports", "usbinfo <index>", "lsblk",
+//                  "mount" (what is mounted where), "acpi", "meminfo",
+//                  "dmesg" (the kernel's log). SF_NOT_FOUND for others.
 typedef struct SfAdmin SfAdmin;
 
 typedef struct SfProcessInfo
@@ -45,13 +55,17 @@ struct SfAdmin
     SfStatus (*Unmount)(SfAdmin* This, const char* Device);
     SfStatus (*Restart)(SfAdmin* This);
     SfStatus (*ShutDown)(SfAdmin* This);
+    // Revision 1.1
+    SfStatus (*Sync)(SfAdmin* This);
+    SfStatus (*SetTime)(SfAdmin* This, const SfDateTime* Time);
+    SfStatus (*Report)(SfAdmin* This, const char* Topic, char* Buffer, uint64_t* Size);
 };
 
 #define SF_ADMIN_SIGNATURE      SF_SIGNATURE('S', 'F', 'A', 'D', 'M', 'I', 'N', 0)
-#define SF_ADMIN_REVISION       SF_REVISION(1, 0)
+#define SF_ADMIN_REVISION       SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(sizeof(SfProcessInfo) == 48, "SfProcessInfo layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, ListProcesses) == 16, "SfAdmin layout");
-SF_STATIC_ASSERT(sizeof(SfAdmin) == 64, "SfAdmin layout");
+SF_STATIC_ASSERT(sizeof(SfAdmin) == 88, "SfAdmin layout");
 
 #endif // SFOS_ADMIN_H

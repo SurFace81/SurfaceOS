@@ -57,7 +57,7 @@
 #define SFCALL_EVENT_SET             22  // (uint64_t Handle)
 #define SFCALL_EVENT_RESET           23  // (uint64_t Handle)
 #define SFCALL_WAIT                  24  // (uint64_t Handle, uint64_t TimeoutMs): any waitable handle
-#define SFCALL_PROCESS_START         25  // (const char* Name, uint64_t ArgCount, const char* const* Args, uint64_t* Handle, uint64_t Flags)
+#define SFCALL_PROCESS_START         25  // (const char* Name, uint64_t ArgCount, const char* const* Args, uint64_t* Handle, uint64_t Flags, const uint64_t* ArgHandles)
 #define SFCALL_PROCESS_WAIT          26  // (uint64_t Handle, SfStatus* Status)
 #define SFCALL_CONSOLE_GET_SIZE      27  // (uint32_t* Columns, uint32_t* Rows)
 #define SFCALL_CONSOLE_SET_CURSOR    28  // (uint32_t Column, uint32_t Row, uint8_t Visible)
@@ -73,6 +73,15 @@
 #define SFCALL_ADMIN_UNMOUNT         38  // (const char* Device)
 #define SFCALL_ADMIN_RESTART         39  // ()
 #define SFCALL_ADMIN_SHUT_DOWN       40  // ()
-#define SFCALL_COUNT                 41
+#define SFCALL_FILE_READ_DIR         41  // (uint64_t Handle, SfDirEntry* Entry)
+#define SFCALL_FILE_GET_INFO         42  // (uint64_t Handle, SfDirEntry* Info)
+#define SFCALL_FILES_CREATE_DIRECTORY 43 // (const char* Path)
+#define SFCALL_FILES_DELETE          44  // (const char* Path)
+#define SFCALL_FILES_RENAME          45  // (const char* OldPath, const char* NewPath)
+#define SFCALL_CONSOLE_CLEAR         46  // ()
+#define SFCALL_ADMIN_SYNC            47  // ()
+#define SFCALL_ADMIN_SET_TIME        48  // (const SfDateTime* Time)
+#define SFCALL_ADMIN_REPORT          49  // (const char* Topic, char* Buffer, uint64_t* Size)
+#define SFCALL_COUNT                 50
 
 #endif // ABI_SFCALL_H

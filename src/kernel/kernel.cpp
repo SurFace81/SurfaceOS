@@ -22,13 +22,14 @@
 #include "../include/fs/file.h"
 #include "../include/fs/fat32fs.h"
 #include "../include/fs/devfs.h"
-#include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
 #include "../include/drivers/screen.h"
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
+#include "../include/cpu/cpuid.h"
+#include "version.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
@@ -471,12 +472,18 @@ extern "C" void kmain(uint64_t boot_header_phys)
     sdkpage::init();
     process::init();
 
-    console::init();
-    process::start_console(console::main);
+    // The banner on screen 1, above its console.
+    char cpu_name[51];
+    cpuid::get_cpu_name(cpu_name);
+    screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: %u Mb\n\r\tCpu: %s @ %u MHz"
+                   "\n\r------------------------------------------------\n\n\r",
+                   VERSION_STRING, (uint32_t)(memory::total() / 1048576 + 1), cpu_name,
+                   cpuid::get_base_freq());
+
     process::start_cmdkeeper();
     uart::printf("boot: console ready\n");
 
-    // From here on the boot task is the idle task: the console and the
-    // programs it starts run as scheduled tasks.
+    // From here on the boot task is the idle task: the consoles and the
+    // programs they start run as scheduled tasks.
     process::idle();
 }

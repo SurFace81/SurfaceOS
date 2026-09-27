@@ -25,6 +25,12 @@
 //                 file has, open for reading and writing. *Out gets it;
 //                 Path, when not null, gets its path ("tmp:/...") in
 //                 PathSize bytes.
+//   CreateDirectory  (revision 1.1) make folder Path; SF_ALREADY_EXISTS
+//                 when there is something by that name.
+//   Delete        remove file Path, or folder Path when it is empty
+//                 (SF_IN_USE when it is not).
+//   Rename        move OldPath to NewPath, which must not exist; both on the
+//                 same volume (SF_ACCESS_DENIED otherwise - copy instead).
 typedef struct SfFiles SfFiles;
 
 struct SfFiles
@@ -32,13 +38,18 @@ struct SfFiles
     SfTableHeader Hdr;
     SfStatus (*Open)(SfFiles* This, const char* Path, uint64_t Mode, SfFile** Out);
     SfStatus (*CreateUnique)(SfFiles* This, SfFile** Out, char* Path, uint64_t PathSize);
+    // Revision 1.1
+    SfStatus (*CreateDirectory)(SfFiles* This, const char* Path);
+    SfStatus (*Delete)(SfFiles* This, const char* Path);
+    SfStatus (*Rename)(SfFiles* This, const char* OldPath, const char* NewPath);
 };
 
 #define SF_FILES_SIGNATURE  SF_SIGNATURE('S', 'F', 'F', 'I', 'L', 'E', 'S', 0)
-#define SF_FILES_REVISION   SF_REVISION(1, 0)
+#define SF_FILES_REVISION   SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, Open) == 16, "SfFiles layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, CreateUnique) == 24, "SfFiles layout");
-SF_STATIC_ASSERT(sizeof(SfFiles) == 32, "SfFiles layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, Rename) == 48, "SfFiles layout");
+SF_STATIC_ASSERT(sizeof(SfFiles) == 56, "SfFiles layout");
 
 #endif // SFOS_FILES_H

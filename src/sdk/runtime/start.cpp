@@ -77,6 +77,11 @@ static SfStatus ConsoleSetTitle(SfConsole*, const char* Text)
     return SfCall(SFCALL_CONSOLE_SET_TITLE, (uint64_t)Text);
 }
 
+static SfStatus ConsoleClear(SfConsole*)
+{
+    return SfCall(SFCALL_CONSOLE_CLEAR);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -108,11 +113,22 @@ static SfStatus ProcessGetArgs(SfProcess*, uint64_t Id, char* Buffer, uint64_t* 
                   (uint64_t)Count);
 }
 
+// The kernel takes the argument files as handle numbers (~0: none).
 static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
-                             const char* const* Args, uint64_t Flags, uint64_t* Handle)
+                             const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
+                             uint64_t* Handle)
 {
+    const uint64_t MaxArgFiles = 32;
+    uint64_t Handles[MaxArgFiles];
+    if (ArgFiles)
+    {
+        if (ArgCount > MaxArgFiles)
+            return SF_INVALID_PARAMETER;
+        for (uint64_t i = 0; i < ArgCount; i++)
+            Handles[i] = ArgFiles[i] ? FileHandle(ArgFiles[i]) : ~0ULL;
+    }
     return SfCall(SFCALL_PROCESS_START, (uint64_t)Name, ArgCount, (uint64_t)Args,
-                  (uint64_t)Handle, Flags);
+                  (uint64_t)Handle, Flags, ArgFiles ? (uint64_t)Handles : 0);
 }
 
 static SfStatus ProcessWait(SfProcess*, uint64_t Handle, SfStatus* Status)
@@ -160,6 +176,7 @@ static const SfConsole SdkConsole =
     ConsoleReadKey,
     ConsoleSetMode,
     ConsoleSetTitle,
+    ConsoleClear,
 };
 
 const SfFiles SdkFiles =
@@ -167,6 +184,9 @@ const SfFiles SdkFiles =
     { SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles) },
     FilesOpen,
     FilesCreateUnique,
+    FilesCreateDirectory,
+    FilesDelete,
+    FilesRename,
 };
 
 const SfMemory SdkMemory =
@@ -242,6 +262,21 @@ static SfStatus AdminShutDown(SfAdmin*)
     return SfCall(SFCALL_ADMIN_SHUT_DOWN);
 }
 
+static SfStatus AdminSync(SfAdmin*)
+{
+    return SfCall(SFCALL_ADMIN_SYNC);
+}
+
+static SfStatus AdminSetTime(SfAdmin*, const SfDateTime* Time)
+{
+    return SfCall(SFCALL_ADMIN_SET_TIME, (uint64_t)Time);
+}
+
+static SfStatus AdminReport(SfAdmin*, const char* Topic, char* Buffer, uint64_t* Size)
+{
+    return SfCall(SFCALL_ADMIN_REPORT, (uint64_t)Topic, (uint64_t)Buffer, (uint64_t)Size);
+}
+
 static const SfAdmin SdkAdmin =
 {
     { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
@@ -251,6 +286,9 @@ static const SfAdmin SdkAdmin =
     AdminUnmount,
     AdminRestart,
     AdminShutDown,
+    AdminSync,
+    AdminSetTime,
+    AdminReport,
 };
 
 // Filled in by SdkStart from the start info.

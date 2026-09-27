@@ -41,6 +41,8 @@
 //   SetMode    SF_CONSOLE_LINE or SF_CONSOLE_RAW, see above.
 //   SetTitle   the program's own words in the title bar, after its name
 //              (a file name, say); an empty Text clears them.
+//   Clear      (revision 1.2) blank the screen in the current colours and
+//              put the cursor at (0, 0).
 typedef struct SfConsole SfConsole;
 
 // Colours: 0..7, and their bright forms 8..15.
@@ -88,10 +90,12 @@ struct SfConsole
     SfStatus (*ReadKey)(SfConsole* This, SfKey* Key);
     SfStatus (*SetMode)(SfConsole* This, uint64_t Mode);
     SfStatus (*SetTitle)(SfConsole* This, const char* Text);
+    // Revision 1.2
+    SfStatus (*Clear)(SfConsole* This);
 };
 
 #define SF_CONSOLE_SIGNATURE    SF_SIGNATURE('S', 'F', 'C', 'O', 'N', 'S', 'O', 'L')
-#define SF_CONSOLE_REVISION     SF_REVISION(1, 1)
+#define SF_CONSOLE_REVISION     SF_REVISION(1, 2)
 
 SF_STATIC_ASSERT(sizeof(SfCell) == 2, "SfCell layout");
 SF_STATIC_ASSERT(sizeof(SfKey) == 4, "SfKey layout");
@@ -99,6 +103,7 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, Print) == 16, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, ReadLine) == 24, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, GetSize) == 32, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetTitle) == 88, "SfConsole layout");
-SF_STATIC_ASSERT(sizeof(SfConsole) == 96, "SfConsole layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, Clear) == 96, "SfConsole layout");
+SF_STATIC_ASSERT(sizeof(SfConsole) == 104, "SfConsole layout");
 
 #endif // SFOS_CONSOLE_H

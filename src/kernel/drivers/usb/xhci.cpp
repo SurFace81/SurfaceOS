@@ -10,7 +10,7 @@
 // worked in one place would time out in the other.
 //
 // Now it waits on the PIT. That needs interrupts enabled, which is why
-// console::poll() no longer runs commands under cli.
+// the console no longer runs commands under cli.
 static void delay_ms(uint32_t ms)
 {
     if (ms == 0)

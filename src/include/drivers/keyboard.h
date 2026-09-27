@@ -40,30 +40,9 @@ typedef struct {
     uint8_t skip_bytes;         // tail of a multi-byte sequence to swallow
 } keyboard_state_t;
 
-// Kernel-side aliases for the codes in abi/keyboard.h, kept because the
-// console's line editor spells them this way.
-enum Keys {
-    SPACE           = KEY_SPACE,
-    ESCAPE          = KEY_ESCAPE,
-    BACKSPACE       = KEY_BACKSPACE,
-    ENTER           = KEY_ENTER,
-    ARROW_LEFT      = KEY_ARROW_LEFT,
-    ARROW_UP        = KEY_ARROW_UP,
-    ARROW_DOWN      = KEY_ARROW_DOWN,
-    ARROW_RIGHT     = KEY_ARROW_RIGHT,
-    DELETE          = KEY_DELETE,
-    HOME            = KEY_HOME,
-    END             = KEY_END,
-};
-
-typedef void (*keyboard_callback_t)(keyboard_event_t e);
-
 namespace keyboard {
     void  init(void);
     void  handler(void);
-    void set_keyboard_callback(keyboard_callback_t callback);
-    void del_keyboard_callback(void);
-    keyboard_callback_t get_callback();
 }
 
 #endif

@@ -45,6 +45,21 @@ static SfStatus FileSetPosition(SfFile* This, uint64_t Position)
     return SfCall(SFCALL_FILE_SET_POSITION, Object(This)->Handle, Position);
 }
 
+static SfStatus FileReadDir(SfFile* This, SfDirEntry* Entry)
+{
+    return SfCall(SFCALL_FILE_READ_DIR, Object(This)->Handle, (uint64_t)Entry);
+}
+
+static SfStatus FileGetInfo(SfFile* This, SfDirEntry* Info)
+{
+    return SfCall(SFCALL_FILE_GET_INFO, Object(This)->Handle, (uint64_t)Info);
+}
+
+uint64_t FileHandle(SfFile* File)
+{
+    return Object(File)->Handle;
+}
+
 static const SfFile FileTable =
 {
     { SF_FILE_SIGNATURE, SF_FILE_REVISION, sizeof(SfFile) },
@@ -54,6 +69,8 @@ static const SfFile FileTable =
     FileWrite,
     FileGetPosition,
     FileSetPosition,
+    FileReadDir,
+    FileGetInfo,
 };
 
 // Wrap a freshly opened handle in an SfFile. When there is no memory for
@@ -103,4 +120,19 @@ SfStatus FilesCreateUnique(SfFiles*, SfFile** Out, char* Path, uint64_t PathSize
     SfStatus Status = SfCall(SFCALL_FILES_CREATE_UNIQUE, (uint64_t)&Handle, (uint64_t)Path,
                              PathSize);
     return NewFile(Status, Handle, Out);
+}
+
+SfStatus FilesCreateDirectory(SfFiles*, const char* Path)
+{
+    return SfCall(SFCALL_FILES_CREATE_DIRECTORY, (uint64_t)Path);
+}
+
+SfStatus FilesDelete(SfFiles*, const char* Path)
+{
+    return SfCall(SFCALL_FILES_DELETE, (uint64_t)Path);
+}
+
+SfStatus FilesRename(SfFiles*, const char* OldPath, const char* NewPath)
+{
+    return SfCall(SFCALL_FILES_RENAME, (uint64_t)OldPath, (uint64_t)NewPath);
 }

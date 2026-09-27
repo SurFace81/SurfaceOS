@@ -36,7 +36,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - SurfaceOS SDK (<sfos.h>): a program implements SfMain(SfApp*, SfSystem*)
   and reaches the system through tables of the SDK runtime
   (src/sdk/runtime), which the kernel maps into every program and which
-  enters the kernel with the syscall instruction. Sys->Memory gives pages
+  enters the kernel with the syscall instruction. Sys->Files opens,
+  lists, makes, removes and renames files and folders, Sys->Memory gives pages
   and a heap, Sys->Time the clock, the uptime and sleeping,
   Sys->Process starts other programs and waits for them, and gives the
   command line of a process, Sys->Thread threads
@@ -49,18 +50,19 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   removed.
 - Nine screens, Alt+F1..F9, each with a system title bar (screen,
   program, subtitle, clock); keys go to the screen's input owner.
-  Screens 2..9 run CMD.BIN (/sfos), a console in ring 3 with the admin
-  right, started again whenever it ends; screen 1 keeps the kernel's
-  console until its commands move over.
+  Every screen runs CMD.BIN (/sfos), the console: a program in ring 3
+  with the admin right, started again whenever it ends.
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
   ends every program on the shown screen, Ctrl+Alt+Z pauses them (again:
   they go on). A program on the shown screen gets twice the CPU time of
   one elsewhere
-- Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
-  mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
-  lsblk, hardware info commands; a program runs by its name (looked up
-  in /apps) or by its path, with a last `&` in the background (a hidden
+- The console (CMD.BIN, `help`): ls, cat, xxd, write, cp, mv, rm, mkdir,
+  rmdir, cd, pwd, mount <dev> (partitions go to /mount/<dev>pN), umount
+  <dev|dir>, sync, time, settime, uptime, reboot, shutdown and hardware
+  info (lsblk, meminfo, cpuid, lspci, lsusb, usbports, usbinfo, acpi,
+  dmesg); a program runs by its name (looked up in /apps) or by its path,
+  on a cleared screen, with a last `&` in the background (a hidden
   screen, its output logged to /files/<name>/console_<date>_<time>.log);
   `admin <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)

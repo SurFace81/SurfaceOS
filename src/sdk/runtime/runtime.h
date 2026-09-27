@@ -10,14 +10,16 @@
 
 // One kernel call: number and up to four arguments, SfStatus back.
 static inline SfStatus SfCall(uint64_t Number, uint64_t A1 = 0, uint64_t A2 = 0,
-                              uint64_t A3 = 0, uint64_t A4 = 0, uint64_t A5 = 0)
+                              uint64_t A3 = 0, uint64_t A4 = 0, uint64_t A5 = 0,
+                              uint64_t A6 = 0)
 {
     SfStatus Result;
     register uint64_t R10 asm("r10") = A4;
     register uint64_t R8 asm("r8") = A5;
+    register uint64_t R9 asm("r9") = A6;
     asm volatile("syscall"
                  : "=a"(Result)
-                 : "a"(Number), "D"(A1), "S"(A2), "d"(A3), "r"(R10), "r"(R8)
+                 : "a"(Number), "D"(A1), "S"(A2), "d"(A3), "r"(R10), "r"(R8), "r"(R9)
                  : "rcx", "r11", "memory");
     return Result;
 }
@@ -56,6 +58,11 @@ SfStatus MemoryFree(SfMemory* This, void* Buffer);
 // file.cpp
 SfStatus FilesOpen(SfFiles* This, const char* Path, uint64_t Mode, SfFile** Out);
 SfStatus FilesCreateUnique(SfFiles* This, SfFile** Out, char* Path, uint64_t PathSize);
+SfStatus FilesCreateDirectory(SfFiles* This, const char* Path);
+SfStatus FilesDelete(SfFiles* This, const char* Path);
+SfStatus FilesRename(SfFiles* This, const char* OldPath, const char* NewPath);
+// The kernel's handle behind an SfFile.
+uint64_t FileHandle(SfFile* File);
 
 // The compiler may call these for struct copies and zeroing (memory.cpp).
 extern "C" void* memset(void* Dest, int Value, uint64_t Size);

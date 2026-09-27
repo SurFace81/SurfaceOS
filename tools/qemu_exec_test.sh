@@ -263,7 +263,7 @@ wait_session_end $WANT 15; result $? "admin sdkcheck admin exits"
 #     and in the background; Ctrl+Alt+C ends its program but not it, and
 #     on its own it ends too - and is started again.
 key alt-f2; key ret
-wait_for "zz: no such program" 10; result $? "CMD on screen 2 got what was typed there"
+wait_for "zz: no such command or program" 10; result $? "CMD on screen 2 got what was typed there"
 type_cmd "sdkcheck reader"; sleep 2; type_cmd "via cmd"
 wait_for "sdkcheck input: child got via cmd" 10; result $? "CMD runs a program and hands it the keys"
 T0=$(ticks); type_cmd "sdkcheck ticks"; sleep 2
@@ -331,7 +331,8 @@ WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest group"; sleep 4
 monitor "sendkey ctrl-alt-c"
 wait_session_end $WANT 15; result $? "threadtest group ends on Ctrl+Alt+C"
-[ "$(grep -ac "started threadtest" "$LOG")" = "$((STARTED_BEFORE + 2))" ]; result $? "it started two programs of its own"
+# Three: the console started it, and it started two of its own.
+[ "$(grep -ac "started threadtest" "$LOG")" = "$((STARTED_BEFORE + 3))" ]; result $? "it started two programs of its own"
 sleep 2; type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]

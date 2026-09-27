@@ -12,6 +12,9 @@
 #include "../../include/acpi/acpi.h"
 #include "../../include/mm/heap.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/drivers/rtc.h"
+#include "../../include/drivers/screen.h"
+#include "../../include/drivers/reports.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/sfos.h"
 
@@ -108,7 +111,10 @@ namespace
                 continue;
             tried++;
             sint64_t rc = mounts::mount_device(d);
-            uart::printf("admin: mount %s rc=%d\n", d->name, (int)rc);
+            if (rc == 0)
+                uart::printf("mount: %s on /mount/%s\n", d->name, d->name);
+            else
+                uart::printf("mount: %s failed rc=%d\n", d->name, (int)rc);
             if (rc != 0)
                 failed++;
         }
@@ -134,7 +140,8 @@ namespace
                 continue;
             found++;
             sint64_t rc = mounts::unmount(m);
-            uart::printf("admin: unmount %s rc=%d\n", d->name, (int)rc);
+            uart::printf("umount: %s %s\n", rc == 0 ? "ok" : rc == -EBUSY ? "busy" : "failed",
+                         d->name);
             if (rc == -EBUSY)
                 st = SF_IN_USE;
             else if (rc == -EPERM)
@@ -163,6 +170,76 @@ namespace
         acpi::shutdown();
         regs->rax = SF_DEVICE_ERROR;
     }
+
+    // ()
+    void sync(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        sint64_t rc = vfs::sync_all();
+        uart::printf(rc == 0 ? "sync: ok\n" : "sync: failed %d\n", (int)rc);
+        regs->rax = rc == 0 ? SF_SUCCESS : SF_DEVICE_ERROR;
+    }
+
+    // (const SfDateTime* Time)
+    void set_time(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        SfDateTime t;
+        if (!uaccess::copy_from_user(&t, regs->rdi, sizeof(t)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        if (t.Year < 2000 || t.Year > 2099 || t.Month < 1 || t.Month > 12 || t.Day < 1 ||
+            t.Day > 31 || t.Hour > 23 || t.Minute > 59 || t.Second > 59)
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        rtc_time r = {};
+        r.year = t.Year;  r.month = t.Month;   r.day = t.Day;
+        r.hours = t.Hour; r.minutes = t.Minute; r.seconds = t.Second;
+        rtc::write(&r);
+        regs->rax = SF_SUCCESS;
+    }
+
+    // (const char* Topic, char* Buffer, uint64_t* Size): what the kernel's
+    // info command prints, captured.
+    void report(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        char topic[64];
+        uint64_t size = 0;
+        if (uaccess::strncpy_from_user(topic, regs->rdi, sizeof(topic)) < 0 ||
+            !uaccess::copy_from_user(&size, regs->rdx, sizeof(size)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        const uint64_t MAX = 256 * 1024;
+        uint64_t cap = size < MAX ? size : MAX;
+        char* buf = (char*)kmalloc(cap ? cap : 1);
+        if (!buf)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+
+        screen::capture(buf, cap);
+        bool known = reports::report(topic);
+        uint64_t need = screen::end_capture();
+        if (!known)
+            regs->rax = SF_NOT_FOUND;
+        else if (!uaccess::copy_to_user(regs->rdx, &need, sizeof(need)) ||
+                 (cap && !uaccess::copy_to_user(regs->rsi, buf, need < cap ? need : cap)))
+            regs->rax = SF_INVALID_PARAMETER;
+        else
+            regs->rax = need > size ? SF_BUFFER_TOO_SMALL : SF_SUCCESS;
+        kfree(buf);
+    }
 }
 
 namespace sfadmin
@@ -175,5 +252,8 @@ namespace sfadmin
         sfcall::set_handler(SFCALL_ADMIN_UNMOUNT, unmount_volume);
         sfcall::set_handler(SFCALL_ADMIN_RESTART, restart);
         sfcall::set_handler(SFCALL_ADMIN_SHUT_DOWN, shut_down);
+        sfcall::set_handler(SFCALL_ADMIN_SYNC, sync);
+        sfcall::set_handler(SFCALL_ADMIN_SET_TIME, set_time);
+        sfcall::set_handler(SFCALL_ADMIN_REPORT, report);
     }
 }

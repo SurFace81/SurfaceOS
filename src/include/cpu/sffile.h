@@ -25,6 +25,10 @@ namespace sffile
     // directories, nullptr for one that could not be had.
     void open_roots(const char* name, vnode** data, vnode** tmp);
 
+    // What "root:/path" names for the calling process (its roots, never
+    // leading above them): a referenced vnode in *out. 0 or -errno.
+    sint64_t lookup(const char* rooted, vnode** out);
+
     // Register the SFCALL_FILES_* and SFCALL_FILE_* handlers.
     void init();
 }

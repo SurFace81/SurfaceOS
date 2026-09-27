@@ -66,16 +66,6 @@ namespace keyboard {
         { KEY_KP_PERIOD, '.', KEY_DELETE      },   // 0x53
     };
 
-    static keyboard_callback_t user_callback = nullptr;
-
-    void set_keyboard_callback(keyboard_callback_t callback) {
-        user_callback = callback;
-    }
-
-    void del_keyboard_callback(void) {
-        user_callback = nullptr;
-    }
-
     static void send_command(uint8_t command) {
         int attempts = 1000;
         while ((port::byte_in(KEYBOARD_STATUS_PORT) & 0x02) && --attempts > 0);
@@ -132,10 +122,6 @@ namespace keyboard {
         set_leds();
     }
 
-    keyboard_callback_t get_callback() {
-        return user_callback;
-    }
-
     static inline bool shift_held() {
         return kb_state.lshift_pressed || kb_state.rshift_pressed;
     }
@@ -182,12 +168,10 @@ namespace keyboard {
     static void emit(uint8_t code, char ch, bool pressed) {
         if (system_key(code, pressed))
             return;
-        // The key goes to the shown screen's input owner: nowhere when there
-        // is none, to the kernel's own console (pid 0) through its callback,
-        // and to any program through that screen's queue (tty.cpp).
+        // The key goes to the shown screen's input owner, through that
+        // screen's queue (tty.cpp) - nowhere when there is none.
         uint32_t screen = term::shown_screen();
-        pid_t owner = process::screen_input_owner(screen);
-        if (owner < 0 || (owner == 0 && user_callback == nullptr))
+        if (process::screen_input_owner(screen) < 0)
             return;
 
         keyboard_event_t e = {0};
@@ -211,10 +195,7 @@ namespace keyboard {
         if (kb_state.scroll_lock)    m |= KMOD_SCROLL;
         e.Mods = m;
 
-        if (owner == 0)
-            user_callback(e);
-        else
-            tty::on_key(e, screen);
+        tty::on_key(e, screen);
     }
 
     // A key behind the 0xE0 prefix.

@@ -118,9 +118,22 @@ static void utoa(uint64_t v, char* b, uint32_t base)
 }
 
 // Everything printed goes through the terminal, which owns the cursor,
-// the control characters and (step 2) the escape sequences.
-static inline void emit_char(char c) { term::putc(c); }
-static inline void emit_str(const char* s) { while (*s) term::putc(*s++); }
+// the control characters and (step 2) the escape sequences - unless it is
+// being captured (screen::capture): then into that buffer.
+static char*    capture_buf  = nullptr;
+static uint64_t capture_size = 0;
+static uint64_t capture_len  = 0;
+
+static inline void emit_char(char c)
+{
+    if (!capture_buf)
+        term::putc(c);
+    else if (capture_len + 1 < capture_size)
+        capture_buf[capture_len++] = c;
+    else
+        capture_len++;                  // counted: the size it would need
+}
+static inline void emit_str(const char* s) { while (*s) emit_char(*s++); }
 
 // A black glyph on the title bar: `cell` columns in from the left of the
 // panel's viewport, top at pixel row `y`.
@@ -341,11 +354,33 @@ namespace screen
         term::set_fg((uint8_t)best);
     }
 
-    void putc(char c) { term::putc(c); }
+    void putc(char c) { emit_char(c); }
 
     void write(const char* s) { emit_str(s); }
 
-    void write(const char* s, uint64_t len) { term::feed(s, len); }
+    void write(const char* s, uint64_t len)
+    {
+        if (!capture_buf)
+            term::feed(s, len);
+        else
+            for (uint64_t i = 0; i < len; i++)
+                emit_char(s[i]);
+    }
+
+    void capture(char* buf, uint64_t size)
+    {
+        capture_buf  = buf;
+        capture_size = size;
+        capture_len  = 0;
+    }
+
+    uint64_t end_capture()
+    {
+        if (capture_buf && capture_size)
+            capture_buf[capture_len < capture_size ? capture_len : capture_size - 1] = '\0';
+        capture_buf = nullptr;
+        return capture_len + 1;
+    }
 
     void printf(const char* fmt, ...)
     {

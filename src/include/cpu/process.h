@@ -107,13 +107,9 @@ namespace process
     // context becomes the idle task.
     void init();
 
-    // Create the console: a kernel process (pid 0) whose task runs
-    // entry(nullptr). It starts running once the boot code calls idle().
-    void start_console(void (*entry)(void*));
-
-    // Keep CMD.BIN (sfos/) running on screens 2..9: started now, started
-    // again whenever one ends - a crash or Ctrl+Alt+C - while the programs
-    // it started run on.
+    // Keep CMD.BIN (sfos/), the console, running on every shown screen:
+    // started once the boot code calls idle(), started again whenever one
+    // ends - a crash or Ctrl+Alt+C - while the programs it started run on.
     void start_cmdkeeper();
 
     // The rest of the boot task's life: run whatever can run, halt when
@@ -129,31 +125,7 @@ namespace process
     //
     // open: put a handle to live process `pid` into t (lowest free slot).
     //   0, -ESRCH (no such process), -EMFILE.
-    // wait: sleep until the process behind handle h has exited and store
-    //   its exit status. A pause (Ctrl+Alt+Z) does not end the wait.
-    //   0, -EBADF (not a process handle), -EINTR (a signal ended the wait).
     sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out);
-    sint64_t wait(handle_table* t, sint32_t h, int* status);
-
-    // Console only. Loads `path` as a new process (ppid 0) and sleeps on a
-    // handle to it until it has exited - its children are not waited for.
-    // argv[0] should be the program name. arg_roots, when not null, has
-    // argc entries: arg_roots[i] (i >= 1), when not null, is what argument
-    // i names, and the process gets it as root argI (the caller keeps its
-    // reference). Returns false if the program could not be started;
-    // otherwise stores its exit status in *exit_status. `admin`: with the
-    // admin right (sfos/admin.h).
-    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
-             bool admin, int* exit_status);
-
-    // Console only. The same, but in the background (`&`): the program runs
-    // on a hidden screen of its own, and what it prints (SF_CONSOLE_LINE)
-    // is logged to console_<date>_<time>.log in its data folder. Returns
-    // once it has started: *pid gets its number, log_name (128 bytes) the
-    // log's path ("" when there is no log). false when it could not be
-    // started - no such program, or no hidden screen free.
-    bool run_background(const char* path, int argc, const char* const* argv,
-                        vnode* const* arg_roots, bool admin, pid_t* pid, char* log_name);
 
     // What a program in SF_CONSOLE_LINE prints: into its log, when it runs
     // in the background (sfconsole.cpp).

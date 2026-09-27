@@ -48,7 +48,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
-				bin/kernel/drivers/console.o \
+				bin/kernel/drivers/reports.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
@@ -62,7 +62,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/fs/fat32/fat.o \
 				bin/kernel/fs/fat32/dir.o \
 				bin/kernel/fs/fat32/vnode.o \
-				bin/kernel/drivers/commands.o \
 				bin/kernel/drivers/pit.o \
 				bin/kernel/drivers/tty.o \
 				bin/kernel/drivers/term.o \

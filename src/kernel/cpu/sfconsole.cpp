@@ -405,6 +405,14 @@ namespace
         regs->rax = SF_SUCCESS;
     }
 
+    // ()
+    void clear(user_regs* regs, iret_frame*)
+    {
+        OnScreen on;
+        term::clear();
+        regs->rax = SF_SUCCESS;
+    }
+
     // (const char* Text)
     void set_title(user_regs* regs, iret_frame*)
     {
@@ -436,5 +444,6 @@ namespace sfconsole
         sfcall::set_handler(SFCALL_CONSOLE_READ_KEY, read_key);
         sfcall::set_handler(SFCALL_CONSOLE_SET_MODE, set_mode);
         sfcall::set_handler(SFCALL_CONSOLE_SET_TITLE, set_title);
+        sfcall::set_handler(SFCALL_CONSOLE_CLEAR, clear);
     }
 }

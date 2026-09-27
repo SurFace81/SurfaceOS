@@ -164,6 +164,7 @@ namespace process
         pid_t       input_giver;
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
         bool        admin;          // the admin right (sfos/admin.h)
+        bool        from_console;   // started by its screen's console (the log says so)
 
         uint64_t    cr3;
         uint64_t    brk_start;      // end of the ELF image
@@ -352,11 +353,6 @@ namespace process
     {
         return end_screen >= 0 || pause_screen >= 0;
     }
-
-    // The console is a kernel process; while it runs a program it sleeps on
-    // a handle to it until the program exits. The program's ppid stays 0
-    // ("started by the console").
-    static Process* console_proc    = nullptr;
 
     // Each CPU's boot task becomes its idle task once the kernel is up: it
     // runs whenever nothing else can (this_cpu()->idle_task).
@@ -673,9 +669,8 @@ namespace process
     static pid_t      input_owner[TERM_ALL_SCREENS];
     static wait_queue input_owner_wq;   // ReadLine waits here for its turn
 
-    // Each shown screen has a console: the kernel's (pid 0) on screen 1,
-    // CMD.BIN on the others (-1 while there is none, -2 when it cannot be
-    // started). It is who the input goes back to in the end.
+    // Each shown screen has a console, CMD.BIN (-1 while there is none, -2
+    // when it cannot be started): who the input goes back to in the end.
     static pid_t screen_console[TERM_ALL_SCREENS];
     static wait_queue keeper_wq;        // cmdkeeper: woken when one is gone
 
@@ -686,10 +681,10 @@ namespace process
         wait::wake_up(&input_owner_wq);
         if (screen >= TERM_SCREENS || pid < 0)
             return;
-        Process* p = pid ? find_live(pid) : nullptr;
+        Process* p = find_live(pid);
         uint32_t prev = term::selected();
         term::select(screen);
-        term::set_program(p ? p->name : "console");
+        term::set_program(p ? p->name : "");
         term::select(prev);
     }
 
@@ -1370,6 +1365,10 @@ namespace process
     // the console, an orphan nothing.
     static void terminate(Process* p, int status)
     {
+        uart::printf("process: pid %u %s ended, status %u\n", (uint32_t)p->pid, p->name,
+                     (uint32_t)status);
+        if (p->from_console)
+            uart::printf("console: program end, status %u\n", (uint32_t)status);
         // Its threads end first: nothing of the process runs after this -
         // or, for one running on another CPU, after that CPU's next kernel
         // entry. The address space goes with the last of them.
@@ -1402,7 +1401,7 @@ namespace process
 
         // A screen's console ended: cmdkeeper starts a new one. The programs
         // it started run on.
-        if (p->screen > 0 && p->screen < TERM_SCREENS && screen_console[p->screen] == p->pid)
+        if (p->screen < TERM_SCREENS && screen_console[p->screen] == p->pid)
         {
             screen_console[p->screen] = -1;
             wait::wake_up(&keeper_wq);
@@ -1977,9 +1976,7 @@ namespace process
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
 
-        input_owner[0] = 0;             // the kernel's console's screen
-        screen_console[0] = 0;
-        for (uint32_t s = 1; s < TERM_ALL_SCREENS; s++)
+        for (uint32_t s = 0; s < TERM_ALL_SCREENS; s++)
             input_owner[s] = screen_console[s] = -1;
 
         task::init(&this_cpu()->idle_task, "idle");
@@ -2028,19 +2025,9 @@ namespace process
         return p;
     }
 
-    void start_console(void (*entry)(void*))
-    {
-        Process* p = start_kernel_process("console", entry);
-        // pid 0: the value every program it starts sees as its ppid.
-        p->pid    = 0;
-        p->pgid   = 0;
-        p->obj->pid = 0;
-        console_proc = p;
-        term::set_program("console");
-    }
 
     // -----------------------------------------------------------------------
-    // cmdkeeper: CMD.BIN on screens 2..9
+    // cmdkeeper: CMD.BIN on every shown screen
     // -----------------------------------------------------------------------
 
     static const char CMD_PATH[] = "/sfos/CMD.BIN";
@@ -2079,7 +2066,7 @@ namespace process
 
     static bool console_missing(void*)
     {
-        for (uint32_t s = 1; s < TERM_SCREENS; s++)
+        for (uint32_t s = 0; s < TERM_SCREENS; s++)
             if (screen_console[s] == -1)
                 return true;
         return false;
@@ -2090,7 +2077,7 @@ namespace process
         for (;;)
         {
             wait::wait_event(&keeper_wq, console_missing, nullptr, 0);
-            for (uint32_t s = 1; s < TERM_SCREENS; s++)
+            for (uint32_t s = 0; s < TERM_SCREENS; s++)
                 if (screen_console[s] == -1)
                     start_cmd(s);
             // One that ends as soon as it starts is not restarted more than
@@ -2137,43 +2124,6 @@ namespace process
                 bkl::enter();
             }
         }
-    }
-
-    // stdin/stdout/stderr: one devfs tty opened once and dup'ed onto fds
-    // 0, 1 and 2 of a program the console starts (children inherit through
-    // the fd-table fork).
-    static void open_std_fds(Process* p)
-    {
-        vnode* tty_vn = nullptr;
-        if (devfs::open("tty", &tty_vn) != 0)
-            return;             // no devfs yet: syscalls will fail EBADF
-
-        file* f = filesys::file_open(tty_vn, O_RDWR);   // takes the ref
-        if (!f)
-            return;
-
-        // Three slots sharing one open file description. file_open handed us
-        // one reference; slots 1 and 2 each take another. On any failure the
-        // references taken so far have to go back, or the description and its
-        // vnode are pinned for the lifetime of the kernel.
-        sint32_t fd = -1;
-        filesys::file_get(f);
-        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0 || fd != 0)
-        {
-            // Either the slot took a reference (fd != 0) or alloc already
-            // gave one back (-EMFILE); either way the one file_open handed
-            // us is still outstanding.
-            filesys::file_put(f);
-            return;
-        }
-        filesys::file_get(f);
-        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0 || fd != 1)
-        {
-            filesys::file_put(f);
-            return;
-        }
-        if (filesys::fd_alloc(&p->handles, f, false, &fd) != 0)   // fd 2
-            return;                     // alloc already released it
     }
 
     // Load `path` with the collected argv/envp and allocate a process for
@@ -2227,30 +2177,6 @@ namespace process
         return p;
     }
 
-    // Called by run() after launch(): the root process gets its std fds.
-
-    // Build the default environment a console-launched process starts with.
-    // 0 or -errno.
-    static int push_default_env(ArgEnv* ae)
-    {
-        int rc = ae->push_kstr(true, "PATH=/bin");
-        if (rc) return rc;
-        rc = ae->push_kstr(true, "HOME=/");
-        if (rc) return rc;
-        rc = ae->push_kstr(true, "TERM=dumb");
-        if (rc) return rc;
-
-        // PWD=<console cwd> (the system cwd; per-process cwd takes over in
-        // 3.5 when the root process inherits it at launch).
-        char pwdbuf[PATH_MAX + 8];
-        const char prefix[] = "PWD=";
-        copy_bytes((uint8_t*)pwdbuf, (const uint8_t*)prefix, 4);
-        sint64_t prc = vfs::cwd_path(pwdbuf + 4, PATH_MAX);
-        if (prc != 0)
-            return (int)prc;
-        return ae->push_kstr(true, pwdbuf);
-    }
-
     // -----------------------------------------------------------------------
     // Handles to processes
     // -----------------------------------------------------------------------
@@ -2263,22 +2189,8 @@ namespace process
         return handles::install(t, &p->obj->hdr, flags, 0, out);
     }
 
-    sint64_t wait(handle_table* t, sint32_t h, int* status)
-    {
-        sint64_t rc = 0;
-        proc_obj* o = (proc_obj*)handles::get(t, h, obj_type::Process, &rc);
-        if (!o)
-            return rc;
-
-        // The generic wait on a waitable object; the handle keeps it alive.
-        rc = objects::wait_handle(t, h, 0);
-        if (rc == 0)
-            *status = o->status;
-        return rc;
-    }
-
     // -----------------------------------------------------------------------
-    // Console
+    // Background programs, the other half
     // -----------------------------------------------------------------------
 
     // Put p, not started yet, on hidden screen s with a log (its path into
@@ -2306,109 +2218,6 @@ namespace process
         term::select(prev);
     }
 
-    // A program the console starts, loaded and ready but not started yet.
-    static Process* launch_program(const char* path, int argc, const char* const* argv,
-                                   vnode* const* arg_roots, bool admin)
-    {
-        if (current != console_proc)
-            return nullptr;
-
-        ArgEnv ae;
-        if (!ae.init())
-            return nullptr;
-
-        int rc = 0;
-        if (argc <= 0)
-            rc = ae.push_kstr(false, path);
-        else
-            for (int i = 0; i < argc && rc == 0; i++)
-                rc = ae.push_kstr(false, argv[i]);
-
-        if (rc == 0)
-            rc = push_default_env(&ae);
-
-        Process* p = rc == 0 ? launch(path, &ae, arg_roots, admin ? LAUNCH_ADMIN : 0) : nullptr;
-        ae.destroy();
-        if (!p)
-            return nullptr;
-
-        p->ppid = 0;
-        open_std_fds(p);
-        Thread* t = first_thread(p);
-        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
-        return p;
-    }
-
-    bool run_background(const char* path, int argc, const char* const* argv,
-                        vnode* const* arg_roots, bool admin, pid_t* pid, char* log_name)
-    {
-        log_name[0] = '\0';
-        sint32_t s = term::open_hidden();
-        if (s < 0)
-            return false;
-        Process* p = launch_program(path, argc, argv, arg_roots, admin);
-        if (!p)
-        {
-            term::close_hidden((uint32_t)s);
-            return false;
-        }
-
-        to_background(p, (uint32_t)s, log_name);
-        start(p);
-        *pid = p->pid;
-        uart::printf("console: background start, pid %u %s, screen %u, log %s\n",
-                     (uint32_t)p->pid, p->name, (uint32_t)s, log_name);
-        return true;
-    }
-
-    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
-             bool admin, int* exit_status)
-    {
-        Process* p = launch_program(path, argc, argv, arg_roots, admin);
-        if (!p)
-            return false;
-        uint64_t entry = first_thread(p)->ctx.iret.rip;
-        start(p);
-
-        // The console follows its program through a handle: that is what
-        // tells it the exit status once the process itself is gone.
-        sint32_t h = -1;
-        if (open(&console_proc->handles, p->pid, 0, &h) != 0)
-        {
-            terminate(p, signal_status(SIGKILL));
-            return false;
-        }
-        tty::reset();
-        // The program starts in the foreground: ^C goes to its group, and
-        // it is the one allowed to read the keyboard.
-        tty::set_fg_pgrp(p->pgid);
-        p->input_giver = 0;
-        set_input_owner(p->screen, p->pid);
-
-        screen::hide_cursor();
-        screen::clear();
-
-        uart::printf("console: program start, pid %u %s entry=%llx cpu %u\n",
-                     (uint32_t)p->pid, p->name, entry, p->cpu);
-
-        // The program is runnable now; sleep until it has exited. Its
-        // children are not waited for: an orphan keeps running on its own.
-        int status = 0;
-        wait(&console_proc->handles, h, &status);
-        handles::close(&console_proc->handles, h);
-        reclaim_kernel_stacks();
-
-        uart::printf("console: program end, status %u\n", (uint32_t)status);
-
-        // The console takes its screen back, even from a program the one it
-        // ran gave the input to and that runs on.
-        set_input_owner(console_proc->screen, 0);
-        screen::clear();
-        screen::show_cursor();
-
-        *exit_status = status;
-        return true;
-    }
 
     // -----------------------------------------------------------------------
     // Trap hooks
@@ -3507,30 +3316,82 @@ namespace process
     // caller has it.
     void sf_process_start(user_regs* regs, iret_frame*)
     {
-        char name[NAME_MAX + 1];
+        // Name: a program in /apps, or a path with a root ("disk:/x/y").
+        char name[PATH_MAX];
         sint64_t len = uaccess::strncpy_from_user(name, regs->rdi, sizeof(name));
-        bool ok = len > 0;
-        for (sint64_t i = 0; ok && i < len; i++)
+        bool rooted = false;
+        for (sint64_t i = 0; len > 0 && i < len; i++)
+            rooted |= name[i] == ':';
+        bool ok = len > 0 && (rooted || len <= NAME_MAX);
+        for (sint64_t i = 0; ok && !rooted && i < len; i++)
             ok = name[i] != '/';
         uint64_t argc = regs->rsi;
+        uint64_t flags = regs->r8;
         if (!ok || argc > 256)
         {
             regs->rax = SF_INVALID_PARAMETER;
             return;
         }
-
-        static const char prefix[] = "/apps/";
-        char path[sizeof(prefix) + NAME_MAX];
-        copy_bytes((uint8_t*)path, (const uint8_t*)prefix, sizeof(prefix) - 1);
-        copy_bytes((uint8_t*)path + sizeof(prefix) - 1, (const uint8_t*)name,
-                   (uint64_t)len + 1);
-        vnode* v = nullptr;
-        if (vfs::lookup(path, nullptr, &v, false) != 0)
+        if ((flags & SF_START_ADMIN) && !current->admin)
         {
-            regs->rax = SF_NOT_FOUND;
+            regs->rax = SF_ACCESS_DENIED;
             return;
         }
+
+        char path[PATH_MAX];
+        vnode* v = nullptr;
+        if (rooted)
+        {
+            // Its VFS path, and its own name after the last slash.
+            if (sffile::lookup(name, &v) != 0 || v->type != vtype::REG ||
+                vfs::get_path(v, path, sizeof(path), nullptr) != 0)
+            {
+                if (v)
+                    vfs::unref(v);
+                regs->rax = SF_NOT_FOUND;
+                return;
+            }
+            char* base = path;
+            for (char* c = path; *c; c++)
+                if (*c == '/')
+                    base = c + 1;
+            copy_bytes((uint8_t*)name, (const uint8_t*)base, strlen(base) + 1);
+        }
+        else
+        {
+            static const char prefix[] = "/apps/";
+            copy_bytes((uint8_t*)path, (const uint8_t*)prefix, sizeof(prefix) - 1);
+            copy_bytes((uint8_t*)path + sizeof(prefix) - 1, (const uint8_t*)name,
+                       (uint64_t)len + 1);
+            if (vfs::lookup(path, nullptr, &v, false) != 0)
+            {
+                regs->rax = SF_NOT_FOUND;
+                return;
+            }
+        }
         vfs::unref(v);
+
+        // ArgHandles (r9): argument i's file or folder, ~0 for none - the
+        // new program's root arg<i+1>:. The caller keeps them open meanwhile.
+        vnode* arg_roots[257] = {};
+        for (uint64_t i = 0; regs->r9 && i < argc; i++)
+        {
+            uint64_t h = ~0ULL;
+            if (!uaccess::copy_from_user(&h, regs->r9 + i * 8, 8))
+            {
+                regs->rax = SF_INVALID_PARAMETER;
+                return;
+            }
+            sint64_t frc = 0;
+            file* f = h < HANDLE_TABLE_SIZE
+                    ? filesys::fd_get(&current->handles, (sint32_t)h, &frc) : nullptr;
+            if (h != ~0ULL && !f)
+            {
+                regs->rax = SF_BAD_HANDLE;
+                return;
+            }
+            arg_roots[i + 1] = f ? f->vn : nullptr;
+        }
 
         ArgEnv ae;
         if (!ae.init())
@@ -3546,7 +3407,7 @@ namespace process
                                                                      : -EFAULT;
         }
         // In the background: a hidden screen of its own, taken first.
-        bool background = regs->r8 & SF_START_BACKGROUND;
+        bool background = flags & SF_START_BACKGROUND;
         sint32_t hidden = background ? term::open_hidden() : 0;
         if (hidden < 0)
         {
@@ -3555,7 +3416,9 @@ namespace process
             return;
         }
 
-        Process* p = rc == 0 ? launch(path, &ae, nullptr) : nullptr;
+        Process* p = rc == 0 ? launch(path, &ae, arg_roots,
+                                      (flags & SF_START_ADMIN) ? LAUNCH_ADMIN : 0)
+                             : nullptr;
         ae.destroy();
         if (!p)
         {
@@ -3574,7 +3437,7 @@ namespace process
         Thread* t = first_thread(p);
         task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
         start(p);                       // runs once this call is back in ring 3
-        if (!background && (regs->r8 & SF_START_GIVE_INPUT) && owns_input(nullptr))
+        if (!background && (flags & SF_START_GIVE_INPUT) && owns_input(nullptr))
         {
             p->input_giver = current->pid;
             set_input_owner(p->screen, p->pid);
@@ -3582,6 +3445,19 @@ namespace process
         uart::printf("process: pid %u started %s (pid %u, cpu %u%s)\n",
                      (uint32_t)current->pid, p->name, (uint32_t)p->pid, p->cpu,
                      background ? ", in the background" : "");
+        // What a screen's console runs, the log follows (the tests read it).
+        if (current->pid == screen_console[current->screen])
+        {
+            if (background)
+                uart::printf("console: background start, pid %u %s, screen %u, log %s\n",
+                             (uint32_t)p->pid, p->name, p->screen, log_name);
+            else
+            {
+                p->from_console = true;
+                uart::printf("console: program start, pid %u %s cpu %u\n",
+                             (uint32_t)p->pid, p->name, p->cpu);
+            }
+        }
 
         // No Handle: nobody follows it.
         regs->rax = SF_SUCCESS;

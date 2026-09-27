@@ -190,7 +190,8 @@ static SfStatus Stress(SfSystem* Sys)
         uint64_t Children[2] = {};
         bool Started = true;
         for (int i = 0; i < 2; i++)
-            Started = Started && Sys->Process->Start(Sys->Process, "threadtest", 1, ChildArgs, 0,
+            Started = Started && Sys->Process->Start(Sys->Process, "threadtest", 1, ChildArgs,
+                                                     nullptr, 0,
                                                      &Children[i]) == SF_SUCCESS;
 
         StressWorker Workers[StressThreads];
@@ -293,7 +294,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         for (int i = 0; i < 2; i++)
         {
             uint64_t Handle = 0;
-            if (SF_ERROR(Sys->Process->Start(Sys->Process, "threadtest", 1, Spin, 0, &Handle)))
+            if (SF_ERROR(Sys->Process->Start(Sys->Process, "threadtest", 1, Spin, nullptr, 0, &Handle)))
                 Print("threadtest: Start failed\n");
         }
         SleepLong(nullptr);
