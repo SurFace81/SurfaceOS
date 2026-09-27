@@ -124,6 +124,12 @@ bar. The console has two modes:
   whole screen itself (`WriteAt`, `Draw`, `SetCursor`, `SetColor`) and
   takes every key through `ReadKey`. Key codes are in `sfos/keys.h`.
 
+A cell holds one byte, drawn from the system font: code page 437. Beyond
+ASCII it has lines and boxes, single and double, blocks, shades and
+arrows. `sfos/chars.h` names them (`SF_BOX_H`, `SF_BOX2_TOP_LEFT`,
+`SF_BLOCK_FULL`, ...), because in a UTF-8 source file "─" is three bytes,
+not one.
+
 Ctrl+C is an ordinary key: in `ReadLine` it ends the line with
 `SF_ABORTED`, and in raw mode it is just a key. The system keeps some keys
 for itself, and a program never sees them:

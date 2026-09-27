@@ -18,6 +18,7 @@
 #include "sfos/table.h"
 #include "sfos/app.h"
 #include "sfos/console.h"
+#include "sfos/chars.h"
 #include "sfos/file.h"
 #include "sfos/files.h"
 #include "sfos/memory.h"

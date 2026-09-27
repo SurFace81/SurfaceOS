@@ -20,6 +20,9 @@
 // Run as `sdkcheck keys`, it switches the console to SF_CONSOLE_RAW and
 // reports every key ("sdkcheck key: code C mods M char N") until 'q'.
 //
+// Run as `sdkcheck box`, it draws the box and block characters of
+// sfos/chars.h in SF_CONSOLE_RAW - to look at - until a key.
+//
 // Run as `sdkcheck ticks`, it prints "sdkcheck tick N" every 200 ms for
 // half a minute: something to pause (Ctrl+Alt+Z) and watch stand still.
 //
@@ -597,6 +600,67 @@ static SfStatus RunKeys(SfConsole* Console)
     return SF_SUCCESS;
 }
 
+// A W x H box at (X, Y) of the given lines, a line across below its top
+// row and one down the middle.
+static void DrawBox(SfConsole* Console, uint32_t X, uint32_t Y, uint32_t W, uint32_t H,
+                    bool Double)
+{
+    const char TL = Double ? SF_BOX2_TOP_LEFT : SF_BOX_TOP_LEFT;
+    const char TR = Double ? SF_BOX2_TOP_RIGHT : SF_BOX_TOP_RIGHT;
+    const char BL = Double ? SF_BOX2_BOTTOM_LEFT : SF_BOX_BOTTOM_LEFT;
+    const char BR = Double ? SF_BOX2_BOTTOM_RIGHT : SF_BOX_BOTTOM_RIGHT;
+    const char Hz = Double ? SF_BOX2_H : SF_BOX_H;
+    const char Vt = Double ? SF_BOX2_V : SF_BOX_V;
+    const char TD = Double ? SF_BOX2_T_DOWN : SF_BOX_T_DOWN;
+    const char TU = Double ? SF_BOX2_T_UP : SF_BOX_T_UP;
+    const char TRt = Double ? SF_BOX2_T_RIGHT : SF_BOX_T_RIGHT;
+    const char TLt = Double ? SF_BOX2_T_LEFT : SF_BOX_T_LEFT;
+    const char X4 = Double ? SF_BOX2_CROSS : SF_BOX_CROSS;
+    uint8_t Color = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLUE);
+
+    SfCell Row[80];
+    uint32_t Mid = W / 2;
+    for (uint32_t y = 0; y < H; y++)
+    {
+        for (uint32_t x = 0; x < W; x++)
+        {
+            bool Top = y == 0, Bottom = y == H - 1, Line = y == 2;
+            bool Left = x == 0, Right = x == W - 1, Center = x == Mid;
+            char C = ' ';
+            if (Top)         C = Left ? TL : Right ? TR : Center ? TD : Hz;
+            else if (Bottom) C = Left ? BL : Right ? BR : Center ? TU : Hz;
+            else if (Line)   C = Left ? TRt : Right ? TLt : Center ? X4 : Hz;
+            else if (Left || Right || Center) C = Vt;
+            Row[x].Char  = C;
+            Row[x].Color = Color;
+        }
+        Console->Draw(Console, X, Y + y, W, 1, Row);
+    }
+}
+
+// sdkcheck box: see the top of the file.
+static SfStatus RunBox(SfConsole* Console)
+{
+    Console->SetMode(Console, SF_CONSOLE_RAW);
+    DrawBox(Console, 2, 1, 30, 8, false);
+    DrawBox(Console, 36, 1, 30, 8, true);
+    Console->WriteAt(Console, 4, 2, "single");
+    Console->WriteAt(Console, 38, 2, "double");
+
+    const char Blocks[] = { SF_BLOCK_FULL, ' ', SF_BLOCK_UPPER, ' ', SF_BLOCK_LOWER, ' ',
+                            SF_BLOCK_LEFT, ' ', SF_BLOCK_RIGHT, ' ', SF_SHADE_LIGHT, ' ',
+                            SF_SHADE_MEDIUM, ' ', SF_SHADE_DARK, ' ', SF_ARROW_UP, ' ',
+                            SF_ARROW_DOWN, ' ', SF_ARROW_LEFT, ' ', SF_ARROW_RIGHT, ' ',
+                            SF_TRIANGLE_UP, ' ', SF_TRIANGLE_DOWN, ' ', SF_TRIANGLE_LEFT, ' ',
+                            SF_TRIANGLE_RIGHT, 0 };
+    Console->WriteAt(Console, 2, 10, Blocks);
+    Console->WriteAt(Console, 2, 12, "sdkcheck box: any key ends");
+    SfKey Key;
+    SfStatus Status = Console->ReadKey(Console, &Key);
+    Console->SetMode(Console, SF_CONSOLE_LINE);
+    return Status;
+}
+
 // The console calls beyond Print: the sizes, the cursor, colours, cells,
 // the title and the modes (ReadKey is `sdkcheck keys`).
 static void CheckConsole(SfConsole* Console)
@@ -740,6 +804,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return RunInput(Sys);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "keys"))
         return RunKeys(Sys->Console);
+    if (App && App->ArgCount >= 2 && SameText(App->Args[1], "box"))
+        return RunBox(Sys->Console);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "ticks"))
         return RunTicks(Sys->Time);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "admin"))

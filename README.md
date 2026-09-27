@@ -75,7 +75,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
-  what ReadKey reports, `sdkcheck ticks` ticks to be paused, `sdkcheck
+  what ReadKey reports, `sdkcheck box` draws the box characters, `sdkcheck ticks` ticks to be paused, `sdkcheck
   spin` shows its share of a CPU, `admin sdkcheck admin` checks the admin
   right), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest

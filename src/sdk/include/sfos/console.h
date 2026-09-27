@@ -74,7 +74,8 @@ typedef struct SfConsole SfConsole;
 
 typedef struct SfCell
 {
-    char    Char;
+    char    Char;               // ASCII, or the box and block characters of
+                                // sfos/chars.h (code page 437)
     uint8_t Color;              // SF_CELL_COLOR
 } SfCell;
 
