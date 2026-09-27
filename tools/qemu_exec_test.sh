@@ -200,6 +200,22 @@ type_cmd "after"
 wait_for "sdkcheck input: child got after" 10; result $? "a pause does not cut a ReadLine short"
 wait_session_end $WANT 15
 
+# 1d. `&`: a program runs in the background on a hidden screen while the
+#     console goes on; what it prints goes to a log in its data folder
+#     (read back from the image at the end). Ctrl+Alt+C on screen 1 does
+#     not reach it.
+type_cmd "sdkcheck ticks &"
+wait_for "console: background start, pid" 10; result $? "sdkcheck ticks & starts in the background"
+T1=$(ticks)
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck late"
+wait_session_end $WANT 15; result $? "the console runs another program meanwhile"
+key ctrl-alt-c; sleep 2
+[ "$(ticks)" -gt "$T1" ]; result $? "the background program ticks on, Ctrl+Alt+C on screen 1 or not"
+# Let it finish before the file tests: under QEMU's emulation a busy file
+# test next to it slows down many times over (not under KVM).
+wait_for "sdkcheck tick 150" 60; result $? "and runs to its end"
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))
@@ -286,8 +302,23 @@ monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
 
+type_cmd "sync"; sleep 3
 monitor "quit"
 sleep 1
+
+# The background programs' logs, read from the image.
+OFF=$(( $(sgdisk -i 1 "$IMG" | awk '/First sector/{print $3}') * 512 ))
+python3 - "$IMG" "$OFF" > /tmp/exec_logs.txt 2>&1 <<'PY'
+import sys
+from pyfatfs.PyFatFS import PyFatFS
+fs = PyFatFS(sys.argv[1], offset=int(sys.argv[2]), read_only=True)
+# (Short names come back in capitals: SDKCHECK.)
+d = '/files/' + [n for n in fs.listdir('/files') if n.lower() == 'sdkcheck'][0]
+for name in sorted(fs.listdir(d)):
+    if name.startswith('console_'):
+        print(name, repr(fs.readtext(d + '/' + name)))
+PY
+grep -q "sdkcheck tick 150" /tmp/exec_logs.txt; result $? "the log of sdkcheck ticks & holds all it printed"
 
 echo
 echo "=== summary lines ==="

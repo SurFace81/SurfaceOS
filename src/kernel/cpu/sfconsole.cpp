@@ -50,13 +50,14 @@ namespace
                 regs->rax = SF_INVALID_PARAMETER;
                 break;
             }
+            uint64_t n = len >= 0 ? (uint64_t)len : TEXT_MAX - 1;
+            tty::write(buf, n);
+            process::log_output(buf, n);        // in the background: its log
             if (len >= 0)
             {
-                tty::write(buf, (uint64_t)len);
                 regs->rax = SF_SUCCESS;
                 break;
             }
-            tty::write(buf, TEXT_MAX - 1);
             text += TEXT_MAX - 1;
         }
         kfree(buf);

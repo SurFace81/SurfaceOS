@@ -15,6 +15,11 @@ CHAR_TO_KEY = {
     '\\': 'backslash', ';': 'semicolon', "'": 'apostrophe',
     ',': 'comma', '.': 'dot', '/': 'slash',
     '\n': 'ret', '\t': 'tab', '\b': 'backspace', '\x1b': 'esc',
+    '!': 'shift-1', '@': 'shift-2', '#': 'shift-3', '$': 'shift-4',
+    '%': 'shift-5', '^': 'shift-6', '&': 'shift-7', '*': 'shift-8',
+    '(': 'shift-9', ')': 'shift-0', '_': 'shift-minus', '+': 'shift-equal',
+    ':': 'shift-semicolon', '"': 'shift-apostrophe', '<': 'shift-comma',
+    '>': 'shift-dot', '?': 'shift-slash', '|': 'shift-backslash',
 }
 
 

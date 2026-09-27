@@ -45,8 +45,12 @@ struct term_cell
 };
 
 // Screens: each has its own cells, cursor, colours and parser state, and
-// the panel shows one of them (Alt+F1..F9, keyboard.cpp).
-#define TERM_SCREENS    9
+// the panel shows one of them (Alt+F1..F9, keyboard.cpp). Past those nine,
+// hidden screens for programs running in the background: never shown,
+// their grids taken only while one is in use.
+#define TERM_SCREENS        9
+#define TERM_HIDDEN_SCREENS 16
+#define TERM_ALL_SCREENS    (TERM_SCREENS + TERM_HIDDEN_SCREENS)
 
 namespace term
 {
@@ -55,12 +59,17 @@ namespace term
     bool init(uint32_t panel_cols, uint32_t panel_rows);
     void resize(uint32_t cols, uint32_t rows);
 
-    // Everything below writes to the selected screen (0..TERM_SCREENS-1);
-    // the panel shows another one, or the same.
+    // Everything below writes to the selected screen (any in use); the
+    // panel shows one of the first TERM_SCREENS, another or the same.
     void select(uint32_t n);
     uint32_t selected();
     void show(uint32_t n);
     uint32_t shown_screen();
+
+    // A hidden screen for a background program: its number, or -1 when
+    // none is free. close_hidden gives it back.
+    sint32_t open_hidden();
+    void     close_hidden(uint32_t n);
 
     // The selected screen's part of the title bar, which the system draws:
     // "F<n> | program | subtitle ... hh:mm". A new program clears the

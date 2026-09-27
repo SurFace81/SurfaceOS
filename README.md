@@ -56,7 +56,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
-  in /apps) or by its path
+  in /apps) or by its path, with a last `&` in the background (a hidden
+  screen, its output logged to /files/<name>/console_<date>_<time>.log)
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows

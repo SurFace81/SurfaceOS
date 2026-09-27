@@ -1398,6 +1398,12 @@ namespace commands
         if (!find_program(argv[0], path, sizeof(path)))
             return false;
 
+        // A last argument `&`: in the background, not part of the command
+        // line the program sees.
+        bool background = argc > 1 && strcmp(argv[argc - 1], "&") == 0;
+        if (background)
+            argc--;
+
         // argv becomes the program's argv, so argv[0] is its own name; the
         // paths among the arguments become its argN: roots.
         vnode* roots[CONSOLE_MAX_ARGS] = {};
@@ -1405,8 +1411,11 @@ namespace commands
             roots[i] = open_arg(argv[i]);
 
         int status = 0;
-        screen::printf("\n\r");
-        bool ran = process::run(path, argc, argv, roots, &status);
+        pid_t pid = 0;
+        char log[128];
+        bool ran = background ? process::run_background(path, argc, argv, roots, &pid, log)
+                              : (screen::printf("\n\r"),
+                                 process::run(path, argc, argv, roots, &status));
 
         for (int i = 1; i < argc && i < CONSOLE_MAX_ARGS; i++)
             if (roots[i])
@@ -1414,7 +1423,15 @@ namespace commands
 
         if (!ran)
         {
-            screen::printf("%s: cannot start", argv[0]);
+            screen::printf(background ? "\n\r%s: cannot start (no hidden screen free?)"
+                                      : "%s: cannot start", argv[0]);
+            return true;
+        }
+        if (background)
+        {
+            screen::printf("\n\r[%u] %s runs in the background", (uint32_t)pid, argv[0]);
+            if (log[0])
+                screen::printf(", its output goes to %s", log);
             return true;
         }
         if (WIFSIGNALED(status))

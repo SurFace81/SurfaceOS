@@ -138,6 +138,19 @@ namespace process
     bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
              int* exit_status);
 
+    // Console only. The same, but in the background (`&`): the program runs
+    // on a hidden screen of its own, and what it prints (SF_CONSOLE_LINE)
+    // is logged to console_<date>_<time>.log in its data folder. Returns
+    // once it has started: *pid gets its number, log_name (128 bytes) the
+    // log's path ("" when there is no log). false when it could not be
+    // started - no such program, or no hidden screen free.
+    bool run_background(const char* path, int argc, const char* const* argv,
+                        vnode* const* arg_roots, pid_t* pid, char* log_name);
+
+    // What a program in SF_CONSOLE_LINE prints: into its log, when it runs
+    // in the background (sfconsole.cpp).
+    void log_output(const char* s, uint64_t len);
+
     // --- Hooks from the trap entry points --------------------------------
 
     // Process and memory syscalls. Arguments come from regs (rdi, rsi, rdx,

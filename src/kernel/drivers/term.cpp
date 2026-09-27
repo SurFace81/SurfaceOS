@@ -71,7 +71,7 @@ namespace
         bool       paused;          // its programs are paused (Ctrl+Alt+Z)
     };
 
-    Screen  screens[TERM_SCREENS];
+    Screen  screens[TERM_ALL_SCREENS];
     Screen* S     = &screens[0];    // output goes here
     Screen* shown = &screens[0];    // on the panel
 
@@ -637,6 +637,31 @@ namespace
     }
 }
 
+namespace
+{
+    // A screen's grid for the whole panel, blank, the cursor at the top.
+    bool open_screen(Screen* t)
+    {
+        uint64_t bytes = (uint64_t)stride * grid_rows * sizeof(term_cell);
+        memory::memset((uint8_t*)t, 0, sizeof(Screen));
+        t->main_grid = (term_cell*)kmalloc(bytes);
+        if (!t->main_grid)
+        {
+            uart::printf("term: cannot allocate a %llu KB cell grid\n", bytes / 1024);
+            return false;
+        }
+        t->grid  = t->main_grid;
+        t->fg    = TERM_DEFAULT_FG;
+        t->bg    = TERM_DEFAULT_BG;
+        t->s_bot = cur_rows - 1;
+        t->st    = St::Ground;
+
+        S = t;
+        term::clear();
+        return true;
+    }
+}
+
 namespace term
 {
     bool init(uint32_t panel_cols, uint32_t panel_rows)
@@ -652,29 +677,39 @@ namespace term
         cur_rows  = panel_rows;
         cursor_inverted = false;
 
-        uint64_t bytes = (uint64_t)panel_cols * panel_rows * sizeof(term_cell);
+        memory::memset((uint8_t*)screens, 0, sizeof(screens));
         for (uint32_t n = 0; n < TERM_SCREENS; n++)
-        {
-            Screen* t = &screens[n];
-            memory::memset((uint8_t*)t, 0, sizeof(Screen));
-            t->main_grid = (term_cell*)kmalloc(bytes);
-            if (!t->main_grid)
-            {
-                uart::printf("term: cannot allocate a %llu KB cell grid\n",
-                             bytes / 1024);
+            if (!open_screen(&screens[n]))
                 return false;
-            }
-            t->grid  = t->main_grid;
-            t->fg    = TERM_DEFAULT_FG;
-            t->bg    = TERM_DEFAULT_BG;
-            t->s_bot = cur_rows - 1;
-            t->st    = St::Ground;
-
-            S = t;
-            clear();
-        }
         S = shown = &screens[0];
         return true;
+    }
+
+    sint32_t open_hidden()
+    {
+        for (uint32_t n = TERM_SCREENS; n < TERM_ALL_SCREENS; n++)
+        {
+            if (screens[n].grid)
+                continue;
+            Screen* prev = S;
+            bool ok = open_screen(&screens[n]);
+            S = prev;
+            return ok ? (sint32_t)n : -1;
+        }
+        return -1;
+    }
+
+    void close_hidden(uint32_t n)
+    {
+        if (n < TERM_SCREENS || n >= TERM_ALL_SCREENS || !screens[n].grid)
+            return;
+        Screen* t = &screens[n];
+        kfree(t->main_grid);
+        if (t->alt_grid)
+            kfree(t->alt_grid);
+        if (S == t)
+            S = &screens[0];
+        memory::memset((uint8_t*)t, 0, sizeof(Screen));
     }
 
     void resize(uint32_t c, uint32_t r)
@@ -688,9 +723,11 @@ namespace term
 
         cur_cols = c;
         cur_rows = r;
-        for (uint32_t n = 0; n < TERM_SCREENS; n++)
+        for (uint32_t n = 0; n < TERM_ALL_SCREENS; n++)
         {
             Screen* t = &screens[n];
+            if (!t->grid)
+                continue;
             if (t->cx >= cur_cols) t->cx = cur_cols - 1;
             if (t->cy >= cur_rows) t->cy = cur_rows - 1;
             // A resize invalidates any scroll region the old geometry defined.
@@ -703,7 +740,7 @@ namespace term
 
     void select(uint32_t n)
     {
-        if (n < TERM_SCREENS)
+        if (n < TERM_ALL_SCREENS && screens[n].grid)
             S = &screens[n];
     }
 
@@ -738,7 +775,7 @@ namespace term
 
     void set_paused(uint32_t n, bool paused)
     {
-        if (n >= TERM_SCREENS)
+        if (n >= TERM_ALL_SCREENS)
             return;
         screens[n].paused = paused;
         if (&screens[n] == shown)

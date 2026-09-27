@@ -33,6 +33,7 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/term.h"
 #include "../../include/drivers/pit.h"
+#include "../../include/drivers/rtc.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/fs/devfs.h"
 #include "../../sdk/include/abi/errno.h"
@@ -666,7 +667,7 @@ namespace process
     // the program it starts; a program that owns it gives it on with
     // Start(SF_START_GIVE_INPUT). When the owner ends, the screen goes back
     // to whoever gave it, or to the console if that one is gone too.
-    static pid_t      input_owner[TERM_SCREENS];
+    static pid_t      input_owner[TERM_ALL_SCREENS];
     static wait_queue input_owner_wq;   // ReadLine waits here for its turn
 
     static void set_input_owner(uint32_t screen, pid_t pid)
@@ -678,7 +679,7 @@ namespace process
     // p ends: whatever screen it owns goes back.
     static void return_input(Process* p)
     {
-        for (uint32_t s = 0; s < TERM_SCREENS; s++)
+        for (uint32_t s = 0; s < TERM_ALL_SCREENS; s++)
         {
             if (input_owner[s] != p->pid)
                 continue;
@@ -720,12 +721,118 @@ namespace process
 
     pid_t screen_input_owner(uint32_t screen)
     {
-        return screen < TERM_SCREENS ? input_owner[screen] : -1;
+        return screen < TERM_ALL_SCREENS ? input_owner[screen] : -1;
     }
 
     bool wait_for_input()
     {
         return wait::wait_event(&input_owner_wq, owns_input, nullptr, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Background programs
+    // -----------------------------------------------------------------------
+
+    // A program started with `&` runs on a hidden screen of its own (the
+    // programs it starts share it), and what it prints in SF_CONSOLE_LINE
+    // also goes to a log in its data folder. The screen and the log go when
+    // the last program on the screen ends.
+    struct ScreenLog
+    {
+        vnode*   v;
+        uint64_t off;
+    };
+    static ScreenLog screen_log[TERM_ALL_SCREENS];
+
+    void log_output(const char* s, uint64_t len)
+    {
+        if (!current || current->console_raw)
+            return;
+        ScreenLog* l = &screen_log[current->screen];
+        uint64_t done = 0;
+        if (l->v && len && l->v->ops->write(l->v, l->off, s, len, &done) == 0)
+            l->off += done;
+    }
+
+    // p ends: the hidden screen it ran on goes once nothing else runs there.
+    static void release_screen(Process* p)
+    {
+        uint32_t s = p->screen;
+        if (s < TERM_SCREENS)
+            return;
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* q = &table[i];
+            if (q != p && alive(q) && !q->kernel && q->screen == s)
+                return;
+        }
+        ScreenLog* l = &screen_log[s];
+        if (l->v)
+        {
+            if (l->v->ops->fsync)
+                l->v->ops->fsync(l->v);
+            vfs::unref(l->v);
+        }
+        l->v   = nullptr;
+        l->off = 0;
+        term::close_hidden(s);
+    }
+
+    static char* put_num(char* p, uint32_t v, uint32_t digits)
+    {
+        for (uint32_t i = digits; i-- > 0; v /= 10)
+            p[i] = (char)('0' + v % 10);
+        return p + digits;
+    }
+
+    // A new log in p's data folder, console_YYYY-MM-DD_hh-mm-ss.log - with
+    // _2, _3... when that name is taken. Its name goes to name (64 bytes).
+    static vnode* create_log(Process* p, char* name)
+    {
+        vnode* dir = nullptr;
+        for (uint32_t i = 0; i < MAX_ROOTS && !dir; i++)
+            if (p->roots[i].v && strcmp(p->roots[i].name, "data") == 0)
+                dir = p->roots[i].v;
+        if (!dir || !dir->ops->create)
+            return nullptr;
+
+        rtc_time t;
+        rtc::read(&t);
+        char base[40];
+        char* q = base;
+        for (const char* c = "console_"; *c; c++)
+            *q++ = *c;
+        q = put_num(q, t.year, 4);    *q++ = '-';
+        q = put_num(q, t.month, 2);   *q++ = '-';
+        q = put_num(q, t.day, 2);     *q++ = '_';
+        q = put_num(q, t.hours, 2);   *q++ = '-';
+        q = put_num(q, t.minutes, 2); *q++ = '-';
+        q = put_num(q, t.seconds, 2);
+        uint32_t base_len = (uint32_t)(q - base);
+
+        for (uint32_t n = 1; n < 100; n++)
+        {
+            copy_bytes((uint8_t*)name, (const uint8_t*)base, base_len);
+            char* e = name + base_len;
+            if (n > 1)
+            {
+                *e++ = '_';
+                e = put_num(e, n, n < 10 ? 1 : 2);
+            }
+            copy_bytes((uint8_t*)e, (const uint8_t*)".log", 5);
+
+            vnode* v = nullptr;
+            sint64_t rc = dir->ops->lookup(dir, name, &v);
+            if (rc == 0)
+            {
+                vfs::unref(v);          // taken: the next suffix
+                continue;
+            }
+            if (rc == -ENOENT && dir->ops->create(dir, name, 0644, &v) == 0)
+                return v;
+            return nullptr;
+        }
+        return nullptr;
     }
 
     // -----------------------------------------------------------------------
@@ -1247,6 +1354,7 @@ namespace process
         }
 
         return_input(p);
+        release_screen(p);
 
         // Handles to the process see the exit now, whether or not a parent
         // reaps a zombie later.
@@ -1800,7 +1908,7 @@ namespace process
         vfs::set_busy_hook(mount_in_use);
 
         input_owner[0] = 0;             // the console's screen
-        for (uint32_t s = 1; s < TERM_SCREENS; s++)
+        for (uint32_t s = 1; s < TERM_ALL_SCREENS; s++)
             input_owner[s] = -1;
 
         task::init(&this_cpu()->idle_task, "idle");
@@ -2011,15 +2119,16 @@ namespace process
     // Console
     // -----------------------------------------------------------------------
 
-    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
-             int* exit_status)
+    // A program the console starts, loaded and ready but not started yet.
+    static Process* launch_program(const char* path, int argc, const char* const* argv,
+                                   vnode* const* arg_roots)
     {
         if (current != console_proc)
-            return false;
+            return nullptr;
 
         ArgEnv ae;
         if (!ae.init())
-            return false;
+            return nullptr;
 
         int rc = 0;
         if (argc <= 0)
@@ -2033,15 +2142,63 @@ namespace process
 
         Process* p = rc == 0 ? launch(path, &ae, arg_roots) : nullptr;
         ae.destroy();
-
         if (!p)
-            return false;
+            return nullptr;
 
         p->ppid = 0;
         open_std_fds(p);
         Thread* t = first_thread(p);
         task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
-        uint64_t entry = t->ctx.iret.rip;
+        return p;
+    }
+
+    bool run_background(const char* path, int argc, const char* const* argv,
+                        vnode* const* arg_roots, pid_t* pid, char* log_name)
+    {
+        log_name[0] = '\0';
+        sint32_t s = term::open_hidden();
+        if (s < 0)
+            return false;
+        Process* p = launch_program(path, argc, argv, arg_roots);
+        if (!p)
+        {
+            term::close_hidden((uint32_t)s);
+            return false;
+        }
+
+        p->screen = (uint32_t)s;
+        char file[64];
+        screen_log[s].v   = create_log(p, file);
+        screen_log[s].off = 0;
+        if (screen_log[s].v)
+        {
+            // /files/<name>/<file>: what data:/ is (sffile.cpp).
+            char* e = log_name;
+            for (const char* c = "/files/"; *c; c++) *e++ = *c;
+            for (const char* c = p->name; *c; c++)  *e++ = *c;
+            *e++ = '/';
+            for (const char* c = file; *c; c++)     *e++ = *c;
+            *e = '\0';
+        }
+        uint32_t prev = term::selected();
+        term::select((uint32_t)s);
+        term::set_program(p->name);
+        term::select(prev);
+
+        start(p);
+        *pid = p->pid;
+        uart::printf("console: background start, pid %u %s, screen %u, log %s\n",
+                     (uint32_t)p->pid, p->name, (uint32_t)s, log_name);
+        return true;
+    }
+
+    bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
+             int* exit_status)
+    {
+        Process* p = launch_program(path, argc, argv, arg_roots);
+        if (!p)
+            return false;
+        uint64_t entry = first_thread(p)->ctx.iret.rip;
         start(p);
 
         // The console follows its program through a handle: that is what
