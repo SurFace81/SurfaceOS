@@ -1,5 +1,4 @@
 #include "../../include/cpu/irq.h"
-#include "../../include/cpu/syscall.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/apic.h"
 #include "../../include/cpu/spinlock.h"
@@ -95,11 +94,6 @@ namespace irq {
         idt::set_entry(46, (uint64_t)irq14, IDT_FLAG_INTERRUPT_GATE);
         idt::set_entry(47, (uint64_t)irq15, IDT_FLAG_INTERRUPT_GATE);
 
-        // Syscall gate. DPL=3 so ring 3 may execute `int 0x80`; a trap gate
-        // rather than an interrupt gate so interrupts stay enabled while a
-        // syscall runs and the blocking ones (SYS_READ_KEY) can be woken.
-        idt::set_entry(0x80, (uint64_t)syscall_entry, IDT_FLAG_TRAP_GATE_USER);
-        
         mask_all();
 
         asm volatile("sti");

@@ -24,7 +24,6 @@ struct idtr {
 
 #define IDT_ENTRIES 256
 #define IDT_FLAG_INTERRUPT_GATE 0x8E  // Present=1, DPL=00, Type=1110 (interrupt gate)
-#define IDT_FLAG_TRAP_GATE_USER 0xEF  // Present=1, DPL=11, Type=1111 (trap gate, int 0x80)
 
 // Exception numbers
 #define EXCEPTION_DIVIDE_ERROR          0   // #DE

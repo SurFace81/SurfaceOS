@@ -2,7 +2,7 @@
 
 #include "../../include/cpu/sffile.h"
 #include "../../include/cpu/sfcall.h"
-#include "../../include/cpu/sys_fs.h"
+#include "../../include/fs/fileio.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/fs/vfs.h"
@@ -123,7 +123,7 @@ namespace
         if (flags < 0)
             return SF_INVALID_PARAMETER;
 
-        sint64_t h = sys_fs::open_at(base, path[0] ? path : ".", flags,
+        sint64_t h = fileio::open_at(base, path[0] ? path : ".", flags,
                                      0644, vfs::LOOKUP_BENEATH);
         if (h < 0)
             return status(h);
@@ -145,7 +145,7 @@ namespace
             return SF_INVALID_PARAMETER;
         if (mode & SF_FILE_CREATE_NEW)
             return SF_ALREADY_EXISTS;
-        sint64_t h = sys_fs::open_vnode(v, flags & ~O_CREAT);
+        sint64_t h = fileio::open_vnode(v, flags & ~O_CREAT);
         if (h < 0)
             return status(h);
         return give_handle(h, user_out);
@@ -250,7 +250,7 @@ namespace
                 name[n++] = *s;
             name[n] = '\0';
 
-            sint64_t h = sys_fs::open_at(tmp, name, O_RDWR | O_CREAT | O_EXCL,
+            sint64_t h = fileio::open_at(tmp, name, O_RDWR | O_CREAT | O_EXCL,
                                          0644, vfs::LOOKUP_BENEATH);
             if (h == -EEXIST)
                 continue;
@@ -515,8 +515,8 @@ namespace
             regs->rax = SF_INVALID_PARAMETER;
             return;
         }
-        sint64_t n = write ? sys_fs::write(f, regs->rsi, size)
-                           : sys_fs::read(f, regs->rsi, size);
+        sint64_t n = write ? fileio::write(f, regs->rsi, size)
+                           : fileio::read(f, regs->rsi, size);
         if (n < 0)
         {
             // -EBADF here: the file is not open for this.

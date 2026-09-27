@@ -7,7 +7,6 @@
 #include "../include/cpu/pci.h"
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
-#include "../include/cpu/syscall.h"
 #include "../include/cpu/sfcall.h"
 #include "../include/cpu/sdkpage.h"
 #include "../include/acpi/acpi.h"
@@ -21,7 +20,6 @@
 #include "../include/fs/vfs.h"
 #include "../include/fs/file.h"
 #include "../include/fs/fat32fs.h"
-#include "../include/fs/devfs.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
 #include "../include/drivers/screen.h"
@@ -460,11 +458,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
             vfs::sync_all();
     }
 
-    // devfs lives outside the tree: processes get the tty through it.
-    if (devfs::init() == 0)
-        uart::printf("boot: devfs mounted\n");
 
-    syscall::init();
     sfcall::init();
     sdkpage::init();
     process::init();

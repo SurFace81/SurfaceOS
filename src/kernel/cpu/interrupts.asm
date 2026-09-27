@@ -196,20 +196,6 @@ IRQ 14, 46   ; Primary ATA
 IRQ 15, 47   ; Secondary ATA
 IRQ 16, 48   ; Local APIC timer (apic.cpp)
 
-; Syscall handler (int 0x80)
-global syscall_entry
-syscall_entry:
-    SWAPGS_IF_USER 8
-    SAVE_REGS
-
-    mov rdi, rsp
-    extern syscall_dispatch
-    call syscall_dispatch
-
-    RESTORE_REGS
-    SWAPGS_IF_USER 8
-    iretq
-
 ; The SurfaceOS ABI: the `syscall` instruction (see sfcall.h).
 ;
 ; The CPU leaves the return RIP in rcx and RFLAGS in r11, masks IF/DF/TF/AC

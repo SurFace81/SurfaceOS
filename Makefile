@@ -58,7 +58,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/fs/vfs.o \
 				bin/kernel/fs/file.o \
 				bin/kernel/fs/mounts.o \
-				bin/kernel/fs/devfs.o \
 				bin/kernel/fs/fat32/fat.o \
 				bin/kernel/fs/fat32/dir.o \
 				bin/kernel/fs/fat32/vnode.o \
@@ -66,7 +65,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/tty.o \
 				bin/kernel/drivers/term.o \
 				bin/kernel/drivers/rtc.o \
-				bin/kernel/cpu/syscall.o \
 				bin/kernel/cpu/sfcall.o \
 				bin/kernel/cpu/sdkpage.o \
 				bin/kernel/cpu/sdkpage.asm.o \
@@ -76,7 +74,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sfadmin.o \
 				bin/kernel/cpu/sfsync.o \
 				bin/kernel/cpu/apic.o \
-				bin/kernel/cpu/sys_fs.o \
+				bin/kernel/fs/fileio.o \
 				bin/kernel/cpu/percpu.o \
 				bin/kernel/cpu/spinlock.o \
 				bin/kernel/cpu/smp.o \

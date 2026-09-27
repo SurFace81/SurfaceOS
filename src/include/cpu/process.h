@@ -135,11 +135,11 @@ namespace process
 
     // --- Hooks from the trap entry points --------------------------------
 
-    // Process and memory syscalls. Arguments come from regs (rdi, rsi, rdx,
-    // r10, r8, r9), the result goes into regs->rax as sint64_t: >= 0 on
-    // success, -errno on failure. Each may switch to another process by
-    // rewriting regs/iret; they always return normally to the dispatcher.
-    void sys_exit      (user_regs* regs, iret_frame* iret);
+    // The process calls of the SDK (sfcall.cpp). Arguments come from regs
+    // (rdi, rsi, rdx, r10, r8, r9), the SfStatus goes into regs->rax. Each
+    // may switch to another process by rewriting regs/iret; they always
+    // return normally to the dispatcher.
+    //
     // SFCALL_EXIT (SfStatus): the SurfaceOS ABI's exit.
     void sf_exit       (user_regs* regs, iret_frame* iret);
     // SFCALL_THREAD_CREATE / EXIT / JOIN: SfStatus results.
@@ -155,38 +155,6 @@ namespace process
     // SFCALL_MEMORY_ALLOCATE_PAGES / FREE_PAGES: SfStatus results.
     void sf_allocate_pages(user_regs* regs, iret_frame* iret);
     void sf_free_pages (user_regs* regs, iret_frame* iret);
-    void sys_exit_group(user_regs* regs, iret_frame* iret);
-    void sys_read_key  (user_regs* regs, iret_frame* iret);
-    void sys_brk       (user_regs* regs, iret_frame* iret);
-    void sys_getpid    (user_regs* regs, iret_frame* iret);
-    void sys_getppid   (user_regs* regs, iret_frame* iret);
-    void sys_fork      (user_regs* regs, iret_frame* iret);
-    void sys_execve    (user_regs* regs, iret_frame* iret);
-    void sys_wait4     (user_regs* regs, iret_frame* iret);
-    void sys_yield     (user_regs* regs, iret_frame* iret);
-    void sys_nanosleep (user_regs* regs, iret_frame* iret);
-    void sys_kill      (user_regs* regs, iret_frame* iret);
-    void sys_mmap      (user_regs* regs, iret_frame* iret);
-    void sys_munmap    (user_regs* regs, iret_frame* iret);
-    void sys_mprotect  (user_regs* regs, iret_frame* iret);
-
-    // Signals.
-    void sys_rt_sigaction  (user_regs* regs, iret_frame* iret);
-    void sys_rt_sigprocmask(user_regs* regs, iret_frame* iret);
-    void sys_rt_sigpending (user_regs* regs, iret_frame* iret);
-    void sys_rt_sigreturn  (user_regs* regs, iret_frame* iret);
-    void sys_rt_sigsuspend (user_regs* regs, iret_frame* iret);
-    void sys_pause         (user_regs* regs, iret_frame* iret);
-
-    // Process groups (job control) and identity.
-    void sys_setpgid   (user_regs* regs, iret_frame* iret);
-    void sys_getpgid   (user_regs* regs, iret_frame* iret);
-    void sys_getpgrp   (user_regs* regs, iret_frame* iret);
-    void sys_setsid    (user_regs* regs, iret_frame* iret);
-    void sys_getuid    (user_regs* regs, iret_frame* iret);
-    void sys_getgid    (user_regs* regs, iret_frame* iret);
-    void sys_geteuid   (user_regs* regs, iret_frame* iret);
-    void sys_getegid   (user_regs* regs, iret_frame* iret);
 
     // Status encoding for terminate(): Linux wait(2) format.
     inline int exit_code_status(int code) { return (code & 0xFF) << 8; }
@@ -200,10 +168,6 @@ namespace process
     // Last step of every syscall: honours a pending Esc, applies signals
     // and may switch to another process.
     void syscall_return(user_regs* regs, iret_frame* iret);
-
-    // Is the caller in the terminal's foreground group? The tty read path
-    // asks before handing input to a background job.
-    bool  in_foreground();
 
     // The process that gets screen `screen`'s keys (-1: none). A ReadLine
     // waits (wait_for_input) until its process is the one; false when a
@@ -237,31 +201,11 @@ namespace process
     bool  wait_for_input();
     // Has the caller lost screen `screen`'s input, or left the screen?
     bool  input_changed(uint32_t screen);
-    pid_t cur_pgrp();
 
-    // Post a signal to every process of a group, as the tty does for ^C.
-    // Returns the number of processes signalled.
-    int  signal_pgrp(pid_t pgid, int sig);
-
-    // --- Hooks for the file-descriptor syscalls (sys_fs.cpp) ---------------
-    // Valid only in syscall context (a user process is current).
-    // handle_table and vnode are declared in obj/object.h and fs/vfs.h;
-    // forward-declared here so this header stays independent.
-    handle_table* cur_handles();
-    vnode*    cur_cwd();                // not referenced: the process owns it
-    void      set_cwd(vnode* v);        // takes one reference
-    uint32_t  cur_umask();
-    // The directory behind root `name` ("data", "tmp"), or nullptr. Not
-    // referenced: the process owns it.
+    // The caller's handles, and the directory behind its root `name`
+    // ("data", "tmp") or nullptr - not referenced: the process owns it.
+        handle_table* cur_handles();
     vnode*    cur_root(const char* name);
-    void      set_umask(uint32_t m);
-
-    // A syscall slept in the kernel (wait.h) and a signal ended the sleep
-    // before it had a result. Nothing may have been committed yet: the call
-    // fails with EINTR (set in regs->rax) if the handler lacks SA_RESTART,
-    // and is restarted from scratch otherwise. The argument registers must
-    // still hold what the caller passed.
-    void syscall_interrupted(user_regs* regs);
 
     // Every timer tick, from any ring: wakes the sleep_until sleepers that
     // are due.
