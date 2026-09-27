@@ -13,7 +13,7 @@
 #include "../../include/mm/heap.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/stdlib/string.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 
 namespace
 {

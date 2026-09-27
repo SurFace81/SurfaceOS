@@ -205,7 +205,6 @@ The kernel checks the right on every call, so a program without it gets
 | `include/abi/`            | What the runtime and the kernel share: call numbers and statuses (`sfcall.h`), the runtime's image (`sdkimage.h`). Programs never make calls by number. |
 | `runtime/`                | The code behind the tables. It is built into the kernel and mapped into every program at the same address, so programs do not link it. |
 | `sfos.ld`                 | The linker script for programs. |
-| `libc/`, the other headers in `include/` | The old POSIX layer. It goes away when Linux compatibility is removed. |
 
 Example programs: `src/apps/hello.cpp` (the smallest),
 `src/apps/taskmgr.cpp` (a full-screen program: raw mode, one `Draw` per

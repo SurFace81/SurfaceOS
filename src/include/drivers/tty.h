@@ -2,7 +2,7 @@
 #define TTY_H
 
 #include "../cpu/types.h"
-#include "../../sdk/include/abi/keyboard.h"
+#include "keyevent.h"
 
 // The keyboard's side of the screens: every screen has a queue of key
 // events, filled from the keyboard IRQ and read by the program that owns

@@ -11,10 +11,9 @@
 //   sleep_until(t)        the current thread sleeps until pit::ticks() >= t;
 //   wait_event(q, c, a, t) sleeps on q until c(a) holds (or tick t passes).
 //
-// A deliverable signal also ends a sleep: the call then returns false and
-// the caller decides between EINTR and restarting (for a syscall:
-// process::syscall_interrupted). The queue links its threads through the
-// thread table (process.cpp).
+// A request to end the process (Ctrl+Alt+C, EndProcess) also ends a sleep:
+// the call then returns false and the caller gives up. The queue links its
+// threads through the thread table (process.cpp).
 
 namespace process { struct Thread; }
 
@@ -26,19 +25,20 @@ struct wait_queue
 namespace wait
 {
     // true: woken (possibly spuriously - re-check the condition); false:
-    // a signal is pending.
+    // the process is to be ended.
     bool sleep_on(wait_queue* q);
 
     void wake_up(wait_queue* q);
 
-    // true: the tick was reached; false: a signal is pending.
+    // true: the tick was reached; false: the process is to be ended.
     bool sleep_until(uint64_t tick);
 
     // Sleep on q until cond(arg) is true, re-checking it after every wakeup.
     // The check and the enqueue happen with interrupts off, so a wake_up
     // from an IRQ in between is not lost. tick != 0 is a deadline: once it
     // passes the call returns true whatever cond says.
-    // true: cond held or the deadline passed; false: a signal is pending.
+    // true: cond held or the deadline passed; false: the process is to be
+    // ended.
     bool wait_event(wait_queue* q, bool (*cond)(void*), void* arg, uint64_t tick);
 }
 

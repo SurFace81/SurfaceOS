@@ -1,7 +1,7 @@
 // threadtest: how a program with several threads ends.
 //
 //   threadtest fault     a thread touches address 0 while the others spin
-//                        and sleep: the whole program ends (SIGSEGV)
+//                        and sleep: the whole program ends (SF_CRASHED)
 //   threadtest spin      threads spin and sleep until Ctrl+Alt+C ends
 //                        the whole program
 //   threadtest lastexit  the first thread leaves with Exit; the program

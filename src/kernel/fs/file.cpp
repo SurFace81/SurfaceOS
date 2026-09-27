@@ -1,16 +1,15 @@
-// Open files and descriptors (stage 3.4; files are kernel objects since
-// roadmap stage 3.2). See file.h.
+// Open files and their handles. See file.h.
 //
-// The file pool is a static array: MAX_FILES open descriptions at once,
-// which with 64 fds per process and 32 processes is generous. Allocation
+// The file pool is a static array: MAX_FILES open files at once, which with
+// 64 handles per process is generous. Allocation
 // is a linear scan - at this size it beats any free-list bookkeeping.
 
 #include "../../include/fs/file.h"
 #include "../../include/fs/vfs.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/fcntl.h"
+#include "../../include/errno.h"
+#include "../../include/fs/openflags.h"
 
 namespace
 {
@@ -24,7 +23,7 @@ namespace
     {
         file* f = (file*)o;
 
-        // POSIX close of a file opened for writing: its data must survive a
+        // The close of a file opened for writing: its data must survive a
         // yanked stick, so the last close flushes through to the device
         // (dirty vnode entry + FSInfo + bcache + SYNCHRONIZE CACHE).
         uint32_t acc = f->flags & O_ACCMODE;
@@ -67,7 +66,7 @@ namespace filesys
             kobj::init(&f->hdr, &file_ops);
             f->vn     = vn;             // takes the caller's reference
             f->offset = 0;
-            f->flags  = flags & (O_ACCMODE | O_APPEND | O_NONBLOCK);
+            f->flags  = flags & (O_ACCMODE | O_APPEND);
             f->id     = next_id++;
             f->used   = true;
             return f;
@@ -101,10 +100,9 @@ namespace filesys
     // descriptors
     // -----------------------------------------------------------------------
 
-    sint64_t fd_alloc(handle_table* t, file* f, bool cloexec, sint32_t* out_fd)
+    sint64_t fd_alloc(handle_table* t, file* f, sint32_t* out_fd)
     {
-        sint64_t rc = handles::install(t, &f->hdr, cloexec ? HANDLE_CLOEXEC : 0,
-                                       0, out_fd);
+        sint64_t rc = handles::install(t, &f->hdr, out_fd);
         file_put(f);                    // the table holds its own now
         return rc;
     }
@@ -123,59 +121,4 @@ namespace filesys
         return handles::close(t, fd);
     }
 
-    sint32_t fd_lowest_free(const handle_table* t, sint32_t minfd)
-    {
-        return handles::lowest_free(t, minfd);
-    }
-
-    sint64_t fd_dup(handle_table* t, sint32_t oldfd, sint32_t newfd,
-                    bool cloexec, bool explicit_new, sint32_t* out_fd)
-    {
-        sint64_t rc = 0;
-        kobject* o = handles::get(t, oldfd, obj_type::None, &rc);
-        if (!o)
-            return rc;
-        uint32_t flags = cloexec ? HANDLE_CLOEXEC : 0;
-
-        if (!explicit_new)
-            return handles::install(t, o, flags, 0, out_fd);
-
-        if (newfd < 0 || newfd >= HANDLE_TABLE_SIZE)
-            return -EBADF;
-        if (newfd == oldfd)
-        {
-            // dup3 rejects old == new; dup2 makes it a no-op that still
-            // reports the fd. Report it through *out_fd like every other
-            // success, so callers never have to special-case the rc.
-            if (cloexec)
-                return -EINVAL;
-            *out_fd = oldfd;
-            return 0;
-        }
-
-        rc = handles::install_at(t, o, flags, newfd);  // closes the target
-        if (rc == 0)
-            *out_fd = newfd;
-        return rc;
-    }
-
-    sint64_t fd_getfd(handle_table* t, sint32_t fd)
-    {
-        sint64_t fl = handles::get_flags(t, fd);
-        if (fl < 0)
-            return fl;
-        return (fl & HANDLE_CLOEXEC) ? FD_CLOEXEC : 0;
-    }
-
-    sint64_t fd_setfd(handle_table* t, sint32_t fd, sint64_t arg)
-    {
-        sint64_t fl = handles::get_flags(t, fd);
-        if (fl < 0)
-            return fl;
-        if (arg & ~(sint64_t)FD_CLOEXEC)
-            return -EINVAL;
-        uint32_t nf = ((uint32_t)fl & ~(uint32_t)HANDLE_CLOEXEC) |
-                      ((arg & FD_CLOEXEC) ? HANDLE_CLOEXEC : 0);
-        return handles::set_flags(t, fd, nf);
-    }
 }

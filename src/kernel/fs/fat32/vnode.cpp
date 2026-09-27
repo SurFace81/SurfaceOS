@@ -22,10 +22,10 @@
 #include "../../../include/stdlib/string.h"
 #include "../../../include/drivers/uart.h"
 #include "../../../include/drivers/screen.h"
-#include "../../../sdk/include/abi/errno.h"
-#include "../../../sdk/include/abi/stat.h"
-#include "../../../sdk/include/abi/dirent.h"
-#include "../../../sdk/include/abi/fcntl.h"
+#include "../../../include/errno.h"
+#include "../../../include/fs/stat.h"
+#include "../../../include/fs/dirent.h"
+#include "../../../include/fs/openflags.h"
 
 // Forward declarations: the ops table below is filled in at file scope
 // where all the static fat_* functions live.

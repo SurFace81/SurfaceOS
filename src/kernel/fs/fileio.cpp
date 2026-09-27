@@ -11,9 +11,9 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/stdlib/string.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/fcntl.h"
-#include "../../sdk/include/abi/stat.h"
+#include "../../include/errno.h"
+#include "../../include/fs/openflags.h"
+#include "../../include/fs/stat.h"
 
 namespace
 {
@@ -138,8 +138,7 @@ namespace
         }
 
         sint32_t fd = -1;
-        sint64_t rc = filesys::fd_alloc(process::cur_handles(), f,
-                                             (flags & O_CLOEXEC) != 0, &fd);
+        sint64_t rc = filesys::fd_alloc(process::cur_handles(), f, &fd);
         if (rc != 0)
             return rc;
         return fd;

@@ -65,8 +65,8 @@ namespace
         kfree(buf);
     }
 
-    // The next key press for the caller, once it is its turn. False when a
-    // signal (the program being ended) cut the wait short, or when another
+    // The next key press for the caller, once it is its turn. False when the
+    // program is being ended, or when another
     // program on its screen took the input meanwhile (Ctrl+Alt+Z letting a
     // paused one go on). Moved to another screen (fg, bg), it waits for its
     // turn there.

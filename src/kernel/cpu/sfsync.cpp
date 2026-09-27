@@ -6,7 +6,7 @@
 #include "../../include/cpu/uaccess.h"
 #include "../../include/obj/event.h"
 #include "../../include/drivers/pit.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 #include "../../sdk/include/sfos.h"
 
 namespace
@@ -36,7 +36,7 @@ namespace
             return;
         }
         sint32_t h = -1;
-        sint64_t rc = handles::install(process::cur_handles(), o, 0, 0, &h);
+        sint64_t rc = handles::install(process::cur_handles(), o, &h);
         kobj::put(o);                       // the handle holds it now (or nobody)
         if (rc != 0)
         {

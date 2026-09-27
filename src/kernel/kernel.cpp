@@ -31,8 +31,8 @@
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
 #include "../include/stdlib/string.h"
-#include "../sdk/include/abi/errno.h"
-#include "../sdk/include/abi/dirent.h"
+#include "../include/errno.h"
+#include "../include/fs/dirent.h"
 
 namespace
 {

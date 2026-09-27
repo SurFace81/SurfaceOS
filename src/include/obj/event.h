@@ -30,7 +30,7 @@ namespace objects
     //   0           signaled (an auto-reset event has been consumed)
     //   -EINVAL     the object cannot be waited on
     //   -ETIMEDOUT  the deadline passed first
-    //   -EINTR      a signal ended the wait
+    //   -EINTR      the process is to be ended
     sint64_t wait(kobject* o, uint64_t tick);
 
     // The same for the object behind handle h of table t; -EBADF for a free

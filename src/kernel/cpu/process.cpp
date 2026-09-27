@@ -36,9 +36,8 @@
 #include "../../include/drivers/pit.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/time.h"
-#include "../../sdk/include/abi/fcntl.h"
+#include "../../include/errno.h"
+#include "../../include/fs/openflags.h"
 
 #define USER_CS             0x23
 #define USER_SS             0x2B
@@ -1162,7 +1161,7 @@ namespace process
         uint64_t prev = read_cr3();
         paging::switch_address_space(as);
 
-        elf::LoadResult lr = {0, 0, 0, 0, 0, false};
+        elf::LoadResult lr = {0, 0, false};
         bool ok = map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
                                   PAGE_WRITE | PAGE_NX);
         sint64_t elf_rc = -ENOEXEC;
@@ -1726,7 +1725,7 @@ namespace process
     }
 
     // -----------------------------------------------------------------------
-    // Session (console entry point)
+    // Starting up
     // -----------------------------------------------------------------------
 
     // vfs busy hook: a filesystem is in use while any live process has its
@@ -1950,12 +1949,12 @@ namespace process
     // Handles to processes
     // -----------------------------------------------------------------------
 
-    sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out)
+    sint64_t open(handle_table* t, pid_t pid, sint32_t* out)
     {
         Process* p = find_live(pid);
         if (!p || p->kernel || !p->obj)
             return -ESRCH;
-        return handles::install(t, &p->obj->hdr, flags, 0, out);
+        return handles::install(t, &p->obj->hdr, out);
     }
 
     // -----------------------------------------------------------------------
@@ -2432,7 +2431,7 @@ namespace process
             return;
 
         sint32_t h = -1;
-        if (open(&current->handles, p->pid, 0, &h) != 0)
+        if (open(&current->handles, p->pid, &h) != 0)
         {
             terminate(p, SF_ABORTED);
             regs->rax = SF_OUT_OF_RESOURCES;
@@ -2626,7 +2625,7 @@ namespace process
         t->stack_pages = pages;
 
         sint32_t h = -1;
-        if (handles::install(&current->handles, &t->obj->hdr, 0, 0, &h) != 0)
+        if (handles::install(&current->handles, &t->obj->hdr, &h) != 0)
         {
             release_range(base, pages);
             free_thread(t, SF_ABORTED);

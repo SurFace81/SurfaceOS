@@ -88,8 +88,6 @@ static void cmd_mount(int argc, const char** argv)
     for (uint32_t i = 0; vfs::mount_count_get(i); i++)
     {
         mount* m = vfs::mount_count_get(i);
-        if (m->detached)
-            continue;
         if (m->point)
         {
             char buf[PATH_MAX];

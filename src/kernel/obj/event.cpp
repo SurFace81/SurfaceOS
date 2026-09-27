@@ -3,7 +3,7 @@
 #include "../../include/obj/event.h"
 #include "../../include/cpu/wait.h"
 #include "../../include/drivers/pit.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 
 namespace
 {

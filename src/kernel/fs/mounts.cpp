@@ -3,7 +3,7 @@
 #include "../../include/fs/mounts.h"
 #include "../../include/fs/fat32fs.h"
 #include "../../include/stdlib/string.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 
 namespace
 {
@@ -38,7 +38,7 @@ namespace mounts
         for (uint32_t i = 0; vfs::mount_count_get(i); i++)
         {
             mount* m = vfs::mount_count_get(i);
-            if (!m->detached && strcmp(m->devname, name) == 0)
+            if (strcmp(m->devname, name) == 0)
                 return m;
         }
         return nullptr;

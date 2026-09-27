@@ -19,7 +19,7 @@
 #include "../../include/cpu/smp.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/memory.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 #include "../../sdk/include/sfos.h"
 
 namespace

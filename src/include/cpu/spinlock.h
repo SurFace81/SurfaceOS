@@ -27,7 +27,7 @@ namespace spin
 // CPU, not a thread, and nests (an interrupt taken inside the kernel just
 // goes one deeper).
 //
-//   taken    on every entry from ring 3 (exception, int 0x80, syscall), at
+//   taken    on every entry from ring 3 (exception, interrupt, call), at
 //            boot, and by the idle loop when it wakes up; an interrupt
 //            takes it only if it is free (irq.cpp: it never waits);
 //   dropped  on every return to ring 3 (the entry's own, or a new thread's

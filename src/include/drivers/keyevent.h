@@ -1,7 +1,7 @@
-#ifndef ABI_KEYBOARD_H
-#define ABI_KEYBOARD_H
+#ifndef DRIVERS_KEYEVENT_H
+#define DRIVERS_KEYEVENT_H
 
-#include "types.h"
+#include "../cpu/types.h"
 
 enum key_event_type
 {

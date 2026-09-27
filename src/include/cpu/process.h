@@ -116,7 +116,7 @@ namespace process
     //
     // open: put a handle to live process `pid` into t (lowest free slot).
     //   0, -ESRCH (no such process), -EMFILE.
-    sint64_t open(handle_table* t, pid_t pid, uint32_t flags, sint32_t* out);
+    sint64_t open(handle_table* t, pid_t pid, sint32_t* out);
 
     // What a program in SF_CONSOLE_LINE prints: into its log, when it runs
     // in the background (sfconsole.cpp).

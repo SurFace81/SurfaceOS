@@ -1086,8 +1086,8 @@ static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
 
     // Plenty of USB sticks do not implement SYNCHRONIZE CACHE and answer
     // with ILLEGAL REQUEST. They write through (or manage their cache on
-    // their own), so there is nothing to flush - Linux treats it the same
-    // way. Anything else is a real failure.
+    // their own), so there is nothing to flush. Anything else is a real
+    // failure.
     if (result == 1 && scsi_request_sense(msd) == SCSI_SENSE_ILLEGAL_REQUEST)
     {
         uart::printf("scsi: SYNCHRONIZE CACHE not supported, flushes skipped\n");

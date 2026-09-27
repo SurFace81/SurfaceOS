@@ -8,12 +8,12 @@
 #include "../../include/fs/vfs.h"
 #include "../../include/fs/file.h"
 #include "../../include/mm/heap.h"
-#include "../../sdk/include/abi/stat.h"
+#include "../../include/fs/stat.h"
 #include "../../include/mm/memory.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/fcntl.h"
+#include "../../include/errno.h"
+#include "../../include/fs/openflags.h"
 #include "../../sdk/include/sfos.h"
 
 namespace

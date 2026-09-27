@@ -20,8 +20,8 @@ void LockAcquire(SdkLock* Lock)
 {
     if (__atomic_add_fetch(&Lock->Count, 1, __ATOMIC_ACQ_REL) == 1)
         return;
-    // Only a signal cuts the wait short, and the program stops or ends on
-    // its way back: wait again after a resume.
+    // Only the program being ended cuts the wait short, and then it never
+    // gets back here: wait again otherwise.
     while (SF_ERROR(SfCall(SFCALL_WAIT, Lock->Event, SF_WAIT_FOREVER)))
         ;
 }

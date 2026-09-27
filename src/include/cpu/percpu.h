@@ -12,8 +12,8 @@ namespace process { struct Process; struct Thread; }
 // at the CPU's own Cpu while it runs kernel code.
 //
 // A program can load GS itself and so change the GS base, so the kernel
-// keeps its own: every entry from ring 3 (interrupts, exceptions, int 0x80,
-// the syscall instruction) swaps the program's GS base out with `swapgs`,
+// keeps its own: every entry from ring 3 (interrupts, exceptions, the
+// syscall instruction) swaps the program's GS base out with `swapgs`,
 // and every return to ring 3 swaps it back (interrupts.asm, task.asm).
 //
 // Each CPU has its own TSS (the kernel stack a trap from ring 3 lands on,

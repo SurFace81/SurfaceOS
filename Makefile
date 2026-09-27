@@ -7,7 +7,6 @@ LFLAGS		= -Wall -Werror -m64 -nostdlib -shared -Wl,-dll -Wl,--subsystem,10 -e ef
 
 GCC			= x86_64-elf-gcc
 GPP			= x86_64-elf-g++
-AR			= x86_64-elf-ar
 CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -fno-unwind-tables -mno-red-zone \
 			  -mgeneral-regs-only -mcmodel=kernel -fno-pic \
@@ -30,6 +29,9 @@ QEMU_UEFI	= 	qemu-system-x86_64 \
 				-device pci-serial,chardev=uart0 \
 				-no-reboot -no-shutdown
 DISK_IMG	= surfaceos.img
+
+# `make` alone builds the image.
+.DEFAULT_GOAL := $(DISK_IMG)
 IMG_SIZE_MIB	?= 64
 
 SOURCES		=  	bin/kernel/kernel.o \
@@ -99,17 +101,6 @@ SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 # break the build. Without them a changed struct in a header left stale
 # objects behind that only failed at link time - or not at all.
 DEPFLAGS    = -MMD -MP
-SDK_SRC     = $(wildcard src/sdk/libc/*.cpp)
-SDK_ALL_OBJ = $(patsubst src/sdk/libc/%.cpp, bin/sdk/%.o, $(SDK_SRC))
-SDK_ENTRY   = bin/sdk/crt0.o
-SDK_LIB_OBJ = $(filter-out $(SDK_ENTRY), $(SDK_ALL_OBJ))
-SDK_LIB     = bin/sdk/libsfos.a
-
-# crt0.S: the _start stub (SysV initial stack -> __libc_start)
-bin/sdk/crt0.o: src/sdk/libc/crt0.S
-	mkdir -p $(dir $@)
-	x86_64-elf-gcc -c -m64 -ffreestanding -nostdlib -o $@ $<
-
 # Programs, all built against <sfos.h> (no libc, no start-up code: the
 # kernel starts them in the SDK runtime, which calls SfMain):
 #   src/apps/<name>.cpp   a program of one file        -> bin/apps/<name>.bin
@@ -216,15 +207,6 @@ bin/kernel/cpu/ap_trampoline.bin: src/kernel/cpu/ap_trampoline.asm
 
 bin/kernel/cpu/smp.asm.o: bin/kernel/cpu/ap_trampoline.bin
 
-# SDK objects
-bin/sdk/%.o: src/sdk/libc/%.cpp
-	mkdir -p $(dir $@)
-	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
-
-# SDK static library (everything except entry.o)
-$(SDK_LIB): $(SDK_LIB_OBJ)
-	$(AR) rcs $@ $^
-
 
 # Programs. -z max-page-size=0x1000 keeps the ELF compact: the x86_64-elf
 # default is a 2 MB segment alignment, which pads a 10 KB program to ~1 MB
@@ -310,10 +292,10 @@ clean:
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
-	@rm -rf bin/sdk/*.o bin/sdk/*.a bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin
+	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(SDK_ALL_OBJ:.o=.d) $(RUNTIME_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d

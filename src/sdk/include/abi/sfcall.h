@@ -9,8 +9,7 @@
 //   rax        result: an SfStatus (below)
 //
 // rcx and r11 do not survive a call (the instruction itself uses them);
-// every other register does. The old ABI (int 0x80) stays for the programs
-// written against it and gets no new calls.
+// every other register does.
 
 // SfStatus: 0 is success, the top bit marks an error. Programs see these
 // through <sfos.h>; the kernel returns them.

@@ -16,23 +16,21 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   paging (4 KiB, per-process address spaces, W^X), ring-3 user mode
 - ACPI tables without AML: reboot/shutdown (FADT, \_S5), the CPUs and
   interrupt controllers from the MADT (`acpi` command)
-- Preemptive scheduler (switches only at ring-3 boundaries), fork/execve/
-  wait4/kill, SysV ABI process startup (argv/envp/auxv on the stack)
-- Old POSIX-shaped syscall ABI (int 0x80, -errno results): frozen - no
-  new calls - and removed once nothing needs it; programs use the SDK
+- Preemptive scheduler (switches only at ring-3 boundaries); a program
+  is a process with threads, started, waited for, paused, moved between
+  screens and ended through the SDK - its own design, no POSIX layer
 - Block layer: blkdev registry (USB MSD today, AHCI/NVMe-shaped),
   GPT/MBR/superfloppy partition parsing (SurfaceOS itself lives on GPT;
   the others are for mounting ordinary sticks), LRU sector cache with
   dirty tracking and flush, 512 and 4096-byte sectors
-- VFS: vnode cache, mount table (FAT32 root + devfs), POSIX namei
-  (`/`-separated paths, `.`, `..` across mount points, LFN)
+- VFS: vnode cache, mount table (the FAT32 root and /mount/<device>),
+  path resolution (`/`-separated paths, `.`, `..` across mount points,
+  LFN)
 - FAT32 with long file names (UTF-8, case preserved), FSInfo-based
   allocator, incremental read/write by byte offset, truncate, rename,
   unlink of open files, volume dirty bit
-- Per-process fd table (POSIX dup/fork/exec semantics, O_CLOEXEC),
-  open file descriptions with shared offsets
-- devfs (outside the directory tree, no /dev): null, zero, tty, console;
-  canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
+- Kernel objects behind per-process handle tables: open files (each
+  with its offset), processes, threads, mutexes, events
 - SurfaceOS SDK (<sfos.h>, how to write a program: src/sdk/README.md): a program implements SfMain(SfApp*, SfSystem*)
   and reaches the system through tables of the SDK runtime
   (src/sdk/runtime), which the kernel maps into every program and which
@@ -46,8 +44,6 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   argN:. Files go through roots: data:/
   (the program's own /files/<name>, created on first start) and tmp:/
   (/tmp, unique names from CreateUnique); no path leads above its root.
-  The old POSIX layer (int 0x80, libc) is still in the tree until it is
-  removed.
 - Nine screens, Alt+F1..F9, each with a system title bar (screen,
   program, subtitle, clock); keys go to the screen's input owner.
   Every screen runs CMD.BIN (/sfos), the console: a program in ring 3
@@ -91,25 +87,28 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 src/
   boot/       — UEFI bootloader (C, MinGW)
   kernel/     — kernel source (C++, freestanding)
-    cpu/      — GDT, IDT, IRQ, paging, PCI, syscall dispatch, process,
-                ELF loader, uaccess, sys_fs (fd syscalls)
+    cpu/      — GDT, IDT, IRQ, paging, PCI, the SDK calls (sfcall,
+                sffile, sfconsole, sfadmin, ...), process, ELF loader,
+                uaccess
     dev/      — blkdev registry, partition parsing, block cache
-    drivers/  — screen, keyboard, console, commands, tty, UART, USB/xHCI,
-                PIT, RTC
-    fs/       — VFS core (vnode/mount/namei), file/fd layer, devfs,
-                fat32/ (fat.cpp, dir.cpp, vnode.cpp)
+    drivers/  — screen, term (the screens' text), keyboard, tty (key
+                queues), reports, UART, USB/xHCI, PIT, RTC
+    fs/       — VFS core (vnode/mount/path lookup), open files and
+                fileio, mounts, fat32/ (fat.cpp, dir.cpp, vnode.cpp)
     mm/       — physical memory, heap
     stdlib/   — stdio, string
   include/    — kernel-side headers (cpu/, dev/, fs/, drivers/, mm/)
-  sdk/        — include/sfos.h + sfos/ (the SDK), runtime/ (the code
-                behind the SDK tables), sfos.ld (program link script);
-                the old POSIX layer: abi/, libc/, linker.ld
+  sdk/        — include/sfos.h + sfos/ (the SDK), abi/ (what the
+                runtime and the kernel share), runtime/ (the code behind
+                the SDK tables), sfos.ld (program link script)
+  sfos/       — cmd.cpp: the console, /sfos/CMD.BIN
   apps/       — programs: <name>.cpp is one program, <name>/ is one
                 program of all the .cpp files in it
 tools/
   mkimg.py            — image builder: GPT, one FAT32 EFI System Partition
   qemu_exec_test.sh   — full QEMU regression suite
   qemu_verify.sh      — reboot + persistence + host fsck.fat
+  *test_host.sh       — host unit tests: objects, term, tty key queues
 ```
 
 # Build & Run
@@ -143,6 +142,8 @@ tools/
   log.
 - `bash tools/qemu_verify.sh` — after the suite: reboots its image, runs
   `sfstest verify`, host `fsck.fat -n`.
+- `bash tools/objtest_host.sh`, `termtest_host.sh`, `ttytest_host.sh` —
+  unit tests of kernel parts on the host, in milliseconds.
 
 # Writing to a real stick
 

@@ -9,8 +9,8 @@
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/dirent.h"
+#include "../../include/errno.h"
+#include "../../include/fs/dirent.h"
 
 namespace
 {
@@ -280,8 +280,7 @@ namespace vfs
     // mount table
     // -----------------------------------------------------------------------
 
-    static sint64_t do_mount(vnode* point_dir, const char* devname, vfs_fs* fs,
-                             void* arg, bool detached)
+    sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs, void* arg)
     {
         if (mount_cnt >= MAX_MOUNTS)
             return -ENFILE;
@@ -304,7 +303,6 @@ namespace vfs
         m->dev_id = next_dev_id++;  // never reused: a stale st_dev must not
                                     // start matching a later mount
         m->active = true;
-        m->detached = detached;
         strncpy(m->devname, devname, sizeof(m->devname) - 1);
         if (point_dir)
             ref(point_dir);         // the mount holds a reference
@@ -323,19 +321,8 @@ namespace vfs
         root->mnt = m;
         mount_cnt++;
 
-        uart::printf("vfs: %s mounted%s\n", devname,
-                     point_dir ? "" : detached ? " detached" : " as root");
+        uart::printf("vfs: %s mounted%s\n", devname, point_dir ? "" : " as root");
         return 0;
-    }
-
-    sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs, void* arg)
-    {
-        return do_mount(point_dir, devname, fs, arg, false);
-    }
-
-    sint64_t mount_detached(const char* devname, vfs_fs* fs, void* arg)
-    {
-        return do_mount(nullptr, devname, fs, arg, true);
     }
 
     // The mount whose point is `dir` (a directory being stepped into).
@@ -357,10 +344,10 @@ namespace vfs
     }
 
     // Is anything still using this filesystem? Counting references does not
-    // answer that: a driver may hold its own (devfs pins a vnode per device
-    // until umount), so a refcount threshold would either report every
-    // devfs umount busy or miss a real open fd on another FS. Ask the layers
-    // that actually own the users instead.
+    // answer that: a driver may hold its own, so a refcount threshold would
+    // either report a busy filesystem idle or the other way round. Ask the
+    // layers that actually own the users instead: the processes' roots and
+    // the open files.
     static bool fs_busy(mount* m)
     {
         if (system_cwd && system_cwd->mnt == m)
@@ -463,8 +450,7 @@ namespace vfs
     mount* root_mount()
     {
         for (uint32_t i = 0; i < MAX_MOUNTS; i++)
-            if (mounts[i].active && mounts[i].point == nullptr &&
-                !mounts[i].detached)
+            if (mounts[i].active && mounts[i].point == nullptr)
                 return &mounts[i];
         return nullptr;
     }

@@ -11,7 +11,7 @@
 #include "../../include/stdlib/string.h"
 #include "../../include/mm/memory.h"
 #include "../../include/mm/heap.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 
 namespace
 {

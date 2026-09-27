@@ -6,8 +6,9 @@
 
 // The SurfaceOS ABI entry (the `syscall` instruction) and its dispatch
 // table. The entry builds the same trap frame on the process's kernel
-// stack as int 0x80 does, so the process layer (scheduling, the way back
-// to ring 3) treats both alike. See abi/sfcall.h for the register use.
+// stack as an interrupt from ring 3 does, so the process layer
+// (scheduling, the way back to ring 3) treats both alike. See abi/sfcall.h
+// for the register use.
 
 struct user_regs;
 struct iret_frame;

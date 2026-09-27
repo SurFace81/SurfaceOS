@@ -4,9 +4,8 @@
 #include "types.h"
 
 // The shape of a saved ring-3 CPU state. Split out of process.h so that
-// code which only manipulates a context - the signal core, and its host
-// unit tests - does not have to drag in paging, the keyboard and the
-// process table with it.
+// code which only needs a context does not have to drag in paging, the
+// keyboard and the process table with it.
 
 // General purpose registers in the order SAVE_REGS pushes them (interrupts.asm):
 // rax is pushed first, so it sits at the highest address.
