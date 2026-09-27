@@ -52,7 +52,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
   ends every program on the shown screen, Ctrl+Alt+Z pauses them (again:
-  they go on)
+  they go on). A program on the shown screen gets twice the CPU time of
+  one elsewhere
 - Built-in shell: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd, pwd,
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
@@ -61,7 +62,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
-  what ReadKey reports, `sdkcheck ticks` ticks to be paused), sfstest (files through the SDK and
+  what ReadKey reports, `sdkcheck ticks` ticks to be paused, `sdkcheck
+  spin` shows its share of a CPU), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
   (how a program with several threads ends: fault, Ctrl+Alt+C, last
   exit; Ctrl+Alt+C ends the programs it started too; `threadtest stress` runs many

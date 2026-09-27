@@ -216,6 +216,38 @@ key ctrl-alt-c; sleep 2
 # test next to it slows down many times over (not under KVM).
 wait_for "sdkcheck tick 150" 60; result $? "and runs to its end"
 
+# 1e. Weights: on one CPU, a program on the shown screen gets twice the time
+#     of one in the background (2:1), and once another screen is shown,
+#     the same as it (1:1). With more CPUs the two do not share one.
+if [ "${SMP:-1}" = "1" ]; then
+    spin_avg() {  # spin_avg <label> <from> <to>: mean of its lines from..to
+        grep -ao "sdkcheck spin $1: [0-9]*" "$LOG" | sed -n "$2,$3p" |
+            awk '{ s += $4; n++ } END { print (n ? int(s / n) : 0) }'
+    }
+    type_cmd "sdkcheck spin bg 16 &"; sleep 1
+    WANT=$(( $(sessions_ended) + 1 ))
+    type_cmd "sdkcheck spin fg 9"
+    wait_for "sdkcheck spin fg: " 10; sleep 4
+    key alt-f2; sleep 5; key alt-f1
+    wait_session_end $WANT 20
+    # fg lines 2-4 ran with screen 1 shown, 7-9 with screen 2; the bg lines
+    # at those times are the ones between them in the log.
+    FG1=$(spin_avg fg 2 4); FG2=$(spin_avg fg 7 9)
+    BG1=$(grep -ao "sdkcheck spin [a-z]*: [0-9]*" "$LOG" | awk '/fg:/{f++} /bg:/ && f>=2 && f<4 {s+=$4; n++} END {print (n?int(s/n):0)}')
+    BG2=$(grep -ao "sdkcheck spin [a-z]*: [0-9]*" "$LOG" | awk '/fg:/{f++} /bg:/ && f>=7 && f<9 {s+=$4; n++} END {print (n?int(s/n):0)}')
+    echo "      shown: fg $FG1 bg $BG1; screen 2 shown: fg $FG2 bg $BG2"
+    [ "$BG1" -gt 0 ] && [ $((FG1 * 10 / BG1)) -ge 15 ] && [ $((FG1 * 10 / BG1)) -le 27 ]
+    result $? "the program on the shown screen gets about twice the time"
+    [ "$BG2" -gt 0 ] && [ $((FG2 * 10 / BG2)) -ge 7 ] && [ $((FG2 * 10 / BG2)) -le 14 ]
+    result $? "with another screen shown, both get the same"
+    # Let the background one finish before the file tests (under QEMU's
+    # emulation a file test next to it slows down many times over).
+    for i in $(seq 20); do
+        [ "$(grep -ac "sdkcheck spin bg: " "$LOG")" -ge 16 ] && break; sleep 1
+    done
+    sleep 1
+fi
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))

@@ -23,6 +23,10 @@
 // Run as `sdkcheck ticks`, it prints "sdkcheck tick N" every 200 ms for
 // half a minute: something to pause (Ctrl+Alt+Z) and watch stand still.
 //
+// Run as `sdkcheck spin <label> <seconds>`, it spins for that many seconds
+// and says each second how far it got ("sdkcheck spin <label>: N"): what
+// share of a CPU it has.
+//
 // Run as `sdkcheck input`, it starts `sdkcheck reader` with its input
 // (SF_START_GIVE_INPUT) and then reads a line of its own: the first line
 // typed goes to the child, the second - once the child has ended - back
@@ -421,6 +425,38 @@ static SfStatus RunTicks(SfTime* Time)
     return SF_SUCCESS;
 }
 
+static uint64_t ParseNumber(const char* Text)
+{
+    uint64_t Value = 0;
+    for (; *Text >= '0' && *Text <= '9'; Text++)
+        Value = Value * 10 + (uint64_t)(*Text - '0');
+    return Value;
+}
+
+// sdkcheck spin: see the top of the file.
+static SfStatus RunSpin(SfTime* Time, const char* Label, uint64_t Seconds)
+{
+    uint64_t Now = 0;
+    Time->GetUptime(Time, &Now);
+    for (uint64_t Second = 0; Second < Seconds; Second++)
+    {
+        uint64_t End = Now + 1000, Count = 0;
+        while (Now < End)
+        {
+            for (volatile uint32_t i = 0; i < 1000; i++)
+                ;
+            Count++;
+            Time->GetUptime(Time, &Now);
+        }
+        Print("sdkcheck spin ");
+        Print(Label);
+        Print(": ");
+        PrintNumber(Count);
+        Print("\n");
+    }
+    return SF_SUCCESS;
+}
+
 // sdkcheck keys: see the top of the file.
 static SfStatus RunKeys(SfConsole* Console)
 {
@@ -591,6 +627,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return RunKeys(Sys->Console);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "ticks"))
         return RunTicks(Sys->Time);
+    if (App && App->ArgCount >= 4 && SameText(App->Args[1], "spin"))
+        return RunSpin(Sys->Time, App->Args[2], ParseNumber(App->Args[3]));
 
     Print("sdkcheck - the tables SfMain gets\n");
 

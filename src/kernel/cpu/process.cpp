@@ -44,7 +44,7 @@
 #define USER_SS             0x2B
 #define RFLAGS_USER         0x202       // IF + reserved bit 1
 #define INT80_LENGTH        2           // `int $0x80` is CD 80
-#define TIME_SLICE_TICKS    10          // PIT ticks (~10 ms at 1 kHz)
+#define TIME_SLICE_TICKS    10          // PIT ticks (~10 ms at 1 kHz), per unit of weight
 
 // Syscall failure: -errno in rax (Linux convention, see abi/errno.h).
 #define SYSCALL_ERR(e)      ((uint64_t)(sint64_t)-(e))
@@ -2250,6 +2250,15 @@ namespace process
     // Trap hooks
     // -----------------------------------------------------------------------
 
+    // A program's weight: 2 on the shown screen, 1 anywhere else (another
+    // screen, the background). Its thread's time slice is that many slices
+    // long, so of two sharing a CPU, the one on screen gets twice the time.
+    // It is looked at every tick: switching screens changes it at once.
+    static inline uint32_t weight(const Process* p)
+    {
+        return p->screen == term::shown_screen() ? 2 : 1;
+    }
+
     void on_user_interrupt(uint8_t irq, user_regs* regs, iret_frame* iret)
     {
         if (!current)
@@ -2262,7 +2271,7 @@ namespace process
             return;
         }
 
-        if (irq == IRQ0_TIMER && ++slice_ticks >= TIME_SLICE_TICKS)
+        if (irq == IRQ0_TIMER && ++slice_ticks >= TIME_SLICE_TICKS * weight(current))
         {
             reschedule(regs, iret);
             return;
