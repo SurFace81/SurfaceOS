@@ -54,8 +54,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   with the admin right, started again whenever it ends.
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
-  ends every program on the shown screen, Ctrl+Alt+Z pauses them (again:
-  they go on). A program on the shown screen gets twice the CPU time of
+  ends every program on the shown screen, Ctrl+Alt+Z pauses them and
+  hands the keys to the console (again: they go on). A program on the shown screen gets twice the CPU time of
   one elsewhere
 - The console (CMD.BIN, `help`): ls, cat, xxd, write, cp, mv, rm, mkdir,
   rmdir, cd, pwd, mount <dev> (partitions go to /mount/<dev>pN), umount
@@ -64,6 +64,10 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   dmesg); a program runs by its name (looked up in /apps) or by its path,
   on a cleared screen, with a last `&` in the background (a hidden
   screen, its output logged to /files/<name>/console_<date>_<time>.log);
+  ps lists the programs, kill <id> ends one, bg sends the paused one to
+  the background and fg brings it (or any by its id) back to the screen;
+  output longer than the screen stops at a ";" line: PageUp/PageDown move
+  a page, the arrows a line, q leaves;
   `admin <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK

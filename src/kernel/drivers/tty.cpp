@@ -457,21 +457,34 @@ namespace tty
         return screen < TERM_ALL_SCREENS && ring_pop(out, screen);
     }
 
-    static bool key_available(void* screen)
-    {
-        return !ring_empty((uint32_t)(uintptr_t)screen);
-    }
-
     static bool input_readable(void*)
     {
         return readable();
     }
 
-    bool wait_key(uint32_t screen)
+    struct KeyWait
+    {
+        uint32_t screen;
+        bool   (*stop)(uint32_t);
+    };
+
+    static bool key_or_stop(void* arg)
+    {
+        KeyWait* w = (KeyWait*)arg;
+        return !ring_empty(w->screen) || (w->stop && w->stop(w->screen));
+    }
+
+    bool wait_key(uint32_t screen, bool (*stop)(uint32_t))
     {
         if (screen >= TERM_ALL_SCREENS)
             return false;
-        return wait::wait_event(&input_wq, key_available, (void*)(uintptr_t)screen, 0);
+        KeyWait w = { screen, stop };
+        return wait::wait_event(&input_wq, key_or_stop, &w, 0);
+    }
+
+    void wake_key_waiters()
+    {
+        wait::wake_up(&input_wq);
     }
 
     bool wait_readable()

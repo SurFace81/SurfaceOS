@@ -53,7 +53,10 @@ namespace tty
     // VTIME deadline) or until pop_key has an event. False when a signal
     // ended the sleep.
     bool wait_readable();
-    bool wait_key(uint32_t screen = 0);
+    // wait_key also ends once stop(screen), when given, is true; whoever
+    // changes what it answers calls wake_key_waiters.
+    bool wait_key(uint32_t screen = 0, bool (*stop)(uint32_t) = nullptr);
+    void wake_key_waiters();
 
     // Read at most n bytes into dst.
     //   > 0   bytes read

@@ -43,6 +43,16 @@
 //              (a file name, say); an empty Text clears them.
 //   Clear      (revision 1.2) blank the screen in the current colours and
 //              put the cursor at (0, 0).
+//   WaitInput  (revision 1.3) wait until this program owns its screen's
+//              input: the console waits so for the program it started to
+//              end, or to be paused (Ctrl+Alt+Z hands the keys back to the
+//              console), or to move away (fg, bg). SF_ABORTED when the
+//              program is being ended instead.
+//
+// ReadLine and ReadKey also end with SF_ABORTED when another program on the
+// screen takes the input while they wait for a key (Ctrl+Alt+Z letting a
+// paused program go on). A program moved to another screen (fg, bg) just
+// waits for its turn there.
 typedef struct SfConsole SfConsole;
 
 // Colours: 0..7, and their bright forms 8..15.
@@ -92,10 +102,12 @@ struct SfConsole
     SfStatus (*SetTitle)(SfConsole* This, const char* Text);
     // Revision 1.2
     SfStatus (*Clear)(SfConsole* This);
+    // Revision 1.3
+    SfStatus (*WaitInput)(SfConsole* This);
 };
 
 #define SF_CONSOLE_SIGNATURE    SF_SIGNATURE('S', 'F', 'C', 'O', 'N', 'S', 'O', 'L')
-#define SF_CONSOLE_REVISION     SF_REVISION(1, 2)
+#define SF_CONSOLE_REVISION     SF_REVISION(1, 3)
 
 SF_STATIC_ASSERT(sizeof(SfCell) == 2, "SfCell layout");
 SF_STATIC_ASSERT(sizeof(SfKey) == 4, "SfKey layout");
@@ -104,6 +116,7 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, ReadLine) == 24, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, GetSize) == 32, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetTitle) == 88, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, Clear) == 96, "SfConsole layout");
-SF_STATIC_ASSERT(sizeof(SfConsole) == 104, "SfConsole layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, WaitInput) == 104, "SfConsole layout");
+SF_STATIC_ASSERT(sizeof(SfConsole) == 112, "SfConsole layout");
 
 #endif // SFOS_CONSOLE_H

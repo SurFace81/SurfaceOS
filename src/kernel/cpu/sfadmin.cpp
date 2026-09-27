@@ -171,6 +171,23 @@ namespace
         regs->rax = SF_DEVICE_ERROR;
     }
 
+    // (uint64_t Id)
+    void foreground(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        regs->rax = regs->rdi <= 0x7FFFFFFF ? process::move_to_foreground((pid_t)regs->rdi)
+                                            : SF_NOT_FOUND;
+    }
+
+    void background(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        regs->rax = regs->rdi <= 0x7FFFFFFF ? process::move_to_background((pid_t)regs->rdi)
+                                            : SF_NOT_FOUND;
+    }
+
     // ()
     void sync(user_regs* regs, iret_frame*)
     {
@@ -255,5 +272,7 @@ namespace sfadmin
         sfcall::set_handler(SFCALL_ADMIN_SYNC, sync);
         sfcall::set_handler(SFCALL_ADMIN_SET_TIME, set_time);
         sfcall::set_handler(SFCALL_ADMIN_REPORT, report);
+        sfcall::set_handler(SFCALL_ADMIN_FOREGROUND, foreground);
+        sfcall::set_handler(SFCALL_ADMIN_BACKGROUND, background);
     }
 }

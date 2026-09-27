@@ -69,6 +69,7 @@ namespace sfcall
         set_handler(SFCALL_PROCESS_WAIT, process::sf_process_wait);
         set_handler(SFCALL_PROCESS_GET_ID, process::sf_get_id);
         set_handler(SFCALL_PROCESS_GET_ARGS, process::sf_get_args);
+        set_handler(SFCALL_PROCESS_ID_OF, process::sf_process_id_of);
         set_handler(SFCALL_MEMORY_ALLOCATE_PAGES, process::sf_allocate_pages);
         set_handler(SFCALL_MEMORY_FREE_PAGES, process::sf_free_pages);
         sffile::init();

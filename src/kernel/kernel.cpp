@@ -28,7 +28,6 @@
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
-#include "../include/cpu/cpuid.h"
 #include "version.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
@@ -185,7 +184,6 @@ namespace
             if (try_mount_root(d))
             {
                 uart::printf("boot: root mounted on %s (boot volume)\n", d->name);
-                screen::printf("Root: %s\n\r", d->name);
                 return;
             }
         }
@@ -208,7 +206,6 @@ namespace
             {
                 vfs::unref(v);
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
-                screen::printf("Root: %s\n\r", d->name);
                 return;
             }
             unmount_root();
@@ -472,14 +469,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
     sdkpage::init();
     process::init();
 
-    // The banner on screen 1, above its console.
-    char cpu_name[51];
-    cpuid::get_cpu_name(cpu_name);
-    screen::printf("\n\tSurfaceOS v%s (C) 2025\n\r\tMem: %u Mb\n\r\tCpu: %s @ %u MHz"
-                   "\n\r------------------------------------------------\n\n\r",
-                   VERSION_STRING, (uint32_t)(memory::total() / 1048576 + 1), cpu_name,
-                   cpuid::get_base_freq());
-
+    uart::printf("boot: SurfaceOS v%s\n", VERSION_STRING);
     process::start_cmdkeeper();
     uart::printf("boot: console ready\n");
 

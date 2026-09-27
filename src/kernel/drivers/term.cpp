@@ -712,6 +712,28 @@ namespace term
         memory::memset((uint8_t*)t, 0, sizeof(Screen));
     }
 
+    void copy_screen(uint32_t from, uint32_t to)
+    {
+        if (from >= TERM_ALL_SCREENS || to >= TERM_ALL_SCREENS || from == to)
+            return;
+        Screen* f = &screens[from];
+        Screen* t = &screens[to];
+        if (!f->grid || !t->grid)
+            return;
+        memory::memcpy((uint8_t*)t->grid, (const uint8_t*)f->grid,
+                       (uint64_t)stride * grid_rows * sizeof(term_cell));
+        t->cx = f->cx;  t->cy = f->cy;
+        t->fg = f->fg;  t->bg = f->bg;  t->attr = f->attr;
+        t->cursor_on = f->cursor_on;
+        copy_text(t->subtitle, sizeof(t->subtitle), f->subtitle);
+        if (t == shown)
+        {
+            cursor_inverted = false;
+            mark_panel();
+            title_dirty = true;
+        }
+    }
+
     void resize(uint32_t c, uint32_t r)
     {
         if (!S->grid)

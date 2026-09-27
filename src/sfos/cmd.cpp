@@ -3,8 +3,10 @@
 // A program like any other, started by the kernel with the admin right on
 // each screen and started again whenever it ends. It reads a line and
 // either does it itself (the commands below) or runs the program it names
-// - from /apps, or by its path - handing it the keys until it ends; a last
-// `&` runs it in the background instead.
+// - from /apps, or by its path - handing it the keys until it ends, or is
+// paused (Ctrl+Alt+Z) or sent elsewhere; a last `&` runs it in the
+// background instead. What a command prints longer than the screen is
+// shown a page at a time.
 //
 // Paths: the current folder is an absolute path of the whole disk
 // ("/apps"), and every path typed is taken from there; the files are
@@ -23,9 +25,38 @@ static SfFile* CwdFile;
 
 // --- text ------------------------------------------------------------------
 
+// What a command prints is gathered (Gather) and shown once it is done:
+// all at once when it fits on the screen, else a page at a time (Page).
+static const uint64_t OUT_SIZE = 256 * 1024;
+static char     Out[OUT_SIZE];
+static uint64_t OutLength;
+static uint64_t OutColumn;              // tabs become spaces up to a stop of 8
+static bool     Gather;
+
+static void Put(char C)
+{
+    if (OutLength + 1 >= OUT_SIZE)
+        return;                         // too much: the rest is lost
+    Out[OutLength++] = C;
+    OutColumn = C == '\n' ? 0 : OutColumn + 1;
+}
+
 static void Print(const char* Text)
 {
-    Con->Print(Con, Text);
+    if (!Gather)
+    {
+        Con->Print(Con, Text);
+        return;
+    }
+    for (; *Text; Text++)
+    {
+        if (*Text == '\t')
+            do
+                Put(' ');
+            while (OutColumn % 8);
+        else if (*Text != '\r')
+            Put(*Text);
+    }
 }
 
 static void PrintChar(char C)
@@ -56,6 +87,95 @@ static void PrintHex(uint64_t Value, int Digits)
         Buffer[i] = "0123456789ABCDEF"[Value & 0xF];
     Buffer[Digits] = '\0';
     Print(Buffer);
+}
+
+static uint64_t Length(const char* S);
+
+// The gathered output as screen rows: where each starts in Out, and how
+// long it is (a line longer than the screen is wide takes several).
+static const uint64_t MAX_ROWS = 32768;
+static uint32_t RowStart[MAX_ROWS];
+static uint16_t RowLength[MAX_ROWS];
+
+static uint64_t SplitRows(uint32_t Columns)
+{
+    uint64_t Rows = 0;
+    for (uint64_t i = 0; i < OutLength && Rows < MAX_ROWS;)
+    {
+        uint64_t Start = i;
+        while (i < OutLength && Out[i] != '\n' && i - Start < Columns)
+            i++;
+        RowStart[Rows]  = (uint32_t)Start;
+        RowLength[Rows] = (uint16_t)(i - Start);
+        Rows++;
+        if (i < OutLength && Out[i] == '\n')
+            i++;
+    }
+    return Rows;
+}
+
+static void DrawRow(uint32_t Row, uint32_t Columns, const char* Text, uint64_t Length)
+{
+    char Line[512];
+    uint64_t n = 0;
+    for (; n < Length && n < Columns && n + 1 < sizeof(Line); n++)
+        Line[n] = Text[n];
+    for (; n < Columns && n + 1 < sizeof(Line); n++)
+        Line[n] = ' ';
+    Line[n] = '\0';
+    Con->WriteAt(Con, 0, Row, Line);
+}
+
+// Rows of output on a screen of Height rows: Height - 1 of them at a time,
+// ";" in the last row ("(END)" at the end). PageUp/PageDown (and Space) move
+// a page, the arrows (and Enter) a row, Home/End to either end; q, Esc or
+// Ctrl+C leave it as it is, the prompt below.
+static void Page(uint64_t Rows, uint32_t Columns, uint32_t Height)
+{
+    uint64_t View = Height - 1;
+    uint64_t Top  = 0;
+    uint64_t Last = Rows - View;
+    Con->SetCursor(Con, 0, 0, 0);
+    for (;;)
+    {
+        for (uint64_t r = 0; r < View; r++)
+            DrawRow((uint32_t)r, Columns, Out + RowStart[Top + r], RowLength[Top + r]);
+        const char* Mark = Top == Last ? "(END)" : ";";
+        DrawRow((uint32_t)View, Columns, Mark, Length(Mark));
+
+        SfKey Key;
+        if (SF_ERROR(Con->ReadKey(Con, &Key)) || Key.Code == SF_KEY_ESCAPE ||
+            Key.Char == 'q' || Key.Char == 'Q')
+            break;
+        switch (Key.Code)
+        {
+            case SF_KEY_PAGE_DOWN:
+            case SF_KEY_SPACE:  Top = Top + View < Last ? Top + View : Last; break;
+            case SF_KEY_PAGE_UP: Top = Top > View ? Top - View : 0;          break;
+            case SF_KEY_DOWN:
+            case SF_KEY_ENTER:  Top = Top < Last ? Top + 1 : Last;           break;
+            case SF_KEY_UP:     Top = Top ? Top - 1 : 0;                     break;
+            case SF_KEY_HOME:   Top = 0;                                     break;
+            case SF_KEY_END:    Top = Last;                                  break;
+        }
+    }
+    DrawRow((uint32_t)View, Columns, "", 0);
+    Con->SetCursor(Con, 0, (uint32_t)View, 1);
+}
+
+// Show what the command printed, and print straight away from now on.
+static void ShowOutput()
+{
+    Gather = false;
+    Out[OutLength] = '\0';
+    uint32_t Columns = 80, Height = 25;
+    Con->GetSize(Con, &Columns, &Height);
+    uint64_t Rows = OutLength && Height > 1 ? SplitRows(Columns) : 0;
+    if (Rows < Height)
+        Con->Print(Con, Out);
+    else
+        Page(Rows, Columns, Height);
+    OutLength = OutColumn = 0;
 }
 
 static uint64_t Length(const char* S)
@@ -515,7 +635,9 @@ static void Report(const char* Topic, const char* Arg = nullptr)
     if (SF_ERROR(Status) && Status != SF_BUFFER_TOO_SMALL)
         return Fail("report", Topic, Status);
     Print(Buffer);
-    Print("\n");
+    uint64_t n = Length(Buffer);
+    if (n && Buffer[n - 1] != '\n')
+        Print("\n");
 }
 
 static void Cpuid(const char**, uint64_t)    { Report("cpuid"); }
@@ -655,6 +777,7 @@ static void Settime(const char** Args, uint64_t Count)
 static void Reboot(const char**, uint64_t)
 {
     Print("Writing the disks back and restarting...\n");
+    ShowOutput();
     Admin->Restart(Admin);
     Print("Restart failed\n");
 }
@@ -662,11 +785,146 @@ static void Reboot(const char**, uint64_t)
 static void Shutdown(const char**, uint64_t)
 {
     Print("Writing the disks back and powering off...\n");
+    ShowOutput();
     Admin->ShutDown(Admin);
     Print("Power-off failed. It is now safe to turn off the computer.\n");
 }
 
 // --- running programs ------------------------------------------------------
+
+// A program this console follows: the one on its screen (Here) - started
+// here, or brought here with fg - and those it started that went elsewhere
+// (Away: `&`, bg, fg on another screen), to say how they end. Handle is 0
+// for one it did not start.
+struct Job
+{
+    uint64_t Id;                // 0: none
+    uint64_t Handle;
+    char     Name[32];
+    bool     Paused;
+};
+static Job      Here;
+static Job      Away[16];
+static uint32_t MyScreen;       // 1..9
+
+static const uint64_t MAX_PROGRAMS = 64;
+static SfProcessInfo Programs[MAX_PROGRAMS];
+
+// The running programs into Programs; how many.
+static uint64_t ListPrograms()
+{
+    uint64_t Count = MAX_PROGRAMS;
+    Admin->ListProcesses(Admin, Programs, &Count);
+    return Count < MAX_PROGRAMS ? Count : MAX_PROGRAMS;
+}
+
+static const SfProcessInfo* FindProgram(uint64_t Id)
+{
+    uint64_t Count = ListPrograms();
+    for (uint64_t i = 0; i < Count; i++)
+        if (Programs[i].Id == Id)
+            return &Programs[i];
+    return nullptr;
+}
+
+static void PrintJob(const Job* J)
+{
+    Print("[");
+    PrintNumber(J->Id);
+    Print("] ");
+    Print(J->Name);
+}
+
+// J has ended: how, when it did not go well (or always, for one Away).
+static void Ended(Job* J, bool Always)
+{
+    SfStatus Result = SF_SUCCESS;
+    if (J->Handle)
+        Sys->Process->Wait(Sys->Process, J->Handle, &Result);
+    if (Result == SF_SUCCESS && !Always)
+        return;
+    if (!Always && !J->Paused)
+        Print("\n");                   // its output may not have ended the line
+    PrintJob(J);
+    if (Result == SF_SUCCESS)
+        Print(": done\n");
+    else if (Result == SF_ABORTED)
+        Print(": ended before it finished\n");
+    else
+    {
+        Print(": ended with status 0x");
+        PrintHex(Result, 16);
+        Print("\n");
+    }
+    J->Id = 0;
+}
+
+static void SendAway(Job* J)
+{
+    for (auto& A : Away)
+        if (!A.Id)
+        {
+            A = *J;
+            break;                      // no room: how it ends goes unsaid
+        }
+    J->Id = 0;
+}
+
+static Job* FindAway(uint64_t Id)
+{
+    for (auto& A : Away)
+        if (A.Id && A.Id == Id)
+            return &A;
+    return nullptr;
+}
+
+// Say how the programs that went elsewhere ended, those that did.
+static void CheckAway()
+{
+    for (auto& A : Away)
+        if (A.Id && !FindProgram(A.Id))
+            Ended(&A, true);
+}
+
+// Wait while the program on this screen has the keys: until it ends, is
+// paused (Ctrl+Alt+Z) or goes elsewhere. With the keys here already, just
+// see what became of it.
+static void WaitHere()
+{
+    if (!Here.Id)
+        return;
+    Con->WaitInput(Con);
+    const SfProcessInfo* P = FindProgram(Here.Id);
+    if (!P)
+    {
+        Ended(&Here, false);
+        Here.Id = 0;
+        Here.Paused = false;
+        return;
+    }
+    if (P->Screen == MyScreen)
+    {
+        if (P->Paused && !Here.Paused)
+        {
+            Print("\n");
+            PrintJob(&Here);
+            Print(": paused. fg or Ctrl+Alt+Z goes on, bg sends it to the background,\n"
+                  "Ctrl+Alt+C ends it\n");
+        }
+        Here.Paused = P->Paused;
+        return;
+    }
+    PrintJob(&Here);
+    if (P->Screen)
+    {
+        Print(": moved to F");
+        PrintNumber(P->Screen);
+        Print("\n");
+    }
+    else
+        Print(": runs in the background\n");
+    SendAway(&Here);
+}
 
 // What argument Arg names, for the program's argN: root: an existing file
 // or folder, or - when it looks like a file name (a '.' or a '/') and its
@@ -707,13 +965,21 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin)
     for (uint64_t i = 0; i < ArgCount; i++)
         Files[i] = OpenArg(Words[i + 1]);
 
+    if (!Background && Here.Id)
+    {
+        for (uint64_t i = 0; i < ArgCount; i++)
+            if (Files[i])
+                Files[i]->Close(Files[i]);
+        return Print("A paused program is on this screen: fg, bg or kill it first\n");
+    }
+
     uint64_t Flags = (Background ? SF_START_BACKGROUND : SF_START_GIVE_INPUT) |
                      (AsAdmin ? SF_START_ADMIN : 0);
     if (!Background)
         Con->Clear(Con);                // the screen is the program's now
     uint64_t Handle = 0;
     SfStatus Status = Sys->Process->Start(Sys->Process, Program, ArgCount, Words + 1, Files,
-                                          Flags, Background ? nullptr : &Handle);
+                                          Flags, &Handle);
     for (uint64_t i = 0; i < ArgCount; i++)
         if (Files[i])
             Files[i]->Close(Files[i]);
@@ -725,28 +991,149 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin)
               ? ": no such command or program\n" : ": cannot start it\n");
         return;
     }
+
+    // Its name as the console calls it: the last part of the path.
+    Job J = {};
+    J.Handle = Handle;
+    Sys->Process->IdOf(Sys->Process, Handle, &J.Id);
+    const char* Name = Words[0];
+    for (const char* c = Words[0]; *c; c++)
+        if (*c == '/' || *c == ':')
+            Name = c + 1;
+    Copy(J.Name, Name, sizeof(J.Name));
     if (Background)
     {
-        Print(Words[0]);
+        PrintJob(&J);
         Print(" runs in the background, its output logged in its data folder\n");
-        return;
+        SendAway(&J);
     }
+    else
+        Here = J;                       // the main loop waits for it
+}
 
-    SfStatus Result = SF_SUCCESS;
-    Sys->Process->Wait(Sys->Process, Handle, &Result);
-    if (Result == SF_ABORTED)
+// The program the id in Args[1] names, or the one paused on this screen.
+static uint64_t JobArg(const char* Command, const char** Args, uint64_t Count)
+{
+    if (Count > 1)
     {
-        Print("\n");
-        Print(Words[0]);
-        Print(": ended before it finished\n");
+        bool Ok;
+        uint64_t Id = ParseNumber(Args[1], &Ok);
+        if (Ok && Id)
+            return Id;
+        Print(Command);
+        Print(": not a program number (ps lists them)\n");
+        return 0;
     }
-    else if (Result != SF_SUCCESS)
+    if (!Here.Id)
     {
+        Print(Command);
+        Print(": no paused program here; ");
+        Print(Command);
+        Print(" <id> takes one by number (ps lists them)\n");
+    }
+    return Here.Id;
+}
+
+// Where the program went, for a Job: this console's, or a fresh one.
+static Job TakeJob(uint64_t Id)
+{
+    Job J = {};
+    if (Here.Id == Id)
+    {
+        J = Here;
+        Here.Id = 0;
+    }
+    else if (Job* A = FindAway(Id))
+    {
+        J = *A;
+        A->Id = 0;
+    }
+    else
+    {
+        J.Id = Id;
+        const SfProcessInfo* P = FindProgram(Id);
+        Copy(J.Name, P ? P->Name : "?", sizeof(J.Name));
+    }
+    J.Paused = false;
+    return J;
+}
+
+static void JobFail(const char* Command, uint64_t Id, SfStatus Status)
+{
+    Print(Command);
+    Print(": ");
+    PrintNumber(Id);
+    Print(Status == SF_NOT_FOUND     ? ": no such program\n"
+        : Status == SF_IN_USE        ? ": this screen has a program already\n"
+        : Status == SF_ACCESS_DENIED ? ": a console stays where it is\n"
+        : Status == SF_OUT_OF_RESOURCES ? ": no hidden screen left\n"
+        : ": cannot do it\n");
+}
+
+static void Fg(const char** Args, uint64_t Count)
+{
+    uint64_t Id = JobArg("fg", Args, Count);
+    if (!Id)
+        return;
+    SfStatus Status = Admin->Foreground(Admin, Id);
+    if (SF_ERROR(Status))
+        return JobFail("fg", Id, Status);
+    Here = TakeJob(Id);                 // the main loop waits for it
+}
+
+static void Bg(const char** Args, uint64_t Count)
+{
+    uint64_t Id = JobArg("bg", Args, Count);
+    if (!Id)
+        return;
+    SfStatus Status = Admin->Background(Admin, Id);
+    if (SF_ERROR(Status))
+        return JobFail("bg", Id, Status);
+    Job J = TakeJob(Id);
+    PrintJob(&J);
+    Print(" runs in the background, its output logged in its data folder\n");
+    if (J.Handle)
+        SendAway(&J);
+}
+
+static void Ps(const char**, uint64_t)
+{
+    uint64_t Count = ListPrograms();
+    Print("   ID  WHERE  STATE   NAME\n");
+    for (uint64_t i = 0; i < Count; i++)
+    {
+        const SfProcessInfo* P = &Programs[i];
+        PrintNumber(P->Id, 5);
+        Print("  ");
+        if (P->Screen)
+        {
+            Print("F");
+            PrintNumber(P->Screen);
+            Print("    ");
+        }
+        else
+            Print("bg    ");
+        Print(P->Paused ? " paused  " : " runs    ");
+        Print(P->Name);
         Print("\n");
-        Print(Words[0]);
-        Print(": ended with status 0x");
-        PrintHex(Result, 16);
-        Print("\n");
+    }
+}
+
+static void Kill(const char** Args, uint64_t Count)
+{
+    if (Count < 2)
+        return Print("Usage: kill <id...>  (ps lists them)\n");
+    for (uint64_t i = 1; i < Count; i++)
+    {
+        bool Ok;
+        uint64_t Id = ParseNumber(Args[i], &Ok);
+        SfStatus Status = Ok ? Admin->EndProcess(Admin, Id) : SF_NOT_FOUND;
+        if (SF_ERROR(Status))
+        {
+            Print("kill: ");
+            Print(Args[i]);
+            Print(": no such program\n");
+        }
     }
 }
 
@@ -791,6 +1178,10 @@ static const struct
     { "usbinfo",  Usbinfo,  "<index>  one USB device" },
     { "acpi",     Acpi,     "ACPI tables" },
     { "dmesg",    Dmesg,    "the kernel's log" },
+    { "ps",       Ps,       "the running programs" },
+    { "kill",     Kill,     "<id...>  end programs at once" },
+    { "fg",       Fg,       "[id]  go on with a paused program here, or bring one here" },
+    { "bg",       Bg,       "[id]  send a program (the paused one here) to the background" },
     { "admin",    AdminRun, "<program> [args]  run it with the admin right" },
     { "reboot",   Reboot,   "restart the machine" },
     { "shutdown", Shutdown, "power it off" },
@@ -809,7 +1200,8 @@ static void Help(const char**, uint64_t)
     }
     Print("  <program> [args] [&]   run a program from /apps, or by its path;\n"
           "                         & runs it in the background\n"
-          "  Ctrl+Alt+C ends the programs on this screen, Ctrl+Alt+Z pauses them\n");
+          "  Ctrl+Alt+C ends the programs on this screen, Ctrl+Alt+Z pauses them\n"
+          "  Longer output: PageUp/PageDown or the arrows move it, q leaves\n");
 }
 
 // Split Line in place into words; how many there are (at most Max).
@@ -840,21 +1232,36 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
         return SF_ACCESS_DENIED;
     }
     Open("/", SF_FILE_READ, &CwdFile);
+    uint64_t MyId = 0;
+    Sys->Process->GetId(Sys->Process, &MyId);
+    if (const SfProcessInfo* Me = FindProgram(MyId))
+        MyScreen = Me->Screen;
     Print("Type help for the commands\n");
 
     for (;;)
     {
+        WaitHere();
+        CheckAway();
         Print(Cwd);
         Print("> ");
         char Line[256];
         if (SF_ERROR(Con->ReadLine(Con, Line, sizeof(Line), nullptr)))
-            continue;                   // Ctrl+C or Ctrl+D: a fresh line
+        {
+            // Ctrl+C or Ctrl+D: a fresh line. Or the paused program went on
+            // (Ctrl+Alt+Z), taking the keys: wait for it again.
+            const SfProcessInfo* P = Here.Id ? FindProgram(Here.Id) : nullptr;
+            if (P && !P->Paused)
+                Here.Paused = false;
+            continue;
+        }
 
+        WaitHere();                     // a paused one may have been ended
         const char* Words[32];
         uint64_t Count = Split(Line, Words, 32);
         if (Count == 0)
             continue;
         bool Done = false;
+        Gather = true;
         for (const auto& c : Commands)
             if (Same(Words[0], c.Name))
             {
@@ -864,5 +1271,6 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
             }
         if (!Done)
             Run(Words, Count, false);
+        ShowOutput();
     }
 }

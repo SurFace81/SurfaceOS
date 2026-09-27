@@ -70,6 +70,9 @@ namespace term
     // none is free. close_hidden gives it back.
     sint32_t open_hidden();
     void     close_hidden(uint32_t n);
+    // Screen `to` takes on what `from` shows - its cells, cursor, colours
+    // and subtitle - when its programs move there (fg, bg: process.cpp).
+    void copy_screen(uint32_t from, uint32_t to);
 
     // The selected screen's part of the title bar, which the system draws:
     // "F<n> | program | subtitle ... hh:mm". A new program clears the

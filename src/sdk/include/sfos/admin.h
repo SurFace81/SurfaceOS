@@ -36,6 +36,15 @@
 //                  "lspci", "lsusb", "usbports", "usbinfo <index>", "lsblk",
 //                  "mount" (what is mounted where), "acpi", "meminfo",
 //                  "dmesg" (the kernel's log). SF_NOT_FOUND for others.
+//   Foreground     (revision 1.2) program Id - and everything else on its
+//                  screen but the console there - moves to the caller's
+//                  screen, with what that screen shows, and gets its keys
+//                  (back to the caller when it ends); paused, it goes on.
+//                  SF_IN_USE when other programs are on the caller's screen,
+//                  SF_ACCESS_DENIED for a console or from the background.
+//   Background     the same, onto a hidden screen of its own, what it prints
+//                  logged as with SF_START_BACKGROUND (sfos/process.h); the
+//                  screen it leaves goes back to its console.
 typedef struct SfAdmin SfAdmin;
 
 typedef struct SfProcessInfo
@@ -59,13 +68,16 @@ struct SfAdmin
     SfStatus (*Sync)(SfAdmin* This);
     SfStatus (*SetTime)(SfAdmin* This, const SfDateTime* Time);
     SfStatus (*Report)(SfAdmin* This, const char* Topic, char* Buffer, uint64_t* Size);
+    // Revision 1.2
+    SfStatus (*Foreground)(SfAdmin* This, uint64_t Id);
+    SfStatus (*Background)(SfAdmin* This, uint64_t Id);
 };
 
 #define SF_ADMIN_SIGNATURE      SF_SIGNATURE('S', 'F', 'A', 'D', 'M', 'I', 'N', 0)
-#define SF_ADMIN_REVISION       SF_REVISION(1, 1)
+#define SF_ADMIN_REVISION       SF_REVISION(1, 2)
 
 SF_STATIC_ASSERT(sizeof(SfProcessInfo) == 48, "SfProcessInfo layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, ListProcesses) == 16, "SfAdmin layout");
-SF_STATIC_ASSERT(sizeof(SfAdmin) == 88, "SfAdmin layout");
+SF_STATIC_ASSERT(sizeof(SfAdmin) == 104, "SfAdmin layout");
 
 #endif // SFOS_ADMIN_H

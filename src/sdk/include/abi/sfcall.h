@@ -82,6 +82,10 @@
 #define SFCALL_ADMIN_SYNC            47  // ()
 #define SFCALL_ADMIN_SET_TIME        48  // (const SfDateTime* Time)
 #define SFCALL_ADMIN_REPORT          49  // (const char* Topic, char* Buffer, uint64_t* Size)
-#define SFCALL_COUNT                 50
+#define SFCALL_CONSOLE_WAIT_INPUT    50  // ()
+#define SFCALL_ADMIN_FOREGROUND      51  // (uint64_t Id)
+#define SFCALL_ADMIN_BACKGROUND      52  // (uint64_t Id)
+#define SFCALL_PROCESS_ID_OF         53  // (uint64_t Handle, uint64_t* Id)
+#define SFCALL_COUNT                 54
 
 #endif // ABI_SFCALL_H

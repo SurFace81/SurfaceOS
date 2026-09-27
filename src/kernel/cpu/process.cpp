@@ -674,11 +674,16 @@ namespace process
     static pid_t screen_console[TERM_ALL_SCREENS];
     static wait_queue keeper_wq;        // cmdkeeper: woken when one is gone
 
+    // Ctrl+Alt+Z hands a screen's input to its console while its programs
+    // are paused; who had it gets it back when they go on (-1: nobody).
+    static pid_t paused_owner[TERM_ALL_SCREENS];
+
     // The title bar names the input owner of a shown screen.
     static void set_input_owner(uint32_t screen, pid_t pid)
     {
         input_owner[screen] = pid;
         wait::wake_up(&input_owner_wq);
+        tty::wake_key_waiters();
         if (screen >= TERM_SCREENS || pid < 0)
             return;
         Process* p = find_live(pid);
@@ -708,6 +713,11 @@ namespace process
     static bool owns_input(void*)
     {
         return current && input_owner[current->screen] == current->pid;
+    }
+
+    bool input_changed(uint32_t screen)
+    {
+        return !owns_input(nullptr) || current->screen != screen;
     }
 
     void end_screen_programs(uint32_t screen)
@@ -809,6 +819,22 @@ namespace process
             l->off += done;
     }
 
+    // Hidden screen s, with its log, goes: nothing runs there any more.
+    static void close_hidden_screen(uint32_t s)
+    {
+        ScreenLog* l = &screen_log[s];
+        if (l->v)
+        {
+            if (l->v->ops->fsync)
+                l->v->ops->fsync(l->v);
+            vfs::unref(l->v);
+        }
+        l->v   = nullptr;
+        l->off = 0;
+        input_owner[s] = paused_owner[s] = -1;
+        term::close_hidden(s);
+    }
+
     // p ends: the hidden screen it ran on goes once nothing else runs there.
     static void release_screen(Process* p)
     {
@@ -821,16 +847,7 @@ namespace process
             if (q != p && alive(q) && !q->kernel && q->screen == s)
                 return;
         }
-        ScreenLog* l = &screen_log[s];
-        if (l->v)
-        {
-            if (l->v->ops->fsync)
-                l->v->ops->fsync(l->v);
-            vfs::unref(l->v);
-        }
-        l->v   = nullptr;
-        l->off = 0;
-        term::close_hidden(s);
+        close_hidden_screen(s);
     }
 
     static char* put_num(char* p, uint32_t v, uint32_t digits)
@@ -1363,6 +1380,24 @@ namespace process
     // Terminate `p`: release its memory, orphan its children (ppid 0) and
     // leave a zombie for its parent - the console's program leaves one for
     // the console, an orphan nothing.
+    // p ends while its screen's console has the keys - paused, it was ended
+    // with Ctrl+Alt+C: the last one gone, the title is the console's again.
+    static void retitle_after(Process* p)
+    {
+        uint32_t s = p->screen;
+        pid_t console = s < TERM_SCREENS ? screen_console[s] : -1;
+        if (console < 0 || p->pid == console || input_owner[s] != console)
+            return;
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* q = &table[i];
+            if (q != p && alive(q) && !q->kernel && q->screen == s && q->pid != console)
+                return;
+        }
+        paused_owner[s] = -1;
+        set_input_owner(s, console);
+    }
+
     static void terminate(Process* p, int status)
     {
         uart::printf("process: pid %u %s ended, status %u\n", (uint32_t)p->pid, p->name,
@@ -1408,6 +1443,7 @@ namespace process
         }
         return_input(p);
         release_screen(p);
+        retitle_after(p);
 
         // Handles to the process see the exit now, whether or not a parent
         // reaps a zombie later.
@@ -1550,7 +1586,36 @@ namespace process
             if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
                 post_signal(p, paused ? SIGCONT : SIGSTOP);
         }
+
+        // Paused, the screen's keys go to its console (fg, bg...) - the
+        // title keeps the program's name; going on, back to who had them.
+        pid_t console = screen_console[screen];
+        Process* owner = find_live(input_owner[screen]);
+        if (!paused && console >= 0 && owner && owner->screen == screen &&
+            owner->pid != console)
+        {
+            paused_owner[screen] = owner->pid;
+            input_owner[screen]  = console;
+            wait::wake_up(&input_owner_wq);
+            tty::wake_key_waiters();
+        }
+        else if (paused)
+        {
+            Process* had = find_live(paused_owner[screen]);
+            paused_owner[screen] = -1;
+            if (had && had->screen == screen)
+            {
+                // Off the console's prompt: the program goes on below it.
+                uint32_t prev = term::selected();
+                term::select(screen);
+                if (term::cursor_x())
+                    term::putc('\n');
+                term::select(prev);
+                set_input_owner(screen, had->pid);
+            }
+        }
         term::set_paused(screen, !paused);
+        uart::printf("console: screen %u %s\n", screen, paused ? "goes on" : "paused");
     }
 
     // -----------------------------------------------------------------------
@@ -1977,7 +2042,7 @@ namespace process
         vfs::set_busy_hook(mount_in_use);
 
         for (uint32_t s = 0; s < TERM_ALL_SCREENS; s++)
-            input_owner[s] = screen_console[s] = -1;
+            input_owner[s] = screen_console[s] = paused_owner[s] = -1;
 
         task::init(&this_cpu()->idle_task, "idle");
 
@@ -2216,6 +2281,118 @@ namespace process
         term::select(s);
         term::set_program(p->name);
         term::select(prev);
+    }
+
+
+    // fg and bg (sfos/admin.h): a program moves to another screen together
+    // with everything else on its screen but the console - it and what it
+    // started share one screen - and what the screen shows goes along.
+
+    // Is p one of the programs of screen s that move?
+    static inline bool moves(const Process* p, uint32_t s)
+    {
+        return alive(p) && !p->kernel && p->screen == s && p->pid != screen_console[s];
+    }
+
+    // Move the programs of screen `from` to `to`. Returns which of them had
+    // the keys there (-1: none); `from` is left to its console, or closed
+    // when it was a hidden one.
+    static pid_t move_programs(uint32_t from, uint32_t to)
+    {
+        Process* o = find_live(input_owner[from]);
+        if (!o || !moves(o, from))
+            o = find_live(paused_owner[from]);
+        pid_t owner = o && moves(o, from) ? o->pid : -1;
+
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+            if (moves(&table[i], from))
+                table[i].screen = to;
+        term::copy_screen(from, to);
+
+        if (from >= TERM_SCREENS)
+            close_hidden_screen(from);
+        else
+        {
+            paused_owner[from] = -1;
+            if (owner >= 0 || !find_live(input_owner[from]))
+                set_input_owner(from, screen_console[from] >= 0 ? screen_console[from] : -1);
+            term::set_paused(from, false);
+        }
+        tty::wake_key_waiters();        // a ReadLine goes on waiting there
+        return owner;
+    }
+
+    // Let the programs of screen s go on, if paused.
+    static void go_on(uint32_t s)
+    {
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+            if (moves(&table[i], s))
+                post_signal(&table[i], SIGCONT);
+        term::set_paused(s, false);
+    }
+
+    SfStatus move_to_foreground(pid_t pid)
+    {
+        Process* p = find_live(pid);
+        uint32_t to = current->screen;
+        if (!p || p->kernel)
+            return SF_NOT_FOUND;
+        if (p->pid == screen_console[p->screen] || to >= TERM_SCREENS)
+            return SF_ACCESS_DENIED;
+
+        pid_t owner = -1;
+        uint32_t from = p->screen;
+        if (from != to)
+        {
+            // Only onto a screen with nothing else on it.
+            for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+                if (moves(&table[i], to) && &table[i] != current)
+                    return SF_IN_USE;
+            owner = move_programs(from, to);
+        }
+        else
+        {
+            Process* o = find_live(paused_owner[to]);
+            paused_owner[to] = -1;
+            if (o && moves(o, to))
+                owner = o->pid;
+        }
+        if (owner < 0)
+            owner = pid;
+
+        go_on(to);
+        find_live(owner)->input_giver = current->pid;
+        set_input_owner(to, owner);
+        uart::printf("console: fg pid %u %s from screen %u to %u\n", (uint32_t)pid, p->name,
+                     from, to);
+        return SF_SUCCESS;
+    }
+
+    SfStatus move_to_background(pid_t pid)
+    {
+        Process* p = find_live(pid);
+        if (!p || p->kernel)
+            return SF_NOT_FOUND;
+        if (p->pid == screen_console[p->screen])
+            return SF_ACCESS_DENIED;
+
+        uint32_t from = p->screen;
+        if (from >= TERM_SCREENS)
+        {
+            go_on(from);                // there already
+            return SF_SUCCESS;
+        }
+        sint32_t hidden = term::open_hidden();
+        if (hidden < 0)
+            return SF_OUT_OF_RESOURCES;
+        pid_t owner = move_programs(from, (uint32_t)hidden);
+        char log_name[128];
+        to_background(p, (uint32_t)hidden, log_name);
+        input_owner[hidden] = owner;    // it reads there once it is back
+        go_on((uint32_t)hidden);
+        uart::printf("console: bg pid %u %s from screen %u to %u, log %s\n", (uint32_t)pid,
+                     p->name, from, (uint32_t)hidden, log_name);
+        return SF_SUCCESS;
     }
 
 
@@ -3510,6 +3687,22 @@ namespace process
         }
         handles::close(&current->handles, h);
         regs->rax = SF_SUCCESS;
+    }
+
+    // SFCALL_PROCESS_ID_OF (Handle, *Id): the process behind a handle.
+    void sf_process_id_of(user_regs* regs, iret_frame*)
+    {
+        sint64_t rc = 0;
+        sint32_t h  = regs->rdi < HANDLE_TABLE_SIZE ? (sint32_t)regs->rdi : -1;
+        kobject* o  = handles::get(&current->handles, h, obj_type::Process, &rc);
+        if (!o)
+        {
+            regs->rax = SF_BAD_HANDLE;
+            return;
+        }
+        uint64_t id = (uint64_t)((proc_obj*)o)->pid;
+        regs->rax = uaccess::copy_to_user(regs->rsi, &id, sizeof(id))
+                  ? SF_SUCCESS : SF_INVALID_PARAMETER;
     }
 
     // SFCALL_PROCESS_GET_ID (*Id).

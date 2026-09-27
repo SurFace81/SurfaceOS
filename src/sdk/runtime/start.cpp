@@ -82,6 +82,11 @@ static SfStatus ConsoleClear(SfConsole*)
     return SfCall(SFCALL_CONSOLE_CLEAR);
 }
 
+static SfStatus ConsoleWaitInput(SfConsole*)
+{
+    return SfCall(SFCALL_CONSOLE_WAIT_INPUT);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -136,6 +141,11 @@ static SfStatus ProcessWait(SfProcess*, uint64_t Handle, SfStatus* Status)
     return SfCall(SFCALL_PROCESS_WAIT, Handle, (uint64_t)Status);
 }
 
+static SfStatus ProcessIdOf(SfProcess*, uint64_t Handle, uint64_t* Id)
+{
+    return SfCall(SFCALL_PROCESS_ID_OF, Handle, (uint64_t)Id);
+}
+
 // --- Threads -----------------------------------------------------------------
 
 static SfStatus ThreadCreate(SfThread*, SfThreadEntry Entry, void* Arg, uint64_t* Id)
@@ -177,6 +187,7 @@ static const SfConsole SdkConsole =
     ConsoleSetMode,
     ConsoleSetTitle,
     ConsoleClear,
+    ConsoleWaitInput,
 };
 
 const SfFiles SdkFiles =
@@ -213,6 +224,7 @@ static const SfProcess SdkProcess =
     ProcessGetArgs,
     ProcessStart,
     ProcessWait,
+    ProcessIdOf,
 };
 
 static const SfThread SdkThread =
@@ -277,6 +289,16 @@ static SfStatus AdminReport(SfAdmin*, const char* Topic, char* Buffer, uint64_t*
     return SfCall(SFCALL_ADMIN_REPORT, (uint64_t)Topic, (uint64_t)Buffer, (uint64_t)Size);
 }
 
+static SfStatus AdminForeground(SfAdmin*, uint64_t Id)
+{
+    return SfCall(SFCALL_ADMIN_FOREGROUND, Id);
+}
+
+static SfStatus AdminBackground(SfAdmin*, uint64_t Id)
+{
+    return SfCall(SFCALL_ADMIN_BACKGROUND, Id);
+}
+
 static const SfAdmin SdkAdmin =
 {
     { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
@@ -289,6 +311,8 @@ static const SfAdmin SdkAdmin =
     AdminSync,
     AdminSetTime,
     AdminReport,
+    AdminForeground,
+    AdminBackground,
 };
 
 // Filled in by SdkStart from the start info.

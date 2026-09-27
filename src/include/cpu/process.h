@@ -6,6 +6,7 @@
 #include "paging.h"
 #include "../drivers/keyboard.h"
 #include "../../sdk/include/abi/process.h"
+#include "../../sdk/include/sfos/status.h"
 
 // Defined in obj/object.h and fs/vfs.h.
 struct handle_table;
@@ -147,6 +148,7 @@ namespace process
     // SFCALL_PROCESS_START / WAIT / GET_ID / GET_ARGS: SfStatus results.
     void sf_process_start(user_regs* regs, iret_frame* iret);
     void sf_process_wait(user_regs* regs, iret_frame* iret);
+    void sf_process_id_of(user_regs* regs, iret_frame* iret);
     void sf_get_id     (user_regs* regs, iret_frame* iret);
     void sf_get_args   (user_regs* regs, iret_frame* iret);
     // SFCALL_MEMORY_ALLOCATE_PAGES / FREE_PAGES: SfStatus results.
@@ -221,12 +223,19 @@ namespace process
     bool     current_admin();
     uint64_t list_programs(SfProcessInfo* out, uint64_t max);
     bool     end_program(pid_t pid);
+    // fg and bg: program `pid` - with everything else on its screen but
+    // the console - moves to the caller's screen and gets its keys, or to a
+    // hidden one of its own with a log; paused, it goes on.
+    SfStatus move_to_foreground(pid_t pid);
+    SfStatus move_to_background(pid_t pid);
 
     // The calling process's screen, and its console mode (sfconsole.cpp).
     uint32_t current_screen();
     bool     console_raw();
     void     set_console_raw(bool raw);
     bool  wait_for_input();
+    // Has the caller lost screen `screen`'s input, or left the screen?
+    bool  input_changed(uint32_t screen);
     pid_t cur_pgrp();
 
     // Post a signal to every process of a group, as the tty does for ^C.

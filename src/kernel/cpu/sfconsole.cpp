@@ -65,20 +65,30 @@ namespace
         kfree(buf);
     }
 
-    // The next key press for the caller: false when a signal (the program
-    // being ended) cut the wait short.
+    // The next key press for the caller, once it is its turn. False when a
+    // signal (the program being ended) cut the wait short, or when another
+    // program on its screen took the input meanwhile (Ctrl+Alt+Z letting a
+    // paused one go on). Moved to another screen (fg, bg), it waits for its
+    // turn there.
     bool next_key(keyboard_event_t* e)
     {
-        if (!process::wait_for_input())
-            return false;
         for (;;)
         {
+            if (!process::wait_for_input())
+                return false;
             uint32_t screen = process::current_screen();
-            while (!tty::pop_key(e, screen))
-                if (!tty::wait_key(screen))
+            while (process::current_screen() == screen)
+            {
+                if (process::input_changed(screen))
                     return false;
-            if (e->type == KEY_PRESS)
-                return true;
+                if (tty::pop_key(e, screen))
+                {
+                    if (e->type == KEY_PRESS)
+                        return true;
+                }
+                else if (!tty::wait_key(screen, process::input_changed))
+                    return false;
+            }
         }
     }
 
@@ -413,6 +423,12 @@ namespace
         regs->rax = SF_SUCCESS;
     }
 
+    // () Until the caller has its screen's keys.
+    void wait_input(user_regs* regs, iret_frame*)
+    {
+        regs->rax = process::wait_for_input() ? SF_SUCCESS : SF_ABORTED;
+    }
+
     // (const char* Text)
     void set_title(user_regs* regs, iret_frame*)
     {
@@ -445,5 +461,6 @@ namespace sfconsole
         sfcall::set_handler(SFCALL_CONSOLE_SET_MODE, set_mode);
         sfcall::set_handler(SFCALL_CONSOLE_SET_TITLE, set_title);
         sfcall::set_handler(SFCALL_CONSOLE_CLEAR, clear);
+        sfcall::set_handler(SFCALL_CONSOLE_WAIT_INPUT, wait_input);
     }
 }

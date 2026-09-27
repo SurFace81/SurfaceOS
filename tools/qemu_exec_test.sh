@@ -283,6 +283,26 @@ wait_for "started sdkcheck (pid" 10
 grep -aq "in the background)" "$LOG"; result $? "CMD runs a program in the background"
 sleep 2; key alt-f1
 
+# 1h. Jobs: Ctrl+Alt+Z hands the keys back to the console, whose bg sends
+#     the paused program to the background and fg brings it back; kill
+#     ends a program by its number.
+T0=$(ticks)
+type_cmd "sdkcheck ticks"
+sleep 3
+key ctrl-alt-z; wait_for "console: screen 0 paused" 5
+type_cmd "bg"
+wait_for "console: bg pid" 10; result $? "bg sends the paused program to the background"
+JOB=$(grep -a "console: bg pid" "$LOG" | tail -1 | grep -aoE 'pid [0-9]+' | grep -aoE '[0-9]+')
+T1=$(ticks); sleep 2
+[ "$(ticks)" -gt "$T1" ]; result $? "  where it goes on"
+type_cmd "fg $JOB"
+wait_for "console: fg pid $JOB" 10; result $? "fg brings it back"
+key ctrl-alt-z; sleep 1
+T1=$(ticks); sleep 2
+[ "$(ticks)" = "$T1" ]; result $? "  paused again with Ctrl+Alt+Z"
+type_cmd "kill $JOB"
+wait_for "process: pid $JOB sdkcheck ended, status 9" 10; result $? "kill ends it by its number"
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))

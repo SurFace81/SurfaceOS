@@ -35,6 +35,8 @@
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
 //            was stopped short (a fault, Ctrl+Alt+C). Handle is used up.
+//   IdOf     (revision 1.1) *Id gets the number of the program behind
+//            Handle (sfos/admin.h speaks of programs by number).
 typedef struct SfProcess SfProcess;
 
 struct SfProcess
@@ -47,6 +49,8 @@ struct SfProcess
                       const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
                       uint64_t* Handle);
     SfStatus (*Wait)(SfProcess* This, uint64_t Handle, SfStatus* Status);
+    // Revision 1.1
+    SfStatus (*IdOf)(SfProcess* This, uint64_t Handle, uint64_t* Id);
 };
 
 // Start flags
@@ -55,10 +59,11 @@ struct SfProcess
 #define SF_START_ADMIN          0x4
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)
-#define SF_PROCESS_REVISION     SF_REVISION(1, 0)
+#define SF_PROCESS_REVISION     SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, GetArgs) == 24, "SfProcess layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, Start) == 32, "SfProcess layout");
-SF_STATIC_ASSERT(sizeof(SfProcess) == 48, "SfProcess layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, IdOf) == 48, "SfProcess layout");
+SF_STATIC_ASSERT(sizeof(SfProcess) == 56, "SfProcess layout");
 
 #endif // SFOS_PROCESS_H
