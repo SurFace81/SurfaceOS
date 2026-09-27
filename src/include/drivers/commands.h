@@ -9,9 +9,10 @@ namespace commands
 
     // Run a program and wait for it: argv[0] is a path, or a bare name
     // looked up in /apps. Arguments that name files or folders become the
-    // program's argN: roots (see open_arg in commands.cpp). false when
-    // there is no such program.
-    bool run_app(int argc, const char** argv);
+    // program's argN: roots (see open_arg in commands.cpp); a last `&`
+    // runs it in the background instead. `admin`: with the admin right.
+    // false when there is no such program.
+    bool run_app(int argc, const char** argv, bool admin = false);
 } // namespace commands
 
 #endif

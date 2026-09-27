@@ -58,12 +58,15 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   mount <dev> (partitions go to /mount/<dev>pN), umount <dev|dir>, sync,
   lsblk, hardware info commands; a program runs by its name (looked up
   in /apps) or by its path, with a last `&` in the background (a hidden
-  screen, its output logged to /files/<name>/console_<date>_<time>.log)
+  screen, its output logged to /files/<name>/console_<date>_<time>.log);
+  `admin <program>` runs it with the admin right (Sys->Admin: processes,
+  mount/unmount, restart, power off; roots disk:/ and mount:/)
 - Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
   what ReadKey reports, `sdkcheck ticks` ticks to be paused, `sdkcheck
-  spin` shows its share of a CPU), sfstest (files through the SDK and
+  spin` shows its share of a CPU, `admin sdkcheck admin` checks the admin
+  right), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
   (how a program with several threads ends: fault, Ctrl+Alt+C, last
   exit; Ctrl+Alt+C ends the programs it started too; `threadtest stress` runs many

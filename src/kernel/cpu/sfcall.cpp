@@ -7,6 +7,7 @@
 #include "../../include/cpu/sffile.h"
 #include "../../include/cpu/sftime.h"
 #include "../../include/cpu/sfconsole.h"
+#include "../../include/cpu/sfadmin.h"
 #include "../../include/cpu/sfsync.h"
 #include "../../include/drivers/uart.h"
 
@@ -73,6 +74,7 @@ namespace sfcall
         sffile::init();
         sftime::init();
         sfconsole::init();
+        sfadmin::init();
         sfsync::init();
         uart::printf("boot: syscall instruction enabled\n");
     }

@@ -210,9 +210,54 @@ static const SfSync SdkSync =
     SyncCreateEvent,
 };
 
+// --- Admin -----------------------------------------------------------------
+
+static SfStatus AdminListProcesses(SfAdmin*, SfProcessInfo* Buffer, uint64_t* Count)
+{
+    return SfCall(SFCALL_ADMIN_LIST_PROCESSES, (uint64_t)Buffer, (uint64_t)Count);
+}
+
+static SfStatus AdminEndProcess(SfAdmin*, uint64_t Id)
+{
+    return SfCall(SFCALL_ADMIN_END_PROCESS, Id);
+}
+
+static SfStatus AdminMount(SfAdmin*, const char* Device)
+{
+    return SfCall(SFCALL_ADMIN_MOUNT, (uint64_t)Device);
+}
+
+static SfStatus AdminUnmount(SfAdmin*, const char* Device)
+{
+    return SfCall(SFCALL_ADMIN_UNMOUNT, (uint64_t)Device);
+}
+
+static SfStatus AdminRestart(SfAdmin*)
+{
+    return SfCall(SFCALL_ADMIN_RESTART);
+}
+
+static SfStatus AdminShutDown(SfAdmin*)
+{
+    return SfCall(SFCALL_ADMIN_SHUT_DOWN);
+}
+
+static const SfAdmin SdkAdmin =
+{
+    { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
+    AdminListProcesses,
+    AdminEndProcess,
+    AdminMount,
+    AdminUnmount,
+    AdminRestart,
+    AdminShutDown,
+};
+
 // Filled in by SdkStart from the start info.
 static SfApp SdkApp;
 
+// Two system tables: a program with the admin right gets the one with
+// Admin (SDK_START_ADMIN), everyone else the one without.
 const SfSystem SdkSystem =
 {
     { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
@@ -223,6 +268,20 @@ const SfSystem SdkSystem =
     (SfProcess*)&SdkProcess,
     (SfThread*)&SdkThread,
     (SfSync*)&SdkSync,
+    nullptr,
+};
+
+const SfSystem SdkAdminSystem =
+{
+    { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
+    (SfConsole*)&SdkConsole,
+    (SfFiles*)&SdkFiles,
+    (SfMemory*)&SdkMemory,
+    (SfTime*)&SdkTime,
+    (SfProcess*)&SdkProcess,
+    (SfThread*)&SdkThread,
+    (SfSync*)&SdkSync,
+    (SfAdmin*)&SdkAdmin,
 };
 
 extern "C" void SdkStart(SfMainFunction Main)
@@ -235,7 +294,8 @@ extern "C" void SdkStart(SfMainFunction Main)
 
     SfStatus Status = MemoryInit();
     if (!SF_ERROR(Status))
-        Status = Main((SfApp*)&SdkApp, (SfSystem*)&SdkSystem);
+        Status = Main((SfApp*)&SdkApp, (SfSystem*)((Info->Flags & SDK_START_ADMIN)
+                                                   ? &SdkAdminSystem : &SdkSystem));
     SfCall(SFCALL_EXIT, Status);
     __builtin_unreachable();            // SFCALL_EXIT does not return
 }

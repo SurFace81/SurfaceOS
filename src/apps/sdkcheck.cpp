@@ -23,6 +23,11 @@
 // Run as `sdkcheck ticks`, it prints "sdkcheck tick N" every 200 ms for
 // half a minute: something to pause (Ctrl+Alt+Z) and watch stand still.
 //
+// Run as `admin sdkcheck admin` - with the admin right - it checks
+// Sys->Admin instead: the process list, ending a program, disk:/ and
+// mount:/, Mount and Unmount of usb1 ("sdkcheck admin: N passed, M
+// failed"). A plain run checks that without the right there is none.
+//
 // Run as `sdkcheck spin <label> <seconds>`, it spins for that many seconds
 // and says each second how far it got ("sdkcheck spin <label>: N"): what
 // share of a CPU it has.
@@ -37,6 +42,7 @@
 // number of failed checks (0: all passed).
 
 #include <sfos.h>
+#include <abi/sfcall.h>
 
 static SfConsole* Con;
 static uint64_t Passed;
@@ -457,6 +463,112 @@ static SfStatus RunSpin(SfTime* Time, const char* Label, uint64_t Seconds)
     return SF_SUCCESS;
 }
 
+// A call past the SDK tables, straight to the kernel: what a program could
+// do to get around a table it has not got.
+static SfStatus RawCall(uint64_t Number, uint64_t A1 = 0, uint64_t A2 = 0)
+{
+    SfStatus Result;
+    asm volatile("syscall" : "=a"(Result) : "a"(Number), "D"(A1), "S"(A2)
+                 : "rcx", "r11", "memory");
+    return Result;
+}
+
+// Opens Path and closes it again: does it exist for this program?
+static bool Opens(SfFiles* Files, const char* Path)
+{
+    SfFile* File = nullptr;
+    if (SF_ERROR(Files->Open(Files, Path, SF_FILE_READ, &File)))
+        return false;
+    File->Close(File);
+    return true;
+}
+
+// Without the admin right: no Admin table, the calls refused anyway, no
+// disk:/ or mount:/.
+static void CheckNoAdmin(SfSystem* Sys)
+{
+    Check("SfSystem 1.1 has Admin, and it is nullptr without the admin right",
+          SF_HAS_FIELD(Sys, SfSystem, Admin) && !Sys->Admin);
+    uint64_t Count = 0;
+    Check("an admin call past the table is SF_ACCESS_DENIED",
+          RawCall(SFCALL_ADMIN_LIST_PROCESSES, 0, (uint64_t)&Count) == SF_ACCESS_DENIED &&
+          RawCall(SFCALL_ADMIN_END_PROCESS, 1) == SF_ACCESS_DENIED);
+    Check("no disk:/ and no mount:/ without it",
+          !Opens(Sys->Files, "disk:/apps") && !Opens(Sys->Files, "mount:/"));
+}
+
+// sdkcheck admin: see the top of the file.
+static SfStatus RunAdmin(SfSystem* Sys)
+{
+    Print("sdkcheck admin - what the admin right gives\n");
+    SfAdmin* Admin = SF_HAS_FIELD(Sys, SfSystem, Admin) ? Sys->Admin : nullptr;
+    Check("Sys->Admin is there: signature, revision 1.x, size",
+          Admin && HeaderOk(&Admin->Hdr, SF_ADMIN_SIGNATURE, sizeof(SfAdmin)));
+    if (!Admin)
+        return SF_ERROR_BIT | Failed;
+
+    Check("disk:/ is the whole boot volume", Opens(Sys->Files, "disk:/apps/sdkcheck"));
+    Check("mount:/ is there", Opens(Sys->Files, "mount:/"));
+
+    // The list: this program in it, on screen 1.
+    uint64_t MyId = 0;
+    Sys->Process->GetId(Sys->Process, &MyId);
+    SfProcessInfo List[16];
+    uint64_t Count = 0;
+    Check("ListProcesses with no room is SF_BUFFER_TOO_SMALL and gives the count",
+          Admin->ListProcesses(Admin, List, &Count) == SF_BUFFER_TOO_SMALL && Count >= 1);
+    Count = 16;
+    bool Found = false;
+    if (Admin->ListProcesses(Admin, List, &Count) == SF_SUCCESS)
+        for (uint64_t i = 0; i < Count; i++)
+            Found |= List[i].Id == MyId && List[i].Screen == 1 && SameText(List[i].Name, "sdkcheck");
+    Check("ListProcesses lists this program, on screen 1", Found);
+
+    // EndProcess: a child that would tick for half a minute.
+    const char* Ticks[] = { "ticks" };
+    uint64_t Handle = 0, ChildId = 0;
+    Sys->Process->Start(Sys->Process, "sdkcheck", 1, Ticks, 0, &Handle);
+    Count = 16;
+    if (Admin->ListProcesses(Admin, List, &Count) == SF_SUCCESS)
+        for (uint64_t i = 0; i < Count; i++)
+            if (List[i].Id != MyId && SameText(List[i].Name, "sdkcheck"))
+                ChildId = List[i].Id;
+    SfStatus ChildStatus = SF_SUCCESS;
+    Check("EndProcess ends a running program",
+          ChildId && Admin->EndProcess(Admin, ChildId) == SF_SUCCESS &&
+          Sys->Process->Wait(Sys->Process, Handle, &ChildStatus) == SF_SUCCESS &&
+          ChildStatus == SF_ABORTED);
+    Check("EndProcess of no such program is SF_NOT_FOUND",
+          Admin->EndProcess(Admin, 999999) == SF_NOT_FOUND);
+
+    // Volumes: the test's second disk, usb1.
+    Check("Mount of no such device is SF_NOT_FOUND",
+          Admin->Mount(Admin, "nosuch") == SF_NOT_FOUND);
+    Check("Mount usb1 puts its partitions under mount:/",
+          Admin->Mount(Admin, "usb1") == SF_SUCCESS && Opens(Sys->Files, "mount:/usb1p1"));
+    Check("Mount of what is mounted already is SF_ALREADY_EXISTS",
+          Admin->Mount(Admin, "usb1") == SF_ALREADY_EXISTS);
+    SfFile* Open = nullptr;
+    Check("Unmount while a file on it is open is SF_IN_USE",
+          Sys->Files->Open(Sys->Files, "mount:/usb1p1", SF_FILE_READ, &Open) == SF_SUCCESS &&
+          Admin->Unmount(Admin, "usb1p1") == SF_IN_USE);
+    if (Open)
+        Open->Close(Open);
+    Check("Unmount usb1 takes it all away",
+          Admin->Unmount(Admin, "usb1") == SF_SUCCESS && !Opens(Sys->Files, "mount:/usb1p1"));
+    Check("Unmount of what is not mounted is SF_NOT_FOUND",
+          Admin->Unmount(Admin, "usb1") == SF_NOT_FOUND);
+    Check("the boot volume cannot be unmounted",
+          Admin->Unmount(Admin, "usb0") == SF_ACCESS_DENIED);
+
+    Print("sdkcheck admin: ");
+    PrintNumber(Passed);
+    Print(" passed, ");
+    PrintNumber(Failed);
+    Print(" failed\n");
+    return Failed ? (SF_ERROR_BIT | Failed) : SF_SUCCESS;
+}
+
 // sdkcheck keys: see the top of the file.
 static SfStatus RunKeys(SfConsole* Console)
 {
@@ -627,6 +739,8 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
         return RunKeys(Sys->Console);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "ticks"))
         return RunTicks(Sys->Time);
+    if (App && App->ArgCount >= 2 && SameText(App->Args[1], "admin"))
+        return RunAdmin(Sys);
     if (App && App->ArgCount >= 4 && SameText(App->Args[1], "spin"))
         return RunSpin(Sys->Time, App->Args[2], ParseNumber(App->Args[3]));
 
@@ -639,6 +753,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
           HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, sizeof(SfConsole)));
     if (SF_HAS_FIELD(Con, SfConsole, SetTitle))
         CheckConsole(Con);
+    CheckNoAdmin(Sys);
     Check("SfApp: signature, revision 1.x, size",
           App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, sizeof(SfApp)));
     Check("App->Name is the program's name", App && SameText(App->Name, "sdkcheck"));

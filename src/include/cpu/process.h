@@ -99,6 +99,8 @@ struct vnode;
 // terminate() can free a thread while executing on that very stack, so the
 // frames go back to the PMM later, from another task.
 
+struct SfProcessInfo;           // sfos/admin.h
+
 namespace process
 {
     // Called once at boot, after the FPU is enabled. The running boot
@@ -134,9 +136,10 @@ namespace process
     // argc entries: arg_roots[i] (i >= 1), when not null, is what argument
     // i names, and the process gets it as root argI (the caller keeps its
     // reference). Returns false if the program could not be started;
-    // otherwise stores its exit status in *exit_status.
+    // otherwise stores its exit status in *exit_status. `admin`: with the
+    // admin right (sfos/admin.h).
     bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
-             int* exit_status);
+             bool admin, int* exit_status);
 
     // Console only. The same, but in the background (`&`): the program runs
     // on a hidden screen of its own, and what it prints (SF_CONSOLE_LINE)
@@ -145,7 +148,7 @@ namespace process
     // log's path ("" when there is no log). false when it could not be
     // started - no such program, or no hidden screen free.
     bool run_background(const char* path, int argc, const char* const* argv,
-                        vnode* const* arg_roots, pid_t* pid, char* log_name);
+                        vnode* const* arg_roots, bool admin, pid_t* pid, char* log_name);
 
     // What a program in SF_CONSOLE_LINE prints: into its log, when it runs
     // in the background (sfconsole.cpp).
@@ -233,6 +236,14 @@ namespace process
     // Ctrl+Alt+Z: pause every program on `screen`, or let them go on when
     // they are paused; the same way.
     void pause_screen_programs(uint32_t screen);
+
+    // The admin right (sfos/admin.h, sfadmin.cpp): has the caller got it;
+    // the running programs, up to `max` of them into `out` (returns how
+    // many there are); end program `pid` as Ctrl+Alt+C would (false: no
+    // such program).
+    bool     current_admin();
+    uint64_t list_programs(SfProcessInfo* out, uint64_t max);
+    bool     end_program(pid_t pid);
 
     // The calling process's screen, and its console mode (sfconsole.cpp).
     uint32_t current_screen();

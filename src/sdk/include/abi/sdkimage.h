@@ -40,6 +40,9 @@ typedef struct SdkStartInfo
     char               Name[64];    // the program's name, NUL-terminated
     uint64_t           ArgCount;
     const char* const* Args;        // ArgCount strings
+    uint64_t           Flags;       // SDK_START_*
 } SdkStartInfo;
+
+#define SDK_START_ADMIN     0x1     // started with the admin right: Sys->Admin
 
 #endif // ABI_SDKIMAGE_H

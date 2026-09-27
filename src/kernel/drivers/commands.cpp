@@ -3,7 +3,7 @@
 #include "../../include/dev/blkdev.h"
 #include "../../include/dev/bcache.h"
 #include "../../include/fs/vfs.h"
-#include "../../include/fs/fat32fs.h"
+#include "../../include/fs/mounts.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/usb/xhci.h"
 #include "../../include/mm/heap.h"
@@ -162,84 +162,6 @@ static void cmd_lspci(int argc, const char** argv)
     }
 }
 
-// Mounts of other volumes live in /mount/<blkdev name>: /mount/usb1p1, or
-// /mount/usb1 for a disk without a partition table. The directory is made
-// by mount and removed again by umount.
-
-// The (non-detached) mount of block device `name`, if any.
-static mount* mount_of_dev(const char* name)
-{
-    for (uint32_t i = 0; vfs::mount_count_get(i); i++)
-    {
-        mount* m = vfs::mount_count_get(i);
-        if (!m->detached && strcmp(m->devname, name) == 0)
-            return m;
-    }
-    return nullptr;
-}
-
-static bool has_partitions(blkdev* disk)
-{
-    for (uint32_t i = 0; block::get(i); i++)
-        if (block::get(i)->parent == disk)
-            return true;
-    return false;
-}
-
-// Write /mount's volume through after a mount point came or went: nothing
-// else flushes it (no file of it was written), and the free-cluster count
-// on disk would stay behind.
-static void flush_mount_dir(vnode* dir)
-{
-    if (dir->ops->fsync)
-        dir->ops->fsync(dir);
-}
-
-// Remove the empty directory /mount/<name>. 0 or -errno.
-static sint64_t remove_mount_dir(const char* name)
-{
-    vnode* dir = nullptr;
-    sint64_t rc = vfs::lookup("/mount", nullptr, &dir, true);
-    if (rc != 0)
-        return rc;
-    rc = dir->ops->rmdir ? dir->ops->rmdir(dir, name) : -EPERM;
-    if (rc == 0)
-        flush_mount_dir(dir);
-    vfs::unref(dir);
-    return rc;
-}
-
-// Mount `d` on /mount/<d->name>, creating the directory. 0 or -errno.
-static sint64_t mount_dev(blkdev* d)
-{
-    vnode* dir = nullptr;
-    sint64_t rc = vfs::lookup("/mount", nullptr, &dir, true);
-    if (rc != 0)
-        return rc;
-
-    bool made = false;
-    vnode* point = nullptr;
-    rc = vfs::lookup(d->name, dir, &point, true);
-    if (rc == -ENOENT && dir->ops->mkdir)
-    {
-        rc = dir->ops->mkdir(dir, d->name, 0755);
-        if (rc == 0)
-        {
-            flush_mount_dir(dir);
-            made = true;
-            rc = vfs::lookup(d->name, dir, &point, true);
-        }
-    }
-    vfs::unref(dir);
-    if (rc != 0)
-        return rc;
-
-    rc = vfs::mount_at(point, d->name, &fat32fs::fs, d);   // takes the ref
-    if (rc != 0 && made)
-        remove_mount_dir(d->name);
-    return rc;
-}
-
 static void mount_report(blkdev* d, sint64_t rc)
 {
     if (rc == 0)
@@ -286,12 +208,12 @@ static void cmd_mount(int argc, const char** argv)
     }
 
     // A partition, or a disk that is one volume: just that device.
-    if (dev->parent || !has_partitions(dev))
+    if (dev->parent || !mounts::has_partitions(dev))
     {
-        if (mount_of_dev(dev->name))
+        if (mounts::of_device(dev->name))
             screen::printf("\n\r%s is already mounted", dev->name);
         else
-            mount_report(dev, mount_dev(dev));
+            mount_report(dev, mounts::mount_device(dev));
         return;
     }
 
@@ -301,50 +223,36 @@ static void cmd_mount(int argc, const char** argv)
     for (uint32_t i = 0; block::get(i); i++)
     {
         blkdev* p = block::get(i);
-        if (p->parent != dev || mount_of_dev(p->name))
+        if (p->parent != dev || mounts::of_device(p->name))
             continue;
         tried++;
-        mount_report(p, mount_dev(p));
+        mount_report(p, mounts::mount_device(p));
     }
     if (tried == 0)
         screen::printf("\n\rAll partitions of %s are already mounted", dev->name);
 }
 
-// Flush and unmount one mount under /mount, then drop its directory.
-// Returns true when it went away.
+// Unmount one mount under /mount and say how it went. Returns true when it
+// went away.
 static bool umount_one(mount* m)
 {
     char name[sizeof(m->devname)];
     strncpy(name, m->devname, sizeof(name) - 1);
     name[sizeof(name) - 1] = '\0';
 
-    if (!m->point)
-    {
-        screen::printf("\n\rCannot umount the root filesystem");
-        uart::printf("umount: refused, %s is the root filesystem\n", name);
-        return false;
-    }
-
-    // Only mounts made by `mount <device>` own their directory.
-    char path[PATH_MAX];
-    bool in_mount_dir = vfs::get_path(m->point, path, sizeof(path), nullptr) == 0 &&
-                        strncmp(path, "/mount/", 7) == 0 &&
-                        strcmp(path + 7, name) == 0;
-
-    vnode* root = m->root;
-    sint64_t rc = root->ops->fsync ? root->ops->fsync(root) : 0;
-    if (rc == 0)
-        rc = vfs::umount(m);
-
+    sint64_t rc = mounts::unmount(m);
     if (rc == 0)
     {
-        if (in_mount_dir)
-            remove_mount_dir(name);
         screen::printf("\n\r%s: unmounted", name);
         uart::printf("umount: ok %s\n", name);
         return true;
     }
-    if (rc == -EBUSY)
+    if (rc == -EPERM)
+    {
+        screen::printf("\n\rCannot umount the root filesystem");
+        uart::printf("umount: refused, %s is the root filesystem\n", name);
+    }
+    else if (rc == -EBUSY)
     {
         screen::printf("\n\r%s: busy, something still has it open", name);
         uart::printf("umount: busy %s\n", name);
@@ -376,7 +284,7 @@ static void cmd_umount(int argc, const char** argv)
             blkdev* d = block::get(i);
             if (d != dev && d->parent != dev)
                 continue;
-            mount* m = mount_of_dev(d->name);
+            mount* m = mounts::of_device(d->name);
             if (!m)
                 continue;
             found++;
@@ -1392,7 +1300,7 @@ static vnode* open_arg(const char* arg)
 
 namespace commands
 {
-    bool run_app(int argc, const char** argv)
+    bool run_app(int argc, const char** argv, bool admin)
     {
         char path[PATH_MAX];
         if (!find_program(argv[0], path, sizeof(path)))
@@ -1413,9 +1321,9 @@ namespace commands
         int status = 0;
         pid_t pid = 0;
         char log[128];
-        bool ran = background ? process::run_background(path, argc, argv, roots, &pid, log)
+        bool ran = background ? process::run_background(path, argc, argv, roots, admin, &pid, log)
                               : (screen::printf("\n\r"),
-                                 process::run(path, argc, argv, roots, &status));
+                                 process::run(path, argc, argv, roots, admin, &status));
 
         for (int i = 1; i < argc && i < CONSOLE_MAX_ARGS; i++)
             if (roots[i])
@@ -1442,10 +1350,6 @@ namespace commands
     }
 }
 
-// Flush every mounted file system and unmount the root (and with it
-// everything mounted below) before the power goes: only an unmount clears
-// the FAT dirty bit, so a sync alone would leave the next boot warning about
-// an unclean volume. Forced: the machine is going away, open fds with it.
 // A failure is reported but does not stop the reboot: the user asked for
 // it, and the alternative is the power button with the same data loss.
 static void prepare_power_off(const char* what)
@@ -1453,16 +1357,7 @@ static void prepare_power_off(const char* what)
     screen::printf("\n\r%s: syncing file systems...", what);
     screen::flush();
 
-    sint64_t rc = vfs::sync_all();
-    mount* root = vfs::root_mount();
-    if (root)
-    {
-        vfs::set_cwd(nullptr);
-        sint64_t urc = vfs::umount(root, true);
-        if (rc == 0)
-            rc = urc;
-    }
-
+    sint64_t rc = mounts::prepare_power_off();
     if (rc != 0)
     {
         screen::printf(" failed (%d)", (int)rc);
@@ -1471,6 +1366,19 @@ static void prepare_power_off(const char* what)
     else
         uart::printf("%s: sync ok\n", what);
     screen::flush();
+}
+
+// admin <program> [args] [&]: run a program with the admin right - the
+// whole disk, the other volumes, every process (sfos/admin.h).
+static void cmd_admin(int argc, const char** argv)
+{
+    if (argc < 2)
+    {
+        screen::printf("\n\rUsage: admin <program> [args] [&]");
+        return;
+    }
+    if (!commands::run_app(argc - 1, argv + 1, true))
+        screen::printf("\n\rNo such program: %s", argv[1]);
 }
 
 static void cmd_reboot(int argc, const char** argv)
@@ -1586,6 +1494,7 @@ namespace commands
         console::register_command("mv",      cmd_mv);
         console::register_command("rmdir",   cmd_rmdir);
         console::register_command("acpi",    cmd_acpi);
+        console::register_command("admin",   cmd_admin);
         console::register_command("reboot",  cmd_reboot);
         console::register_command("shutdown", cmd_shutdown);
     }

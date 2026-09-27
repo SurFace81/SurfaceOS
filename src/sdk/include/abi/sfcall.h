@@ -28,6 +28,7 @@
 #define SF_ALREADY_EXISTS       (SF_ERROR_BIT | 10)
 #define SF_DEVICE_ERROR         (SF_ERROR_BIT | 11)
 #define SF_BUFFER_TOO_SMALL     (SF_ERROR_BIT | 12)  // the size needed is returned
+#define SF_IN_USE               (SF_ERROR_BIT | 13)  // e.g. a volume with files open
 
 // Call numbers. The table grows from 0; the SDK runtime makes these calls,
 // programs never do directly. A file is its handle number.
@@ -66,6 +67,12 @@
 #define SFCALL_CONSOLE_READ_KEY      32  // (SfKey* Key)
 #define SFCALL_CONSOLE_SET_MODE      33  // (uint64_t Mode)
 #define SFCALL_CONSOLE_SET_TITLE     34  // (const char* Text)
-#define SFCALL_COUNT                 35
+#define SFCALL_ADMIN_LIST_PROCESSES  35  // (SfProcessInfo* Buffer, uint64_t* Count)
+#define SFCALL_ADMIN_END_PROCESS     36  // (uint64_t Id)
+#define SFCALL_ADMIN_MOUNT           37  // (const char* Device)
+#define SFCALL_ADMIN_UNMOUNT         38  // (const char* Device)
+#define SFCALL_ADMIN_RESTART         39  // ()
+#define SFCALL_ADMIN_SHUT_DOWN       40  // ()
+#define SFCALL_COUNT                 41
 
 #endif // ABI_SFCALL_H

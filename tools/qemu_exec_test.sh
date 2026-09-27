@@ -248,6 +248,15 @@ if [ "${SMP:-1}" = "1" ]; then
     sleep 1
 fi
 
+# 1f. The admin right: `admin sdkcheck admin` gets Sys->Admin, disk:/ and
+#     mount:/ (a plain sdkcheck checks it gets none of them).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "admin sdkcheck admin"
+wait_for "sdkcheck admin: " 30; result $? "admin sdkcheck admin finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "sdkcheck admin: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck admin: no failed checks"
+wait_session_end $WANT 15; result $? "admin sdkcheck admin exits"
+
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))

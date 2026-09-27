@@ -25,10 +25,10 @@ namespace sdkpage
 
     // Map the SDK pages of program `name` in the current address space.
     // `args` holds `argc` NUL-terminated strings back to back, `args_size`
-    // bytes. *start gets where the process starts. false when out of
-    // memory (the caller destroys the space).
+    // bytes; `flags` are its SDK_START_*. *start gets where the process
+    // starts. false when out of memory (the caller destroys the space).
     bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,
-                 uint64_t* start);
+                 uint64_t flags, uint64_t* start);
 
     // Where a created thread starts (SdkHeader.ThreadStart), 0 when the
     // runtime is unusable.

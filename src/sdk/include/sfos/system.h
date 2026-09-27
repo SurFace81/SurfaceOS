@@ -10,6 +10,7 @@
 #include "process.h"
 #include "thread.h"
 #include "sync.h"
+#include "admin.h"
 
 // The system table: everything a program can ask of the system, handed to
 // SfMain. Services are tables of their own, reached from here.
@@ -21,6 +22,8 @@
 //   Process   processes.
 //   Thread    threads of this program.
 //   Sync      mutexes and events between them.
+//   Admin     (revision 1.1) what only a program with the admin right can
+//             do; nullptr for any other (sfos/admin.h).
 //
 // More services (Memory, Time, Process, ...) are added at the end in later
 // revisions; check Hdr.Size (SF_HAS_FIELD) before using one that came
@@ -35,10 +38,11 @@ typedef struct SfSystem
     SfProcess*    Process;
     SfThread*     Thread;
     SfSync*       Sync;
+    SfAdmin*      Admin;
 } SfSystem;
 
 #define SF_SYSTEM_SIGNATURE SF_SIGNATURE('S', 'F', 'S', 'Y', 'S', 'T', 'E', 'M')
-#define SF_SYSTEM_REVISION  SF_REVISION(1, 0)
+#define SF_SYSTEM_REVISION  SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Console) == 16, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Files) == 24, "SfSystem layout");
@@ -47,7 +51,8 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Time) == 40, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Process) == 48, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Thread) == 56, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Sync) == 64, "SfSystem layout");
-SF_STATIC_ASSERT(sizeof(SfSystem) == 72, "SfSystem layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Admin) == 72, "SfSystem layout");
+SF_STATIC_ASSERT(sizeof(SfSystem) == 80, "SfSystem layout");
 
 // The program's entry point. What it returns becomes the exit status its
 // parent sees.

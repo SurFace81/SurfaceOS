@@ -57,6 +57,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/dev/bcache.o \
 				bin/kernel/fs/vfs.o \
 				bin/kernel/fs/file.o \
+				bin/kernel/fs/mounts.o \
 				bin/kernel/fs/devfs.o \
 				bin/kernel/fs/fat32/fat.o \
 				bin/kernel/fs/fat32/dir.o \
@@ -73,6 +74,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sffile.o \
 				bin/kernel/cpu/sftime.o \
 				bin/kernel/cpu/sfconsole.o \
+				bin/kernel/cpu/sfadmin.o \
 				bin/kernel/cpu/sfsync.o \
 				bin/kernel/cpu/apic.o \
 				bin/kernel/cpu/sys_fs.o \

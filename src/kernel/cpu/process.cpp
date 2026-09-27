@@ -17,6 +17,8 @@
 #include "../../include/stdlib/string.h"
 #include "../../sdk/include/sfos/status.h"
 #include "../../sdk/include/sfos/process.h"
+#include "../../sdk/include/sfos/admin.h"
+#include "../../sdk/include/abi/sdkimage.h"
 #include "../../include/cpu/wait.h"
 #include "../../include/cpu/elf.h"
 #include "../../include/cpu/uaccess.h"
@@ -161,6 +163,7 @@ namespace process
         uint32_t    screen;
         pid_t       input_giver;
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
+        bool        admin;          // the admin right (sfos/admin.h)
 
         uint64_t    cr3;
         uint64_t    brk_start;      // end of the ELF image
@@ -703,6 +706,44 @@ namespace process
         pause_screen = (sint32_t)screen;
     }
 
+    bool current_admin()
+    {
+        return current && current->admin;
+    }
+
+    uint64_t list_programs(SfProcessInfo* out, uint64_t max)
+    {
+        uint64_t n = 0;
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+            if (!alive(p) || p->kernel)
+                continue;
+            if (n < max)
+            {
+                SfProcessInfo* e = &out[n];
+                memory::memset((uint8_t*)e, 0, sizeof(*e));
+                e->Id     = (uint64_t)p->pid;
+                e->Screen = p->screen < TERM_SCREENS ? p->screen + 1 : 0;
+                e->Paused = p->state == State::Stopped ? 1 : 0;
+                copy_bytes((uint8_t*)e->Name, (const uint8_t*)p->name, sizeof(e->Name) - 1);
+            }
+            n++;
+        }
+        return n;
+    }
+
+    static void post_signal(Process* p, int n);
+
+    bool end_program(pid_t pid)
+    {
+        Process* p = find_live(pid);
+        if (!p || p->kernel)
+            return false;
+        post_signal(p, SIGKILL);
+        return true;
+    }
+
     uint32_t current_screen()
     {
         return current ? current->screen : 0;
@@ -1162,7 +1203,7 @@ namespace process
     // ELF segments, stack with the SysV argv/envp/auxv block. The active
     // address space is unchanged on return. Returns 0 or -errno.
     static sint64_t load_program(const char* path, vnode* cwd,
-                                 const ArgEnv* ae, Image* out)
+                                 const ArgEnv* ae, Image* out, uint64_t sdk_flags = 0)
     {
         int err = 0;
         uint64_t size = 0;
@@ -1232,7 +1273,7 @@ namespace process
         {
             char name[sizeof(Process::name)];
             copy_name(name, path);
-            if (!sdkpage::install(name, args, args_size, ae->a_count, &sdk))
+            if (!sdkpage::install(name, args, args_size, ae->a_count, sdk_flags, &sdk))
             {
                 err = ENOMEM;
                 ok = false;
@@ -2026,10 +2067,11 @@ namespace process
 
     // Load `path` with the collected argv/envp and allocate a process for
     // it, with its roots. ppid is left at 0; it is not started yet.
-    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots)
+    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots,
+                           bool admin = false)
     {
         Image img;
-        if (load_program(path, vfs::cwd(), ae, &img) < 0)
+        if (load_program(path, vfs::cwd(), ae, &img, admin ? SDK_START_ADMIN : 0) < 0)
             return nullptr;
 
         Process* p = alloc_process();
@@ -2048,6 +2090,13 @@ namespace process
             add_root(p, "data", data);
         if (tmp)
             add_root(p, "tmp", tmp);
+        // The admin right: disk:/ is the whole boot volume, mount:/ the rest.
+        p->admin = admin;
+        vnode* v = nullptr;
+        if (admin && vfs::lookup("/", nullptr, &v, true) == 0)
+            add_root(p, "disk", v);
+        if (admin && vfs::lookup("/mount", nullptr, &v, true) == 0)
+            add_root(p, "mount", v);
         // argN: what the console opened for argument N.
         for (uint32_t i = 1; arg_roots && i < ae->a_count; i++)
         {
@@ -2121,7 +2170,7 @@ namespace process
 
     // A program the console starts, loaded and ready but not started yet.
     static Process* launch_program(const char* path, int argc, const char* const* argv,
-                                   vnode* const* arg_roots)
+                                   vnode* const* arg_roots, bool admin)
     {
         if (current != console_proc)
             return nullptr;
@@ -2140,7 +2189,7 @@ namespace process
         if (rc == 0)
             rc = push_default_env(&ae);
 
-        Process* p = rc == 0 ? launch(path, &ae, arg_roots) : nullptr;
+        Process* p = rc == 0 ? launch(path, &ae, arg_roots, admin) : nullptr;
         ae.destroy();
         if (!p)
             return nullptr;
@@ -2153,13 +2202,13 @@ namespace process
     }
 
     bool run_background(const char* path, int argc, const char* const* argv,
-                        vnode* const* arg_roots, pid_t* pid, char* log_name)
+                        vnode* const* arg_roots, bool admin, pid_t* pid, char* log_name)
     {
         log_name[0] = '\0';
         sint32_t s = term::open_hidden();
         if (s < 0)
             return false;
-        Process* p = launch_program(path, argc, argv, arg_roots);
+        Process* p = launch_program(path, argc, argv, arg_roots, admin);
         if (!p)
         {
             term::close_hidden((uint32_t)s);
@@ -2193,9 +2242,9 @@ namespace process
     }
 
     bool run(const char* path, int argc, const char* const* argv, vnode* const* arg_roots,
-             int* exit_status)
+             bool admin, int* exit_status)
     {
-        Process* p = launch_program(path, argc, argv, arg_roots);
+        Process* p = launch_program(path, argc, argv, arg_roots, admin);
         if (!p)
             return false;
         uint64_t entry = first_thread(p)->ctx.iret.rip;

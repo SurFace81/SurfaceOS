@@ -84,7 +84,7 @@ namespace sdkpage
     }
 
     bool install(const char* name, const char* args, uint32_t args_size, uint32_t argc,
-                 uint64_t* out_start)
+                 uint64_t flags, uint64_t* out_start)
     {
         if (!code_pages)
             return false;
@@ -113,6 +113,7 @@ namespace sdkpage
             info->Name[n] = name[n];
         info->Name[n] = '\0';
         info->ArgCount = argc;
+        info->Flags    = flags;
         info->Args     = (const char* const*)(SDK_INFO_ADDRESS + ptrs);
 
         memory::memcpy(blob + strs, (const uint8_t*)args, args_size);
