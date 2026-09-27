@@ -132,6 +132,7 @@ namespace process
         uint32_t    screen;
         pid_t       input_giver;
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
+        void*       line_history;   // ReadLine's earlier lines (sfconsole.cpp), kmalloc'ed
         bool        admin;          // the admin right (sfos/admin.h)
         bool        from_console;   // started by its screen's console (the log says so)
         uint64_t    cpu_ticks;      // timer ticks its threads ran (account_tick)
@@ -542,9 +543,12 @@ namespace process
         vfs::unref(v);
     }
 
-    // Release the roots and the command line.
+    // Release the roots, the command line and ReadLine's history.
     static void drop_roots(Process* p)
     {
+        if (p->line_history)
+            kfree(p->line_history);
+        p->line_history = nullptr;
         for (uint32_t i = 0; i < MAX_ROOTS; i++)
         {
             if (p->roots[i].v)
@@ -732,6 +736,19 @@ namespace process
     {
         if (current)
             current->console_raw = raw;
+    }
+
+    void* line_history(uint64_t size)
+    {
+        if (!current)
+            return nullptr;
+        if (!current->line_history)
+        {
+            current->line_history = kmalloc(size);
+            if (current->line_history)
+                memory::memset((uint8_t*)current->line_history, 0, size);
+        }
+        return current->line_history;
     }
 
     pid_t screen_input_owner(uint32_t screen)

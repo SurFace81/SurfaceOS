@@ -27,6 +27,7 @@
 //              a longer line is cut). *Length, when Length is not null, gets
 //              the stored length. SF_ABORTED when the user pressed Ctrl+C
 //              instead, SF_END_OF_FILE after Ctrl+D on an empty line.
+//              Up and Down bring back the program's last 16 lines.
 //   GetSize    *Columns and *Rows get the size of the screen.
 //   SetCursor  put the cursor at (Column, Row) - where Print goes on - and
 //              show it (Visible != 0) or hide it.

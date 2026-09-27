@@ -261,6 +261,31 @@ static void cmd_usbinfo(int argc, const char** argv)
     }
 }
 
+// One lsblk row: the name, after `branch` for a partition.
+static void lsblk_row(blkdev* d, const char* branch)
+{
+    char name[32];
+    uint32_t n = 0;
+    for (const char* c = branch; *c && n < sizeof(name) - 1; c++)
+        name[n++] = *c;
+    for (const char* c = d->name; *c && n < sizeof(name) - 1; c++)
+        name[n++] = *c;
+    name[n] = '\0';
+
+    uint64_t total_mb = d->sector_count * d->sector_size / (1024 * 1024);
+    screen::printf("\n\r %-12s %uB x %u", name, d->sector_size, (uint32_t)d->sector_count);
+    if (total_mb > 1024)
+        screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
+    else
+        screen::printf("  size=%u MB", (uint32_t)total_mb);
+    if (d->parent)
+        screen::printf("  offset=%u", (uint32_t)d->lba_offset);
+
+    uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
+                 d->sector_size, (uint32_t)d->sector_count, (uint32_t)d->lba_offset);
+}
+
+// Every disk, its partitions under it.
 static void cmd_lsblk(int argc, const char** argv)
 {
     (void)argc; (void)argv;
@@ -275,29 +300,26 @@ static void cmd_lsblk(int argc, const char** argv)
         return;
     }
 
+    static const char mid[]  = { (char)0xC3, (char)0xC4, ' ', 0 };     // ├─
+    static const char last[] = { (char)0xC0, (char)0xC4, ' ', 0 };     // └─
     for (uint32_t i = 0; i < count; i++)
     {
-        blkdev* d = block::get(i);
-        if (!d)
+        blkdev* disk = block::get(i);
+        if (!disk || disk->parent)
             continue;
-
-        uint64_t total_mb = d->sector_count * d->sector_size / (1024 * 1024);
-
-        screen::printf("\n\r %s%-9s %uB x %u",
-            d->parent ? "  " : " ", d->name,
-            d->sector_size, (uint32_t)d->sector_count);
-
-        if (total_mb > 1024)
-            screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
-        else
-            screen::printf("  size=%u MB", (uint32_t)total_mb);
-
-        if (d->parent)
-            screen::printf("  offset=%u", (uint32_t)d->lba_offset);
-
-        uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
-                     d->sector_size, (uint32_t)d->sector_count,
-                     (uint32_t)d->lba_offset);
+        lsblk_row(disk, "");
+        blkdev* prev = nullptr;         // printed once the next one shows it is not the last
+        for (uint32_t j = 0; j < count; j++)
+        {
+            blkdev* d = block::get(j);
+            if (!d || d->parent != disk)
+                continue;
+            if (prev)
+                lsblk_row(prev, mid);
+            prev = d;
+        }
+        if (prev)
+            lsblk_row(prev, last);
     }
 }
 
@@ -332,10 +354,10 @@ static void cmd_meminfo(int argc, const char** argv)
     screen::printf("\n\r Heap used:         %u KB", used_kb);
     screen::printf("\n\r Heap free:         %u KB", free_kb);
     screen::printf("\n\r Largest free:      %u KB", (uint32_t)(stats.largest_free_block / 1024));
-    screen::printf("\n\r");
-    screen::printf("\n\r Blocks total:      %u", (uint32_t)stats.block_count);
-    screen::printf("\n\r Blocks used:       %u", (uint32_t)stats.used_block_count);
-    screen::printf("\n\r Blocks free:       %u", (uint32_t)stats.free_block_count);
+    // The heap is a list of pieces: each allocation is one, and the free
+    // room between them is split into gaps.
+    screen::printf("\n\r Heap allocations:  %u, free room in %u piece(s)",
+                   (uint32_t)stats.used_block_count, (uint32_t)stats.free_block_count);
 }
 
 static void cmd_acpi(int argc, const char** argv)

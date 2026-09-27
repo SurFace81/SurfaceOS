@@ -13,6 +13,7 @@
 #include "../../include/drivers/term.h"
 #include "../../include/drivers/tty.h"
 #include "../../include/mm/heap.h"
+#include "../../include/stdlib/string.h"
 #include "../../sdk/include/sfos.h"
 
 namespace
@@ -140,9 +141,46 @@ namespace
         place(l, l->cur);
     }
 
+    // The lines the program read before, the newest last, for Up and Down.
+    // Kept per process (process::line_history), made at its first ReadLine.
+    const uint32_t HISTORY_LINES = 16;
+
+    struct History
+    {
+        char     text[HISTORY_LINES][TEXT_MAX];
+        uint32_t count;
+    };
+
+    void remember(History* h, const Line* l)
+    {
+        if (!h || l->len == 0)
+            return;
+        if (h->count && strcmp(h->text[h->count - 1], l->text) == 0)
+            return;                     // the same as the last one
+        if (h->count == HISTORY_LINES)
+        {
+            for (uint32_t i = 1; i < HISTORY_LINES; i++)
+                memcpy(h->text[i - 1], h->text[i], TEXT_MAX);
+            h->count--;
+        }
+        memcpy(h->text[h->count++], l->text, l->len + 1);
+    }
+
+    // Put `text` in place of the line being edited.
+    void replace(Line* l, const char* text)
+    {
+        uint32_t old = l->len;
+        l->len = l->cur = (uint32_t)strlen(text);
+        memcpy(l->text, text, l->len);
+        redraw(l, 0, old > l->len ? old - l->len : 0);
+    }
+
     // SF_SUCCESS with the line in l->text, SF_ABORTED or SF_END_OF_FILE.
     SfStatus edit_line(Line* l)
     {
+        History* h = (History*)process::line_history(sizeof(History));
+        uint32_t back = 0;              // how far back in h the line shown is (0: a new one)
+
         {
             OnScreen on;
             l->len = l->cur = 0;
@@ -178,6 +216,8 @@ namespace
                     l->cur = l->len;
                     place(l, l->len);
                     tty::write("\n", 1);
+                    l->text[l->len] = '\0';
+                    remember(h, l);
                     return SF_SUCCESS;
                 case KEY_BACKSPACE:
                     if (l->cur == 0)
@@ -200,6 +240,14 @@ namespace
                 case KEY_ARROW_RIGHT: if (l->cur < l->len) l->cur++; place(l, l->cur); break;
                 case KEY_HOME:        l->cur = 0;                    place(l, l->cur); break;
                 case KEY_END:         l->cur = l->len;               place(l, l->cur); break;
+                case KEY_ARROW_UP:
+                    if (h && back < h->count)
+                        replace(l, h->text[h->count - ++back]);
+                    break;
+                case KEY_ARROW_DOWN:
+                    if (back > 0)
+                        replace(l, --back ? h->text[h->count - back] : "");
+                    break;
                 default:
                     if ((uint8_t)e.KeyChar < 0x20 || l->len + 1 >= TEXT_MAX)
                         break;              // no character, a control one, or full

@@ -1,4 +1,4 @@
-// taskmgr: the task manager. Run it as `admin taskmgr`.
+// taskmgr: the task manager. Run it as `sudo taskmgr`.
 //
 // A full-screen program (SF_CONSOLE_RAW) that shows, once a second, the
 // memory, the load of every CPU and the running programs with their CPU
@@ -562,7 +562,7 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
     Admin = System->Admin;
     if (!Admin || !SF_HAS_FIELD(Admin, SfAdmin, GetProcessInfo))
     {
-        Con->Print(Con, "taskmgr needs the admin right: run it as  admin taskmgr\n");
+        Con->Print(Con, "taskmgr needs the admin right: run it as  sudo taskmgr\n");
         return SF_ACCESS_DENIED;
     }
     if (SF_ERROR(Sys->Sync->CreateMutex(Sys->Sync, &Lock)) ||

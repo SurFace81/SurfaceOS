@@ -4,9 +4,9 @@
 // each screen and started again whenever it ends. It reads a line and
 // either does it itself (the commands below) or runs the program it names
 // - from /apps, or by its path - handing it the keys until it ends, or is
-// paused (Ctrl+Alt+Z) or sent elsewhere; a last `&` runs it in the
-// background instead. What a command prints longer than the screen is
-// shown a page at a time.
+// paused (Ctrl+Alt+Z) or sent elsewhere; an `&` before it runs it in the
+// background instead. A word with spaces goes in quotes ("my file.txt").
+// What a command prints longer than the screen is shown a page at a time.
 //
 // Paths: the current folder is an absolute path of the whole disk
 // ("/apps"), and every path typed is taken from there; the files are
@@ -952,12 +952,10 @@ static SfFile* OpenArg(const char* Arg)
     return nullptr;
 }
 
-static void Run(const char** Words, uint64_t Count, bool AsAdmin)
+// Run the program Words[0] with the rest as its arguments: here, or in
+// the background (`&` before it).
+static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Background)
 {
-    bool Background = Count > 1 && Same(Words[Count - 1], "&");
-    if (Background)
-        Count--;
-
     // A name with a slash is a path; a plain one is looked up in /apps.
     char Program[PATH_SIZE + 8];
     Copy(Program, Words[0], sizeof(Program));
@@ -1146,11 +1144,13 @@ static void Kill(const char** Args, uint64_t Count)
     }
 }
 
-static void AdminRun(const char** Args, uint64_t Count)
+static bool Background;          // the line began with `&`
+
+static void Sudo(const char** Args, uint64_t Count)
 {
     if (Count < 2)
-        return Print("Usage: admin <program> [args] [&]\n");
-    Run(Args + 1, Count - 1, true);
+        return Print("Usage: [&] sudo <program> [args]\n");
+    Run(Args + 1, Count - 1, true, Background);
 }
 
 static const struct
@@ -1191,7 +1191,7 @@ static const struct
     { "kill",     Kill,     "<id...>  end programs at once" },
     { "fg",       Fg,       "[id]  go on with a paused program here, or bring one here" },
     { "bg",       Bg,       "[id]  send a program (the paused one here) to the background" },
-    { "admin",    AdminRun, "<program> [args]  run it with the admin right" },
+    { "sudo",     Sudo,     "<program> [args]  run it with the admin right" },
     { "reboot",   Reboot,   "restart the machine" },
     { "shutdown", Shutdown, "power it off" },
 };
@@ -1207,24 +1207,40 @@ static void Help(const char**, uint64_t)
         Print(c.Help);
         Print("\n");
     }
-    Print("  <program> [args] [&]   run a program from /apps, or by its path;\n"
+    Print("  [&] <program> [args]   run a program from /apps, or by its path;\n"
           "                         & runs it in the background\n"
+          "  \"a b\"                  a name or path with spaces\n"
+          "  Up/Down                the lines typed before\n"
           "  Ctrl+Alt+C ends the programs on this screen, Ctrl+Alt+Z pauses them\n"
           "  Longer output: PageUp/PageDown or the arrows move it, q leaves\n");
 }
 
 // Split Line in place into words; how many there are (at most Max).
+// Quotes keep the spaces between them in one word and are dropped:
+// "my file.txt", /mount/"usb stick"/a.
 static uint64_t Split(char* Line, const char** Words, uint64_t Max)
 {
     uint64_t Count = 0;
-    for (char* p = Line; *p && Count < Max;)
+    char* p = Line;
+    while (Count < Max)
     {
         while (*p == ' ')
-            *p++ = '\0';
+            p++;
         if (!*p)
             break;
         Words[Count++] = p;
-        while (*p && *p != ' ')
+        char* w = p;                    // where the word goes, without its quotes
+        bool Quoted = false;
+        for (; *p && (Quoted || *p != ' '); p++)
+        {
+            if (*p == '"')
+                Quoted = !Quoted;
+            else
+                *w++ = *p;
+        }
+        char Stop = *p;
+        *w = '\0';
+        if (Stop)
             p++;
     }
     return Count;
@@ -1266,20 +1282,30 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
 
         WaitHere();                     // a paused one may have been ended
         const char* Words[32];
+        const char** Word = Words;
         uint64_t Count = Split(Line, Words, 32);
+        // "& program" or "&program": in the background.
+        Background = Count && Word[0][0] == '&';
+        if (Background && !Word[0][1])
+            Word++, Count--;
+        else if (Background)
+            Word[0]++;
         if (Count == 0)
             continue;
         bool Done = false;
         Gather = true;
         for (const auto& c : Commands)
-            if (Same(Words[0], c.Name))
+            if (Same(Word[0], c.Name))
             {
-                c.Run(Words, Count);
+                if (Background && c.Run != Sudo)
+                    Print("& runs programs, not console commands\n");
+                else
+                    c.Run(Word, Count);
                 Done = true;
                 break;
             }
         if (!Done)
-            Run(Words, Count, false);
+            Run(Word, Count, false, Background);
         ShowOutput();
     }
 }

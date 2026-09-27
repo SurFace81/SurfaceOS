@@ -60,21 +60,23 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   <dev|dir>, sync, time, settime, uptime, reboot, shutdown and hardware
   info (lsblk, meminfo, cpuid, lspci, lsusb, usbports, usbinfo, acpi,
   dmesg); a program runs by its name (looked up in /apps) or by its path,
-  on a cleared screen, with a last `&` in the background (a hidden
+  on a cleared screen, or with `&` before it in the background (a hidden
   screen, its output logged to /files/<name>/console_<date>_<time>.log);
   ps lists the programs, kill <id> ends one, bg sends the paused one to
   the background and fg brings it (or any by its id) back to the screen;
   output longer than the screen stops at a ";" line: PageUp/PageDown move
   a page, the arrows a line, q leaves;
-  `admin <program>` runs it with the admin right (Sys->Admin: processes,
+  a name or path with spaces goes in quotes ("my file.txt"); Up and
+  Down bring back the last lines typed;
+  `sudo <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)
-- Programs: taskmgr (`admin taskmgr`: memory, the load of every CPU and
+- Programs: taskmgr (`sudo taskmgr`: memory, the load of every CPU and
   the running programs with their CPU share, CPU time, memory and threads,
   live; Del ends the chosen one), hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
   what ReadKey reports, `sdkcheck box` draws the box characters, `sdkcheck ticks` ticks to be paused, `sdkcheck
-  spin` shows its share of a CPU, `admin sdkcheck admin` checks the admin
+  spin` shows its share of a CPU, `sudo sdkcheck admin` checks the admin
   right), sfstest (files through the SDK and
   the roots' sandbox; `sfstest verify` after a restart), threadtest
   (how a program with several threads ends: fault, Ctrl+Alt+C, last

@@ -209,7 +209,7 @@ wait_session_end $WANT 15
 #     console goes on; what it prints goes to a log in its data folder
 #     (read back from the image at the end). Ctrl+Alt+C on screen 1 does
 #     not reach it.
-type_cmd "sdkcheck ticks &"
+type_cmd "& sdkcheck ticks"
 wait_for "console: background start, pid" 10; result $? "sdkcheck ticks & starts in the background"
 T1=$(ticks)
 WANT=$(( $(sessions_ended) + 1 ))
@@ -229,7 +229,7 @@ if [ "${SMP:-1}" = "1" ]; then
         grep -ao "sdkcheck spin $1: [0-9]*" "$LOG" | sed -n "$2,$3p" |
             awk '{ s += $4; n++ } END { print (n ? int(s / n) : 0) }'
     }
-    type_cmd "sdkcheck spin bg 16 &"; sleep 1
+    type_cmd "& sdkcheck spin bg 16"; sleep 1
     WANT=$(( $(sessions_ended) + 1 ))
     type_cmd "sdkcheck spin fg 9"
     wait_for "sdkcheck spin fg: " 10; sleep 4
@@ -253,20 +253,20 @@ if [ "${SMP:-1}" = "1" ]; then
     sleep 1
 fi
 
-# 1f. The admin right: `admin sdkcheck admin` gets Sys->Admin, disk:/ and
+# 1f. The admin right: `sudo sdkcheck admin` gets Sys->Admin, disk:/ and
 #     mount:/ (a plain sdkcheck checks it gets none of them).
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "admin sdkcheck admin"
-wait_for "sdkcheck admin: " 30; result $? "admin sdkcheck admin finished"
+type_cmd "sudo sdkcheck admin"
+wait_for "sdkcheck admin: " 30; result $? "sudo sdkcheck admin finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "sdkcheck admin: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck admin: no failed checks"
-wait_session_end $WANT 15; result $? "admin sdkcheck admin exits"
+wait_session_end $WANT 15; result $? "sudo sdkcheck admin exits"
 
 # 1f2. taskmgr: full screen, live, ends on q.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "admin taskmgr"; sleep 3
+type_cmd "sudo taskmgr"; sleep 3
 key q
-wait_session_end $WANT 10; result $? "admin taskmgr runs and ends on q"
+wait_session_end $WANT 10; result $? "sudo taskmgr runs and ends on q"
 [ "$(last_status)" = "$ST_SUCCESS" ]; result $? "  with SF_SUCCESS"
 
 # 1g. CMD.BIN, the console of screens 2..9: the "zz" typed on screen 2
@@ -289,7 +289,7 @@ key ctrl-alt-c; sleep 3
 [ "$(grep -ac "cmdkeeper: cmd pid" "$LOG")" -gt "$CMDS" ]; result $? "CMD on its own ends on Ctrl+Alt+C and is started again"
 type_cmd "sdkcheck reader"; sleep 2; type_cmd "new cmd"
 wait_for "sdkcheck input: child got new cmd" 10; result $? "the new CMD works"
-type_cmd "sdkcheck late &"
+type_cmd "& sdkcheck late"
 wait_for "started sdkcheck (pid" 10
 grep -aq "in the background)" "$LOG"; result $? "CMD runs a program in the background"
 sleep 2; key alt-f1

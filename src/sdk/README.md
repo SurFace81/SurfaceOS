@@ -24,7 +24,7 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
 `make surfaceos.img` builds it into `bin/apps/<name>.bin` and puts it on
 the boot volume as `/apps/<name>` (no extension). The console runs it by its name:
-`hello`, `hello &` (in the background), `admin hello` (with the admin
+`hello`, `& hello` (in the background), `sudo hello` (with the admin
 right).
 
 There is no libc and no start-up code. Programs are built freestanding
@@ -183,7 +183,7 @@ for it. The last thread to end, or `SfMain` returning, ends the program.
 
 ### Admin
 
-A program started with the admin right (the console, `admin <program>`)
+A program started with the admin right (the console, `sudo <program>`)
 gets `Sys->Admin` and the roots `disk:/` and `mount:/`. With them it can:
 
 - list and end programs, and move them between screens (`fg`/`bg`);

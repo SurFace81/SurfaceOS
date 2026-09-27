@@ -26,7 +26,7 @@
 // Run as `sdkcheck ticks`, it prints "sdkcheck tick N" every 200 ms for
 // half a minute: something to pause (Ctrl+Alt+Z) and watch stand still.
 //
-// Run as `admin sdkcheck admin` - with the admin right - it checks
+// Run as `sudo sdkcheck admin` - with the admin right - it checks
 // Sys->Admin instead: the process list, ending a program, disk:/ and
 // mount:/, Mount and Unmount of usb1 ("sdkcheck admin: N passed, M
 // failed"). A plain run checks that without the right there is none.

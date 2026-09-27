@@ -182,6 +182,10 @@ namespace process
     uint32_t current_screen();
     bool     console_raw();
     void     set_console_raw(bool raw);
+    // The caller's ReadLine history: `size` zeroed bytes the first time,
+    // the same block afterwards, freed with the process. nullptr when out
+    // of memory.
+    void*    line_history(uint64_t size);
     bool  wait_for_input();
     // Has the caller lost screen `screen`'s input, or left the screen?
     bool  input_changed(uint32_t screen);
