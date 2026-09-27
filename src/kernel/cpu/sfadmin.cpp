@@ -15,6 +15,10 @@
 #include "../../include/drivers/rtc.h"
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/reports.h"
+#include "../../include/cpu/cpuid.h"
+#include "../../include/cpu/smp.h"
+#include "../../include/mm/pmm.h"
+#include "../../include/mm/memory.h"
 #include "../../sdk/include/abi/errno.h"
 #include "../../sdk/include/sfos.h"
 
@@ -188,6 +192,56 @@ namespace
                                             : SF_NOT_FOUND;
     }
 
+    // (SfSystemInfo* Info)
+    void get_system_info(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        SfSystemInfo* info = (SfSystemInfo*)kmalloc(sizeof(SfSystemInfo));
+        if (!info)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        memory::memset((uint8_t*)info, 0, sizeof(*info));
+
+        pmm::Stats mem;
+        pmm::get_stats(&mem);
+        info->MemoryTotal = mem.total_frames * PAGE_SIZE_4K;
+        info->MemoryFree  = mem.free_frames * PAGE_SIZE_4K;
+        info->CpuCount    = smp::running();
+        if (info->CpuCount > SF_MAX_CPUS)
+            info->CpuCount = SF_MAX_CPUS;
+        char name[51] = {};
+        cpuid::get_cpu_name(name);
+        const char* n = name;
+        while (*n == ' ')
+            n++;                        // some CPUs pad the name in front
+        for (uint32_t i = 0; n[i] && i < sizeof(info->CpuName) - 1; i++)
+            info->CpuName[i] = n[i];
+        for (uint32_t i = 0; i < info->CpuCount; i++)
+            process::cpu_times(i, &info->CpuBusy[i], &info->CpuTotal[i]);
+
+        regs->rax = uaccess::copy_to_user(regs->rdi, info, sizeof(*info))
+                  ? SF_SUCCESS : SF_INVALID_PARAMETER;
+        kfree(info);
+    }
+
+    // (uint64_t Id, SfProcessStats* Info)
+    void get_process_info(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        SfProcessStats stats;
+        if (regs->rdi > 0x7FFFFFFF || !process::program_stats((pid_t)regs->rdi, &stats))
+        {
+            regs->rax = SF_NOT_FOUND;
+            return;
+        }
+        regs->rax = uaccess::copy_to_user(regs->rsi, &stats, sizeof(stats))
+                  ? SF_SUCCESS : SF_INVALID_PARAMETER;
+    }
+
     // ()
     void sync(user_regs* regs, iret_frame*)
     {
@@ -274,5 +328,7 @@ namespace sfadmin
         sfcall::set_handler(SFCALL_ADMIN_REPORT, report);
         sfcall::set_handler(SFCALL_ADMIN_FOREGROUND, foreground);
         sfcall::set_handler(SFCALL_ADMIN_BACKGROUND, background);
+        sfcall::set_handler(SFCALL_ADMIN_GET_SYSTEM_INFO, get_system_info);
+        sfcall::set_handler(SFCALL_ADMIN_GET_PROCESS_INFO, get_process_info);
     }
 }

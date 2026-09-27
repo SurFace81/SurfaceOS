@@ -45,6 +45,12 @@
 //   Background     the same, onto a hidden screen of its own, what it prints
 //                  logged as with SF_START_BACKGROUND (sfos/process.h); the
 //                  screen it leaves goes back to its console.
+//   GetSystemInfo  (revision 1.1) *Info gets the memory and the CPUs, as
+//                  they are now (SfSystemInfo). A CPU's load over a time is
+//                  how much its Busy grew against its Total.
+//   GetProcessInfo *Info gets what program Id uses (SfProcessStats): its
+//                  threads, CPU time and memory. SF_NOT_FOUND for no such
+//                  program.
 typedef struct SfAdmin SfAdmin;
 
 typedef struct SfProcessInfo
@@ -54,6 +60,36 @@ typedef struct SfProcessInfo
     uint32_t Paused;            // 1 when paused (Ctrl+Alt+Z)
     char     Name[32];
 } SfProcessInfo;
+
+#define SF_MAX_CPUS             64
+
+typedef struct SfSystemInfo
+{
+    uint64_t MemoryTotal;           // bytes of RAM the system manages
+    uint64_t MemoryFree;            // of it, bytes nobody uses
+    uint32_t CpuCount;
+    uint32_t Reserved;
+    char     CpuName[48];           // NUL-terminated
+    uint64_t CpuBusy[SF_MAX_CPUS];  // ms each CPU has worked since it started
+    uint64_t CpuTotal[SF_MAX_CPUS]; // ms each CPU has run, working or idle
+} SfSystemInfo;
+
+// SfProcessStats Flags
+#define SF_PROCESS_PAUSED       0x1
+#define SF_PROCESS_ADMIN        0x2
+
+typedef struct SfProcessStats
+{
+    uint64_t Id;
+    uint64_t ParentId;              // 0 when the one that started it is gone
+    uint64_t CpuTime;               // ms it has run, all its threads together
+    uint64_t Memory;                // bytes of memory of its own
+    uint32_t Threads;
+    uint32_t Screen;                // as SfProcessInfo
+    uint32_t Flags;                 // SF_PROCESS_*
+    uint32_t Reserved;
+    char     Name[32];
+} SfProcessStats;
 
 struct SfAdmin
 {
@@ -69,13 +105,19 @@ struct SfAdmin
     SfStatus (*Report)(SfAdmin* This, const char* Topic, char* Buffer, uint64_t* Size);
     SfStatus (*Foreground)(SfAdmin* This, uint64_t Id);
     SfStatus (*Background)(SfAdmin* This, uint64_t Id);
+    // Revision 1.1
+    SfStatus (*GetSystemInfo)(SfAdmin* This, SfSystemInfo* Info);
+    SfStatus (*GetProcessInfo)(SfAdmin* This, uint64_t Id, SfProcessStats* Info);
 };
 
 #define SF_ADMIN_SIGNATURE      SF_SIGNATURE('S', 'F', 'A', 'D', 'M', 'I', 'N', 0)
-#define SF_ADMIN_REVISION       SF_REVISION(1, 0)
+#define SF_ADMIN_REVISION       SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(sizeof(SfProcessInfo) == 48, "SfProcessInfo layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, ListProcesses) == 16, "SfAdmin layout");
-SF_STATIC_ASSERT(sizeof(SfAdmin) == 104, "SfAdmin layout");
+SF_STATIC_ASSERT(sizeof(SfSystemInfo) == 1096, "SfSystemInfo layout");
+SF_STATIC_ASSERT(sizeof(SfProcessStats) == 80, "SfProcessStats layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, GetSystemInfo) == 104, "SfAdmin layout");
+SF_STATIC_ASSERT(sizeof(SfAdmin) == 120, "SfAdmin layout");
 
 #endif // SFOS_ADMIN_H

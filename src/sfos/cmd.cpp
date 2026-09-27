@@ -853,6 +853,12 @@ static void Ended(Job* J, bool Always)
         Print(": ended before it finished\n");
     else if (Result == SF_CRASHED)
         Print(": crashed\n");
+    else if (!Same(Why(Result), "failed"))
+    {
+        Print(": ended: ");
+        Print(Why(Result));
+        Print("\n");
+    }
     else
     {
         Print(": ended with status 0x");

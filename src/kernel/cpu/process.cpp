@@ -165,6 +165,7 @@ namespace process
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
         bool        admin;          // the admin right (sfos/admin.h)
         bool        from_console;   // started by its screen's console (the log says so)
+        uint64_t    cpu_ticks;      // timer ticks its threads ran (account_tick)
 
         uint64_t    cr3;
         uint64_t    brk_start;      // end of the ELF image
@@ -550,6 +551,7 @@ namespace process
                 next_pid = 1;
             p->pgid = p->pid;           // its own group until setpgid says otherwise
             p->sf_status = SF_ABORTED;
+            p->cpu_ticks = 0;
             p->obj = proc_obj_new(p->pid);
             if (!p->obj)
             {
@@ -1985,6 +1987,57 @@ namespace process
     static bool tick_due(const Thread* t)
     {
         return pit::ticks() >= t->wake_tick;
+    }
+
+    // Ticks each CPU has run, and of them those it worked (not idle).
+    static uint64_t cpu_total[acpi::MAX_CPUS];
+    static uint64_t cpu_busy[acpi::MAX_CPUS];
+
+    void account_tick()
+    {
+        Cpu* c = this_cpu();
+        if (c->index >= acpi::MAX_CPUS)
+            return;
+        cpu_total[c->index]++;
+        if (!c->thread)
+            return;                     // idle
+        cpu_busy[c->index]++;
+        if (c->proc)
+            __atomic_add_fetch(&c->proc->cpu_ticks, 1, __ATOMIC_RELAXED);
+    }
+
+    static uint64_t ticks_to_ms(uint64_t ticks)
+    {
+        uint32_t hz = pit::real_frequency();
+        if (!hz)
+            hz = pit::frequency();
+        return hz ? ticks * 1000 / hz : ticks;
+    }
+
+    void cpu_times(uint32_t cpu, uint64_t* busy_ms, uint64_t* total_ms)
+    {
+        bool ok = cpu < acpi::MAX_CPUS;
+        *busy_ms  = ok ? ticks_to_ms(cpu_busy[cpu]) : 0;
+        *total_ms = ok ? ticks_to_ms(cpu_total[cpu]) : 0;
+    }
+
+    bool program_stats(pid_t pid, SfProcessStats* out)
+    {
+        Process* p = find_live(pid);
+        if (!p || p->kernel)
+            return false;
+        memory::memset((uint8_t*)out, 0, sizeof(*out));
+        Process* parent = p->ppid ? find_live(p->ppid) : nullptr;
+        out->Id       = (uint64_t)p->pid;
+        out->ParentId = parent && !parent->kernel ? (uint64_t)parent->pid : 0;
+        out->CpuTime  = ticks_to_ms(p->cpu_ticks);
+        out->Memory   = p->cr3 ? paging::count_user_pages(p->cr3) * PAGE_SIZE_4K : 0;
+        out->Threads  = count_threads(p);
+        out->Screen   = p->screen < TERM_SCREENS ? p->screen + 1 : 0;
+        out->Flags    = (p->state == State::Stopped ? SF_PROCESS_PAUSED : 0) |
+                        (p->admin ? SF_PROCESS_ADMIN : 0);
+        copy_bytes((uint8_t*)out->Name, (const uint8_t*)p->name, sizeof(out->Name) - 1);
+        return true;
     }
 
     void on_timer_tick()

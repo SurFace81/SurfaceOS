@@ -87,6 +87,8 @@
 #define SFCALL_ADMIN_FOREGROUND      51  // (uint64_t Id)
 #define SFCALL_ADMIN_BACKGROUND      52  // (uint64_t Id)
 #define SFCALL_PROCESS_ID_OF         53  // (uint64_t Handle, uint64_t* Id)
-#define SFCALL_COUNT                 54
+#define SFCALL_ADMIN_GET_SYSTEM_INFO 54  // (SfSystemInfo* Info)
+#define SFCALL_ADMIN_GET_PROCESS_INFO 55 // (uint64_t Id, SfProcessStats* Info)
+#define SFCALL_COUNT                 56
 
 #endif // ABI_SFCALL_H

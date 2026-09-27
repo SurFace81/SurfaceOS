@@ -162,6 +162,10 @@ namespace paging
     // failure the partial copy is left for destroy_address_space().
     bool        clone_user_space(uint64_t dst_pml4, uint64_t src_pml4);
 
+    // The 4 KiB pages of the lower half of `pml4` that are its own: mapped,
+    // and not PAGE_SHARED (the SDK runtime's code).
+    uint64_t    count_user_pages(uint64_t pml4);
+
     // OR additional permission bits into an already-mapped 4 KiB page, and
     // clear PAGE_NX if the new flags make it executable.
     void        upgrade_page_flags(uint64_t virt, uint64_t flags);

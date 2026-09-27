@@ -547,6 +547,20 @@ static SfStatus RunAdmin(SfSystem* Sys)
     Check("EndProcess of no such program is SF_NOT_FOUND",
           Admin->EndProcess(Admin, 999999) == SF_NOT_FOUND);
 
+    // What the task manager shows.
+    static SfSystemInfo Info;
+    Check("GetSystemInfo: memory and CPUs",
+          Admin->GetSystemInfo(Admin, &Info) == SF_SUCCESS && Info.CpuCount >= 1 &&
+          Info.MemoryFree > 0 && Info.MemoryFree < Info.MemoryTotal &&
+          Info.CpuTotal[0] > 0 && Info.CpuBusy[0] <= Info.CpuTotal[0]);
+    SfProcessStats Me;
+    Check("GetProcessInfo: this program's threads and memory",
+          Admin->GetProcessInfo(Admin, MyId, &Me) == SF_SUCCESS && Me.Id == MyId &&
+          Me.Threads >= 1 && Me.Memory > 0 && (Me.Flags & SF_PROCESS_ADMIN) &&
+          SameText(Me.Name, "sdkcheck"));
+    Check("GetProcessInfo of no such program is SF_NOT_FOUND",
+          Admin->GetProcessInfo(Admin, 999999, &Me) == SF_NOT_FOUND);
+
     // Volumes: the test's second disk, usb1.
     Check("Mount of no such device is SF_NOT_FOUND",
           Admin->Mount(Admin, "nosuch") == SF_NOT_FOUND);

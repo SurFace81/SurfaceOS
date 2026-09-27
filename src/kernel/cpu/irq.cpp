@@ -213,6 +213,9 @@ void irq_handler(struct interrupt_frame *frame) {
             smp::watch_boot_cpu();
     }
 
+    if (irq_line == IRQ0_TIMER || cpu_tick)
+        process::account_tick();
+
     if (!apic::active() && irq::is_spurious_irq(irq_line)) {
         if (irq_line == 15) {
             port::byte_out(PIC1_COMMAND, PIC_EOI);

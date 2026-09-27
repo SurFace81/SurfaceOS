@@ -101,6 +101,7 @@ struct vnode;
 // frames go back to the PMM later, from another task.
 
 struct SfProcessInfo;           // sfos/admin.h
+struct SfProcessStats;
 
 namespace process
 {
@@ -265,6 +266,14 @@ namespace process
     // Every timer tick, from any ring: wakes the sleep_until sleepers that
     // are due.
     void on_timer_tick();
+
+    // Every tick of every CPU, before anything else (no lock needed): what
+    // it ran gets the tick. cpu_times: ms CPU `cpu` has run and worked;
+    // program_stats: what program `pid` uses (sfos/admin.h; false: no such
+    // program).
+    void account_tick();
+    void cpu_times(uint32_t cpu, uint64_t* busy_ms, uint64_t* total_ms);
+    bool program_stats(pid_t pid, SfProcessStats* out);
 
     // An IRQ arrived while ring 3 was running (EOI already sent).
     void on_user_interrupt(uint8_t irq, user_regs* regs, iret_frame* iret);

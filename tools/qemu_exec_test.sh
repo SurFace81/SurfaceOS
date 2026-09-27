@@ -28,7 +28,7 @@ DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="sdkcheck sfstest threadtest"
+APPS="sdkcheck sfstest threadtest taskmgr"
 
 bash tools/make_test_image.sh "$IMG" "$APPS"
 bash tools/make_data_disk.sh "$DATA_IMG"
@@ -257,6 +257,13 @@ wait_for "sdkcheck admin: " 30; result $? "admin sdkcheck admin finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "sdkcheck admin: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck admin: no failed checks"
 wait_session_end $WANT 15; result $? "admin sdkcheck admin exits"
+
+# 1f2. taskmgr: full screen, live, ends on q.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "admin taskmgr"; sleep 3
+key q
+wait_session_end $WANT 10; result $? "admin taskmgr runs and ends on q"
+[ "$(last_status)" = "0" ]; result $? "  with status 0"
 
 # 1g. CMD.BIN, the console of screens 2..9: the "zz" typed on screen 2
 #     above waits in its line; it runs programs, handing them the keys,

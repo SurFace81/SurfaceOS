@@ -187,6 +187,8 @@ A program started with the admin right (the console, `admin <program>`)
 gets `Sys->Admin` and the roots `disk:/` and `mount:/`. With them it can:
 
 - list and end programs, and move them between screens (`fg`/`bg`);
+- see the memory, the load of each CPU and what each program uses
+  (`GetSystemInfo`, `GetProcessInfo`, revision 1.1);
 - mount and unmount volumes;
 - set the clock;
 - restart and power off;
@@ -205,6 +207,8 @@ The kernel checks the right on every call, so a program without it gets
 | `sfos.ld`                 | The linker script for programs. |
 | `libc/`, the other headers in `include/` | The old POSIX layer. It goes away when Linux compatibility is removed. |
 
-Example programs: `src/apps/hello.cpp` (the smallest), `src/sfos/cmd.cpp`
+Example programs: `src/apps/hello.cpp` (the smallest),
+`src/apps/taskmgr.cpp` (a full-screen program: raw mode, one `Draw` per
+frame, keys read on a second thread), `src/sfos/cmd.cpp`
 (the console: files, programs, admin), `src/apps/sdkcheck.cpp` (a check of
 every table).

@@ -72,7 +72,9 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   a page, the arrows a line, q leaves;
   `admin <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)
-- Programs: hello (Console Print and ReadLine), sdkcheck (the SDK
+- Programs: taskmgr (`admin taskmgr`: memory, the load of every CPU and
+  the running programs with their CPU share, CPU time, memory and threads,
+  live; Del ends the chosen one), hello (Console Print and ReadLine), sdkcheck (the SDK
   tables, memory, time, arguments, threads, mutexes and events, starting programs;
   `sdkcheck input` hands its keys to a child, `sdkcheck keys` shows
   what ReadKey reports, `sdkcheck box` draws the box characters, `sdkcheck ticks` ticks to be paused, `sdkcheck

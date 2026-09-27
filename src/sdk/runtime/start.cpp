@@ -299,6 +299,16 @@ static SfStatus AdminBackground(SfAdmin*, uint64_t Id)
     return SfCall(SFCALL_ADMIN_BACKGROUND, Id);
 }
 
+static SfStatus AdminGetSystemInfo(SfAdmin*, SfSystemInfo* Info)
+{
+    return SfCall(SFCALL_ADMIN_GET_SYSTEM_INFO, (uint64_t)Info);
+}
+
+static SfStatus AdminGetProcessInfo(SfAdmin*, uint64_t Id, SfProcessStats* Info)
+{
+    return SfCall(SFCALL_ADMIN_GET_PROCESS_INFO, Id, (uint64_t)Info);
+}
+
 static const SfAdmin SdkAdmin =
 {
     { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
@@ -313,6 +323,8 @@ static const SfAdmin SdkAdmin =
     AdminReport,
     AdminForeground,
     AdminBackground,
+    AdminGetSystemInfo,
+    AdminGetProcessInfo,
 };
 
 // Filled in by SdkStart from the start info.

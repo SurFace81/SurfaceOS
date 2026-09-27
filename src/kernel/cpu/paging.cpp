@@ -438,6 +438,32 @@ namespace paging {
         return true;
     }
 
+    static uint64_t count_level(const uint64_t* t, int level)
+    {
+        uint64_t n = 0;
+        for (uint64_t i = 0; i < 512; i++)
+        {
+            uint64_t e = t[i];
+            if (!(e & PAGE_PRESENT))
+                continue;
+            if (level == 1)
+                n += !(e & PAGE_SHARED);
+            else if (!(e & PAGE_SIZE))
+                n += count_level(table(e), level - 1);
+        }
+        return n;
+    }
+
+    uint64_t count_user_pages(uint64_t pml4)
+    {
+        const uint64_t* top = table(pml4);
+        uint64_t n = 0;
+        for (uint64_t i = 0; i < USER_PML4_COUNT; i++)
+            if (top[i] & PAGE_PRESENT)
+                n += count_level(table(top[i]), 3);
+        return n;
+    }
+
     void unmap_page(uint64_t virt)
     {
         uint64_t* pte = find_pte(virt);
