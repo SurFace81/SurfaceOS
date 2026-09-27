@@ -6,7 +6,6 @@
 // RWX memory, which a JIT or tcc -run needs.
 
 #include "../../include/cpu/process.h"
-#include "../../include/cpu/signal.h"
 #include "../../include/cpu/percpu.h"
 #include "../../include/cpu/spinlock.h"
 #include "../../include/acpi/acpi.h"
@@ -44,11 +43,7 @@
 #define USER_CS             0x23
 #define USER_SS             0x2B
 #define RFLAGS_USER         0x202       // IF + reserved bit 1
-#define INT80_LENGTH        2           // `int $0x80` is CD 80
 #define TIME_SLICE_TICKS    10          // PIT ticks (~10 ms at 1 kHz), per unit of weight
-
-// Syscall failure: -errno in rax (Linux convention, see abi/errno.h).
-#define SYSCALL_ERR(e)      ((uint64_t)(sint64_t)-(e))
 
 namespace process
 {
@@ -61,11 +56,11 @@ namespace process
     // one it starts with and those it creates (SfThread). The scheduler
     // picks threads.
     //
-    // Process state: Live (its thread runs or sleeps), Stopped (job control:
-    // its thread is not picked until SIGCONT), Zombie (exited, the parent
-    // has not reaped it yet). Thread state: Runnable or Blocked (asleep on a
-    // wait queue).
-    enum class State  : uint8_t { Unused, Live, Stopped, Zombie };
+    // Process state: Live (its threads run or sleep), Stopped (paused with
+    // Ctrl+Alt+Z: its threads are not picked until it goes on), Ended (gone,
+    // but its last thread still runs on another CPU: the slot waits for it).
+    // Thread state: Runnable or Blocked (asleep on a wait queue).
+    enum class State  : uint8_t { Unused, Live, Stopped, Ended };
     enum class TState : uint8_t { Unused, Runnable, Blocked };
 
     struct proc_obj;
@@ -100,13 +95,6 @@ namespace process
         bool        woken;
         uint64_t    wake_tick;
 
-        // The call running now. restart_pending: a signal ended a sleep
-        // inside it before it had a result (syscall_interrupted). On the way
-        // back to ring 3 the call is either restarted - RIP stepped back
-        // over `int 0x80`, rax = syscall_nr - or fails with EINTR.
-        uint64_t    syscall_nr;
-        bool        restart_pending;
-
         // User state a fresh image or a fork child starts from. Once the
         // thread runs, its live user state is the trap frame on its own
         // kernel stack, not this.
@@ -125,30 +113,18 @@ namespace process
     {
         State       state;
         uint32_t    cpu;            // its home CPU: where its first thread ran;
-                                    // it alone acts on the process's signals
+                                    // it alone acts on end_requested
         bool        reap_when_empty;    // free the slot once its last (doomed)
                                         // thread is gone
         pid_t       pid;
-        pid_t       ppid;           // 0: started by the console, or an orphan
-        pid_t       pgid;           // process group, for job control
+        pid_t       ppid;           // who started it; 0 once that one is gone
 
-        // A kernel process (the console): no user address space, never
-        // signalled or killed, runs kernel code on its task only.
+        // A kernel process (cmdkeeper): no user address space, never
+        // ended, runs kernel code on its task only.
         bool        kernel;
-        int         exit_status;    // valid in Zombie
         SfStatus    sf_status;      // what SfMain or the last thread returned;
                                     // SF_ABORTED when something else ended it
-
-        // Job control: set when the process is stopped, cleared when the
-        // parent reports it. cont_pending does the same for SIGCONT.
-        int         stop_status;
-        bool        stop_pending;   // a stop the parent has not seen yet
-        bool        cont_pending;   // ditto for a resume
-
-        // Signals.
-        sig::signal_state sig;
-        bool        mask_saved;     // sigsuspend: restore this on sigreturn
-        sigset_t    saved_mask;
+        bool        end_requested;  // Ctrl+Alt+C, EndProcess: its CPU ends it
 
         char        name[32];
 
@@ -162,9 +138,7 @@ namespace process
         uint64_t    cpu_ticks;      // timer ticks its threads ran (account_tick)
 
         uint64_t    cr3;
-        uint64_t    brk_start;      // end of the ELF image
-        uint64_t    brk;            // current program break
-        uint64_t    mmap_cursor;    // where the next mmap search starts
+        uint64_t    mmap_cursor;    // where the next AllocatePages search starts
 
         // Kernel objects the process holds, by handle. A file descriptor is a
         // handle holding a File.
@@ -173,11 +147,6 @@ namespace process
         // The process as a kernel object (what a handle to it refers to).
         // The slot holds one reference until the process exits.
         proc_obj*   obj;
-
-        // POSIX file state beyond the descriptors: cwd (referenced vnode)
-        // and umask.
-        vnode*      cwd;
-        uint32_t    umask;
 
         // The SurfaceOS roots (sffile.h): data, tmp and argN, each a
         // referenced directory or file. Free slots have v == nullptr.
@@ -212,8 +181,7 @@ namespace process
         kobject    hdr;         // type Process
         pid_t      pid;
         bool       exited;
-        int        status;      // exit status once exited (wait format)
-        SfStatus   sf_status;   // the same as an SfStatus (SfProcess Wait)
+        SfStatus   sf_status;   // how it ended (SfProcess Wait)
         wait_queue changed;     // woken on exit
         bool       used;        // pool slot taken
     };
@@ -254,7 +222,6 @@ namespace process
             kobj::init(&o->hdr, &proc_obj_ops);
             o->pid         = pid;
             o->exited      = false;
-            o->status      = 0;
             o->sf_status   = SF_ABORTED;
             o->changed.head = nullptr;
             o->used        = true;
@@ -265,13 +232,12 @@ namespace process
 
     // The process behind p->obj is gone: record how, wake the waiters and
     // drop the slot's reference.
-    static void proc_obj_exit(Process* p, int status)
+    static void proc_obj_exit(Process* p)
     {
         proc_obj* o = p->obj;
         if (!o)
             return;
         o->exited = true;
-        o->status = status;
         o->sf_status = p->sf_status;
         wait::wake_up(&o->changed);
         p->obj = nullptr;
@@ -543,7 +509,6 @@ namespace process
             p->pid = next_pid++;
             if (next_pid <= 0)
                 next_pid = 1;
-            p->pgid = p->pid;           // its own group until setpgid says otherwise
             p->sf_status = SF_ABORTED;
             p->cpu_ticks = 0;
             p->obj = proc_obj_new(p->pid);
@@ -552,11 +517,7 @@ namespace process
                 free_thread(t, SF_ABORTED);
                 return nullptr;         // slot stays Unused
             }
-            sig::init(&p->sig);
-
             handles::init(&p->handles);
-            p->umask = 022;
-            p->cwd = vfs::cwd_ref();        // inherit the system cwd
             memory::memset((uint8_t*)p->roots, 0x00, sizeof(p->roots));
             p->args      = nullptr;
             p->args_size = 0;
@@ -609,16 +570,11 @@ namespace process
             p->obj = nullptr;
         }
         handles::close_all(&p->handles);
-        if (p->cwd)
-        {
-            vfs::unref(p->cwd);
-            p->cwd = nullptr;
-        }
         drop_roots(p);
         if (end_threads(p, SF_ABORTED))
         {
             // A thread still runs on another CPU: the slot goes with it.
-            p->state = State::Zombie;
+            p->state = State::Ended;
             p->reap_when_empty = true;
             return;
         }
@@ -635,8 +591,7 @@ namespace process
         first_thread(p)->state = TState::Runnable;
     }
 
-    // A process that still exists and can be signalled. A stopped process
-    // counts: SIGCONT is the whole point of it being there.
+    // A process that still exists: running, asleep or paused.
     static inline bool alive(const Process* p)
     {
         return p->state == State::Live || p->state == State::Stopped;
@@ -753,14 +708,14 @@ namespace process
         return n;
     }
 
-    static void post_signal(Process* p, int n);
+    static void request_end(Process* p);
 
     bool end_program(pid_t pid)
     {
         Process* p = find_live(pid);
         if (!p || p->kernel)
             return false;
-        post_signal(p, SIGKILL);
+        request_end(p);
         return true;
     }
 
@@ -839,7 +794,6 @@ namespace process
         uint64_t len = 0;
         while (text[len])
             len++;
-        p->sf_status = SF_CRASHED;      // what Wait tells (the console says no more)
 
         uint32_t prev = term::selected();
         term::select(p->screen);
@@ -989,52 +943,46 @@ namespace process
     // Program loading
     // -----------------------------------------------------------------------
 
-    // argv/envp collection for execve and console launches. Strings live in
-    // one growable kernel buffer, per-string offsets in two growable arrays.
-    // The combined size of strings + pointers is capped at ARG_MAX, like
-    // Linux; overflow is -E2BIG.
-    struct ArgEnv
+    // A command line being collected (Start, cmdkeeper): the strings live
+    // in one growable kernel buffer, their offsets in a growable array. The
+    // strings and their pointers together are capped at ARGS_MAX; more is
+    // -E2BIG.
+    const uint32_t ARGS_MAX = 128 * 1024;
+
+    struct ArgList
     {
         char*     data;
         uint32_t  data_used;
         uint32_t  data_cap;
 
-        uint32_t* a_off;        // argv string offsets into data
+        uint32_t* a_off;        // string offsets into data
         uint32_t  a_count;
         uint32_t  a_cap;
 
-        uint32_t* e_off;        // envp string offsets into data
-        uint32_t  e_count;
-        uint32_t  e_cap;
-
         bool init()
         {
-            data = nullptr; a_off = nullptr; e_off = nullptr;
-            data_used = data_cap = a_count = a_cap = e_count = e_cap = 0;
-
-            data_cap = 1024;  a_cap = 16;  e_cap = 16;
+            data_used = a_count = 0;
+            data_cap = 1024;  a_cap = 16;
             data  = (char*)kmalloc(data_cap);
             a_off = (uint32_t*)kmalloc(a_cap * sizeof(uint32_t));
-            e_off = (uint32_t*)kmalloc(e_cap * sizeof(uint32_t));
-            return data && a_off && e_off;
+            return data && a_off;
         }
 
         void destroy()
         {
             if (data)  kfree(data);
             if (a_off) kfree(a_off);
-            if (e_off) kfree(e_off);
-            data = nullptr; a_off = nullptr; e_off = nullptr;
+            data = nullptr; a_off = nullptr;
         }
 
-        // Double the string buffer, never past ARG_MAX. 0 or -errno.
+        // Double the string buffer, never past ARGS_MAX. 0 or -errno.
         int grow_data()
         {
-            if (data_cap >= ARG_MAX)
+            if (data_cap >= ARGS_MAX)
                 return -E2BIG;
             uint32_t nc = data_cap * 2;
-            if (nc > ARG_MAX)
-                nc = ARG_MAX;
+            if (nc > ARGS_MAX)
+                nc = ARGS_MAX;
             char* nd = (char*)kmalloc(nc);
             if (!nd)
                 return -ENOMEM;
@@ -1047,53 +995,29 @@ namespace process
 
         // A string of `len` bytes is already sitting at data+data_used
         // (NUL included in len+1). Record it. 0 or -errno.
-        int finish(bool env, uint32_t len)
+        int finish(uint32_t len)
         {
-            // ARG_MAX counts the strings and their stack pointers.
-            if ((uint64_t)data_used + len + 1 +
-                ((uint64_t)a_count + e_count + 1) * 8 > ARG_MAX)
+            if ((uint64_t)data_used + len + 1 + ((uint64_t)a_count + 1) * 8 > ARGS_MAX)
                 return -E2BIG;
-
-            if (env)
+            if (a_count == a_cap)
             {
-                if (e_count == e_cap)
-                {
-                    uint32_t nc = e_cap * 2;
-                    uint32_t* na = (uint32_t*)kmalloc(nc * sizeof(uint32_t));
-                    if (!na)
-                        return -ENOMEM;
-                    copy_bytes((uint8_t*)na, (const uint8_t*)e_off,
-                               e_count * sizeof(uint32_t));
-                    kfree(e_off);
-                    e_off = na;
-                    e_cap = nc;
-                }
-                e_off[e_count++] = data_used;
+                uint32_t nc = a_cap * 2;
+                uint32_t* na = (uint32_t*)kmalloc(nc * sizeof(uint32_t));
+                if (!na)
+                    return -ENOMEM;
+                copy_bytes((uint8_t*)na, (const uint8_t*)a_off, a_count * sizeof(uint32_t));
+                kfree(a_off);
+                a_off = na;
+                a_cap = nc;
             }
-            else
-            {
-                if (a_count == a_cap)
-                {
-                    uint32_t nc = a_cap * 2;
-                    uint32_t* na = (uint32_t*)kmalloc(nc * sizeof(uint32_t));
-                    if (!na)
-                        return -ENOMEM;
-                    copy_bytes((uint8_t*)na, (const uint8_t*)a_off,
-                               a_count * sizeof(uint32_t));
-                    kfree(a_off);
-                    a_off = na;
-                    a_cap = nc;
-                }
-                a_off[a_count++] = data_used;
-            }
-
+            a_off[a_count++] = data_used;
             data[data_used + len] = '\0';
             data_used += len + 1;
             return 0;
         }
 
-        // Kernel string (console launches, execve fallbacks).
-        int push_kstr(bool env, const char* s)
+        // A kernel string.
+        int push_kstr(const char* s)
         {
             uint32_t len = 0;
             while (s[len])
@@ -1106,11 +1030,12 @@ namespace process
                     return g;
             }
             copy_bytes((uint8_t*)data + data_used, (const uint8_t*)s, len);
-            return finish(env, len);
+            return finish(len);
         }
 
-        // User string: read straight into the buffer, growing on truncation.
-        int push_user(bool env, uint64_t user_str)
+        // A string of the program's: read straight into the buffer, growing
+        // it when it is cut.
+        int push_user(uint64_t user_str)
         {
             for (;;)
             {
@@ -1122,20 +1047,17 @@ namespace process
                 }
 
                 uint32_t room = data_cap - data_used;
-                sint64_t r = uaccess::strncpy_from_user(data + data_used,
-                                                        user_str, room);
+                sint64_t r = uaccess::strncpy_from_user(data + data_used, user_str, room);
                 if (r == -1)
                     return -EFAULT;
                 if (r == -2)
                 {
-                    if (data_cap >= ARG_MAX)
-                        return -E2BIG;
                     int g = grow_data();
                     if (g)
                         return g;
                     continue;
                 }
-                return finish(env, (uint32_t)r);
+                return finish((uint32_t)r);
             }
         }
     };
@@ -1218,10 +1140,11 @@ namespace process
     }
 
     // Build a complete address space for `path` (resolved against `cwd`):
-    // ELF segments, stack with the SysV argv/envp/auxv block. The active
-    // address space is unchanged on return. Returns 0 or -errno.
+    // the ELF segments, an empty stack and the SDK runtime with the start
+    // info. The active address space is unchanged on return. Returns 0 or
+    // -errno.
     static sint64_t load_program(const char* path, vnode* cwd,
-                                 const ArgEnv* ae, Image* out, uint64_t sdk_flags = 0)
+                                 const ArgList* ae, Image* out, uint64_t sdk_flags = 0)
     {
         int err = 0;
         uint64_t size = 0;
@@ -1323,8 +1246,6 @@ namespace process
     static void adopt_image(Process* p, Thread* t, const Image* img, const char* path)
     {
         p->cr3         = img->cr3;
-        p->brk_start   = img->image_end;
-        p->brk         = img->image_end;
         p->mmap_cursor = USER_MMAP_BASE;
         copy_name(p->name, path);
         if (p->args)
@@ -1341,10 +1262,6 @@ namespace process
     // -----------------------------------------------------------------------
     // Scheduler
     // -----------------------------------------------------------------------
-
-    // Post SIGCHLD to p's parent (defined with the rest of the signal
-    // machinery, below).
-    static void notify_parent(Process* p);
 
     // Wait queues are touched from IRQs (wake_up from the timer, the
     // keyboard), so every list change runs with interrupts off.
@@ -1377,9 +1294,6 @@ namespace process
         irq_restore(f);
     }
 
-    // Terminate `p`: release its memory, orphan its children (ppid 0) and
-    // leave a zombie for its parent - the console's program leaves one for
-    // the console, an orphan nothing.
     // p ends while its screen's console has the keys - paused, it was ended
     // with Ctrl+Alt+C: the last one gone, the title is the console's again.
     static void retitle_after(Process* p)
@@ -1398,12 +1312,16 @@ namespace process
         set_input_owner(s, console);
     }
 
-    static void terminate(Process* p, int status)
+    // Terminate `p` with `status` (what Wait tells): its threads, memory,
+    // handles and roots go, the programs it started are its no more (ppid
+    // 0), its screen and keys go back.
+    static void terminate(Process* p, SfStatus status)
     {
-        uart::printf("process: pid %u %s ended, status %u\n", (uint32_t)p->pid, p->name,
-                     (uint32_t)status);
+        p->sf_status = status;
+        uart::printf("process: pid %u %s ended, status %llx\n", (uint32_t)p->pid, p->name,
+                     status);
         if (p->from_console)
-            uart::printf("console: program end, status %u\n", (uint32_t)status);
+            uart::printf("console: program end, status %llx\n", status);
         // Its threads end first: nothing of the process runs after this -
         // or, for one running on another CPU, after that CPU's next kernel
         // entry. The address space goes with the last of them.
@@ -1411,28 +1329,12 @@ namespace process
         if (!left)
             release_address_space(p);
 
-        // POSIX: descriptors close and the cwd is released when the process
-        // exits, not when the parent reaps the zombie. Other handles go with
-        // them, and so do the roots.
         handles::close_all(&p->handles);
-        if (p->cwd)
-        {
-            vfs::unref(p->cwd);
-            p->cwd = nullptr;
-        }
         drop_roots(p);
 
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
-        {
-            Process* q = &table[i];
-            if (q->state == State::Unused || q->ppid != p->pid || q == p)
-                continue;
-
-            if (q->state == State::Zombie)
-                free_process(q);
-            else
-                q->ppid = 0;
-        }
+            if (table[i].ppid == p->pid && &table[i] != p)
+                table[i].ppid = 0;
 
         // A screen's console ended: cmdkeeper starts a new one. The programs
         // it started run on.
@@ -1445,22 +1347,10 @@ namespace process
         release_screen(p);
         retitle_after(p);
 
-        // Handles to the process see the exit now, whether or not a parent
-        // reaps a zombie later.
-        proc_obj_exit(p, status);
-
-        // An orphan has nobody to report to (the console waits on a handle).
-        // free_process keeps the slot while a doomed thread still runs.
-        if (p->ppid == 0)
-        {
-            free_process(p);
-        }
-        else
-        {
-            p->state = State::Zombie;
-            p->exit_status = status;
-            notify_parent(p);
-        }
+        // Handles to the process see the exit now. free_process keeps the
+        // slot while a doomed thread still runs.
+        proc_obj_exit(p);
+        free_process(p);
 
         if (p == current)
             current = nullptr;
@@ -1468,10 +1358,8 @@ namespace process
 
     static bool wake_ready(Thread* t)
     {
-        // A deliverable signal ends any wait: this is what makes a blocking
-        // read interruptible, and what lets a handler run at all while the
-        // process sits in read() or wait().
-        return sig::next_deliverable(&t->proc->sig) || t->woken ||
+        // A process to be ended stops waiting: its calls give up at once.
+        return t->proc->end_requested || t->woken ||
                (t->wake_tick && pit::ticks() >= t->wake_tick);
     }
 
@@ -1500,10 +1388,9 @@ namespace process
         return nullptr;
     }
 
-    // Ctrl+Alt+C: every program on the screen ends, whatever it is doing -
-    // SIGKILL, which nothing can catch, acted on by each process's own CPU
-    // (a process running on another CPU cannot be torn down from here).
-    static void post_signal(Process* p, int n);
+    static void request_end(Process* p);
+    static void pause_process(Process* p);
+    static void resume_process(Process* p);
 
     // A program on `screen` other than its console?
     static bool others_on(uint32_t screen)
@@ -1527,13 +1414,13 @@ namespace process
             Process* p = &table[i];
             if (alive(p) && !p->kernel && p->screen == screen &&
                 (!others || p->pid != screen_console[screen]))
-                post_signal(p, SIGKILL);
+                request_end(p);
         }
     }
 
     // Ctrl+Alt+Z: the programs on the screen but its console pause - every
-    // thread of each, SIGSTOP, which nothing can catch either - or, when
-    // they are paused, go on (SIGCONT). The title bar says so.
+    // thread of each, whatever it is doing - or, when they are paused, go
+    // on. The title bar says so.
     static void pause_programs_on(uint32_t screen)
     {
         bool any = false, paused = false;
@@ -1543,7 +1430,7 @@ namespace process
             if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
             {
                 any = true;
-                paused |= p->state == State::Stopped || (p->sig.pending & SIGMASK(SIGSTOP));
+                paused |= p->state == State::Stopped;
             }
         }
         if (!any)
@@ -1553,7 +1440,12 @@ namespace process
         {
             Process* p = &table[i];
             if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
-                post_signal(p, paused ? SIGCONT : SIGSTOP);
+            {
+                if (paused)
+                    resume_process(p);
+                else
+                    pause_process(p);
+            }
         }
 
         // Paused, the screen's keys go to its console (fg, bg...) - the
@@ -1588,228 +1480,53 @@ namespace process
     }
 
     // -----------------------------------------------------------------------
-    // Signals
+    // Ending and pausing
     // -----------------------------------------------------------------------
     //
-    // Delivery happens at the boundary back to ring 3, which is the only
-    // place a user stack and a trap frame are both to hand. Two halves:
-    //
-    //   service_signals()  applies everything that needs no user code -
-    //                      termination, stop, continue, discard - to every
-    //                      process, including ones that are not running;
-    //   deliver_signals()  builds a handler frame for the process that is
-    //                      about to be resumed.
-    //
-    // Returning from a handler does not resume a kernel call: rt_sigreturn
-    // restores the saved context wholesale. A syscall the signal interrupted
-    // has already given up its sleep by then (EINTR or a restart, see
-    // restart_syscall).
+    // A program is ended (Ctrl+Alt+C, EndProcess) on request: its home CPU
+    // acts on it at its next scheduling decision, as it may be running
+    // there right now; a thread of it running on another CPU ends at that
+    // CPU's next kernel entry (end_threads). Pausing takes effect at once:
+    // the threads of a stopped process are not picked, and one running now
+    // is switched away at its next tick.
 
-    const sigset_t STOP_SIGNALS = SIGMASK(SIGSTOP) | SIGMASK(SIGTSTP) |
-                                  SIGMASK(SIGTTIN) | SIGMASK(SIGTTOU);
-
-    static inline int stop_code(int n) { return 0x7F | ((n & 0xFF) << 8); }
-
-    static void notify_parent(Process* p)
+    static void request_end(Process* p)
     {
-        if (p->ppid == 0)
-            return;                     // the console waits on a handle
-        Process* parent = find_live(p->ppid);
-        if (parent)
-        {
-            sig::post(&parent->sig, SIGCHLD);
-        }
+        if (alive(p) && !p->kernel)
+            p->end_requested = true;
     }
 
-    static void post_signal(Process* p, int n)
+    static void pause_process(Process* p)
     {
-        if (!sig::valid(n) || !alive(p) || p->kernel)
-            return;
-
-        // SIGCONT resumes before any question of handlers: a stopped
-        // process cannot run its own handler until it is running again.
-        if (n == SIGCONT)
-        {
-            p->sig.pending &= ~STOP_SIGNALS;
-            if (p->state == State::Stopped)
-            {
-                p->state = State::Live;
-                p->cont_pending = true;
-                notify_parent(p);
-            }
-        }
-        else if (sig::default_action(n) == sig::Action::Stop)
-        {
-            p->sig.pending &= ~SIGMASK(SIGCONT);
-        }
-
-        if (sig::discarded(&p->sig, n))
-            return;                     // never pends: nothing would happen
-
-        sig::post(&p->sig, n);
+        if (p->state == State::Live && !p->kernel)
+            p->state = State::Stopped;
     }
 
-    static void stop_process(Process* p, int n)
+    static void resume_process(Process* p)
     {
-        p->state = State::Stopped;
-        p->stop_status  = stop_code(n);
-        p->stop_pending = true;
-        notify_parent(p);
+        if (p->state == State::Stopped)
+            p->state = State::Live;
     }
 
-    // Apply every pending signal whose action needs no user code. Returns
-    // true when `current` can no longer continue and the caller has to
-    // reschedule.
-    static bool service_signals()
+    // End the processes of this CPU that are to be ended. Returns true when
+    // `current` can no longer continue and the caller has to reschedule.
+    static bool service_requests()
     {
         bool switch_away = false;
-
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (p->cpu != this_cpu()->index)
+            if (p->cpu != this_cpu()->index || !alive(p) || !p->end_requested)
                 continue;               // its own CPU acts on it (it may be running there)
-
-            while (alive(p) && p->sig.pending)
-            {
-                int n = sig::next_deliverable(&p->sig);
-                if (!n)
-                    break;
-
-                // A stopped process acts only on what can kill it; the rest
-                // waits for SIGCONT, which post_signal already handled.
-                if (p->state == State::Stopped && n != SIGKILL)
-                    break;
-
-                if (sig::caught(&p->sig, n))
-                    break;              // needs a user stack: see deliver_signals
-
-                sig::clear(&p->sig, n);
-
-                sig::Action a = (n == SIGKILL) ? sig::Action::Term
-                                               : sig::default_action(n);
-                switch (a)
-                {
-                    case sig::Action::Ign:
-                    case sig::Action::Cont:
-                        break;          // handled when it was posted
-
-                    case sig::Action::Stop:
-                        stop_process(p, n);
-                        switch_away |= (p == current);
-                        break;
-
-                    case sig::Action::Term:
-                    case sig::Action::Core:
-                        switch_away |= (p == current);
-                        terminate(p, signal_status(n));
-                        break;
-                }
-            }
+            switch_away |= (p == current);
+            terminate(p, SF_ABORTED);
         }
         return switch_away;
     }
 
-    // Make the return to ring 3 re-execute the syscall p was in: step back
-    // over `int 0x80` with the syscall number in rax again (every other
-    // argument register is still as the caller left it).
-    static void restart_syscall(Thread* t, user_regs* regs, iret_frame* iret)
-    {
-        iret->rip -= INT80_LENGTH;
-        regs->rax = t->syscall_nr;
-    }
-
-    // Build the handler frame on the user stack and point the trap frame at
-    // the handler. False when the stack is unusable.
-    static bool push_signal_frame(Process* p, int n, user_regs* regs,
-                                  iret_frame* iret)
-    {
-        const k_sigaction act = p->sig.act[n];
-        if (!act.restorer)
-            return false;               // the SDK always supplies one
-
-        // An interrupted syscall: with SA_RESTART the context saved in the
-        // frame re-executes it after the handler returns; without, it fails
-        // with EINTR (already in rax).
-        if (cur_thread->restart_pending)
-        {
-            if (act.flags & SA_RESTART)
-                restart_syscall(cur_thread, regs, iret);
-            cur_thread->restart_pending = false;
-        }
-
-        cpu_context ctx;
-        ctx.regs = *regs;
-        ctx.iret = *iret;
-
-        // sigsuspend installed a temporary mask; the frame carries the one
-        // to go back to, so rt_sigreturn restores it without a second call.
-        sigset_t old = p->mask_saved ? p->saved_mask : p->sig.blocked;
-        p->mask_saved = false;
-
-        uint64_t addr = sig::frame_addr(iret->rsp);
-        sig::frame f;
-        sig::build_frame(&f, &ctx, old, act.restorer);
-
-        if (!uaccess::copy_to_user(addr, &f, sizeof(f)))
-            return false;
-
-        p->sig.blocked |= act.mask;
-        if (!(act.flags & SA_NODEFER))
-            p->sig.blocked |= SIGMASK(n);
-        p->sig.blocked &= ~SIG_UNCATCHABLE;
-
-        if (act.flags & SA_RESETHAND)
-        {
-            p->sig.act[n].handler = SIG_DFL;
-            p->sig.act[n].flags &= ~(uint64_t)SA_RESETHAND;
-        }
-
-        // Enter the handler as if called: rdi is the signal number and the
-        // frame's first word is the return address its `ret` will pop.
-        // Everything else starts at zero rather than carrying the
-        // interrupted values into a function that never declared them.
-        memory::memset((uint8_t*)regs, 0x00, sizeof(user_regs));
-        regs->rdi    = (uint64_t)n;
-        iret->rip    = act.handler;
-        iret->rsp    = addr;
-        iret->cs     = USER_CS;
-        iret->ss     = USER_SS;
-        iret->rflags = RFLAGS_USER;     // DF clear, as the ABI requires
-        return true;
-    }
-
-    // Deliver one caught signal to a process that is about to resume.
-    // Returns true when the process died instead and the caller must
-    // reschedule.
-    static bool deliver_signals(Process* p, user_regs* regs, iret_frame* iret)
-    {
-        int n = sig::next_deliverable(&p->sig);
-        if (!n || !sig::caught(&p->sig, n))
-            return false;
-
-        sig::clear(&p->sig, n);
-
-        if (push_signal_frame(p, n, regs, iret))
-            return false;
-
-        // No usable stack to run the handler on. POSIX kills the process
-        // with SIGSEGV, and it must not be catchable here or delivery would
-        // recurse on the same broken stack.
-        char text[96];
-        screen::capture(text, sizeof(text));
-        screen::printf("[%u] %s crashed: no room for a signal frame\n", (uint32_t)p->pid,
-                       p->name);
-        screen::end_capture();
-        tell_crash(p, text);
-        uart::printf("process: pid %u signal frame unwritable\n", (uint32_t)p->pid);
-        terminate(p, signal_status(SIGSEGV));
-        return true;
-    }
-
     // The system-wide part of every scheduling decision: act on Ctrl+Alt+C
-    // and on signals that need no user code, then pick a thread that can
-    // run (nullptr: none).
+    // and Ctrl+Alt+Z and on the processes to be ended, then pick a thread
+    // that can run (nullptr: none).
     static Thread* choose_next()
     {
         sint32_t s = end_screen;
@@ -1824,7 +1541,7 @@ namespace process
             pause_screen = -1;
             pause_programs_on((uint32_t)s);
         }
-        service_signals();
+        service_requests();
         return pick_next();
     }
 
@@ -1844,17 +1561,11 @@ namespace process
         slice_ticks = 0;
     }
 
-    // schedule(), then deliver the signals the resumed process has to
-    // handle into its trap frame `regs`/`iret`.
-    static void reschedule(user_regs* regs, iret_frame* iret)
+    // Switch away at a way back to ring 3 (a call's end, an interrupt): the
+    // trap frame on the kernel stack is what the process resumes from.
+    static void reschedule(user_regs*, iret_frame*)
     {
-        for (;;)
-        {
-            schedule();
-            if (deliver_signals(current, regs, iret))
-                continue;               // killed instead: pick again
-            return;
-        }
+        schedule();
     }
 
     // -----------------------------------------------------------------------
@@ -1864,9 +1575,9 @@ namespace process
     // Sleepers of sleep_until, woken by the timer once their tick is due.
     static wait_queue timer_wq;
 
-    // Sleep on q, until wake_up, `tick` (0: no deadline) or a signal. False
-    // only when a signal ended it: a resume after SIGSTOP/SIGCONT, say,
-    // counts as a spurious wakeup and the caller re-checks.
+    // Sleep on q, until wake_up, `tick` (0: no deadline) or an end request.
+    // False only when the process is to be ended: a pause and going on,
+    // say, counts as a spurious wakeup and the caller re-checks.
     static bool queue_sleep(wait_queue* q, uint64_t tick)
     {
         Thread* t = cur_thread;
@@ -1882,12 +1593,12 @@ namespace process
 
         schedule();
 
-        // A signal ended the sleep: still on the queue.
+        // An end request ended the sleep: still on the queue.
         unlink_wait(t);
         bool woken = t->woken;
         t->woken = false;
         t->wake_tick = 0;
-        return woken || !sig::next_deliverable(&t->proc->sig);
+        return woken || !t->proc->end_requested;
     }
 
     // Wake the sleepers on q that `due` accepts (all when due is null).
@@ -2009,14 +1720,8 @@ namespace process
             return;
         }
 
-        if (service_signals() || !current || current->state != State::Live ||
+        if (service_requests() || !current || current->state != State::Live ||
             cur_thread->state != TState::Runnable)
-        {
-            reschedule(regs, iret);
-            return;
-        }
-
-        if (deliver_signals(current, regs, iret))
             reschedule(regs, iret);
     }
 
@@ -2034,8 +1739,6 @@ namespace process
             const Process* p = &table[i];
             if (p->state == State::Unused)
                 continue;
-            if (p->cwd && p->cwd->mnt == m)
-                return true;
             for (uint32_t r = 0; r < MAX_ROOTS; r++)
                 if (p->roots[r].v && p->roots[r].v->mnt == m)
                     return true;
@@ -2065,7 +1768,7 @@ namespace process
     const uint32_t LAUNCH_CONSOLE = 0x2;    // a screen's console: no data folder
 
     // Load program `path` as a new process, not started yet (below).
-    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots,
+    static Process* launch(const char* path, const ArgList* ae, vnode* const* arg_roots,
                            uint32_t flags = 0);
 
     // A kernel process: no user address space, runs `entry` on its task.
@@ -2080,15 +1783,9 @@ namespace process
                 asm volatile("cli; hlt");
         }
 
-        // It works in the system cwd, not a per-process one.
         p->kernel = true;
         p->cr3    = paging::kernel_pml4();
         copy_name(p->name, name);
-        if (p->cwd)
-        {
-            vfs::unref(p->cwd);
-            p->cwd = nullptr;
-        }
         Thread* t = first_thread(p);
         copy_bytes(t->fpu, fpu_template, sizeof(t->fpu));
 
@@ -2110,10 +1807,10 @@ namespace process
     static void start_cmd(uint32_t s)
     {
         Process* p = nullptr;
-        ArgEnv ae;
+        ArgList ae;
         if (ae.init())
         {
-            if (ae.push_kstr(false, "cmd") == 0)
+            if (ae.push_kstr("cmd") == 0)
                 p = launch(CMD_PATH, &ae, nullptr, LAUNCH_ADMIN | LAUNCH_CONSOLE);
             ae.destroy();
         }
@@ -2200,7 +1897,7 @@ namespace process
 
     // Load `path` with the collected argv/envp and allocate a process for
     // it, with its roots. ppid is left at 0; it is not started yet.
-    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots,
+    static Process* launch(const char* path, const ArgList* ae, vnode* const* arg_roots,
                            uint32_t flags)
     {
         bool admin = flags & LAUNCH_ADMIN;
@@ -2334,7 +2031,7 @@ namespace process
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
             if (moves(&table[i], s))
-                post_signal(&table[i], SIGCONT);
+                resume_process(&table[i]);
         term::set_paused(s, false);
     }
 
@@ -2434,71 +2131,42 @@ namespace process
             return;
         }
 
-        // Not a switch, but still a way back to ring 3: a ^C that arrived
-        // while the process was spinning in user code gets acted on here.
+        // Not a switch, but still a way back to ring 3: a Ctrl+Alt+C that
+        // arrived while the program was spinning in user code acts here.
         return_to_user(regs, iret);
     }
 
-    // Map a CPU exception vector to the Linux signal a kernel would raise.
-    static int vector_to_signal(uint64_t vector)
-    {
-        switch (vector)
-        {
-            case 0:  return SIGFPE;    // #DE divide error
-            case 6:  return SIGILL;    // #UD invalid opcode
-            case 13: return SIGSEGV;   // #GP general protection
-            case 14: return SIGSEGV;   // #PF page fault
-            default: return SIGSEGV;
-        }
-    }
-
+    // A fault in ring 3 ends the program - never the machine - saying why
+    // and where on its screen (tell_crash).
     void on_user_fault(uint64_t vector, user_regs* regs, iret_frame* iret)
     {
         end_if_doomed(regs, iret);
-        int n = vector_to_signal(vector);
 
-        // A process can only survive its own fault if it asked to: there
-        // has to be a handler, and the signal must not be blocked.
-        // Delivering into a default or blocked disposition would re-run the
-        // faulting instruction and land right back here.
-        if (!sig::caught(&current->sig, n) ||
-            (current->sig.blocked & SIGMASK(n)))
+        uint64_t cr2;
+        asm volatile("mov %%cr2, %0" : "=r"(cr2));
+        char text[160];
+        screen::capture(text, sizeof(text));
+        screen::printf("[%u] %s crashed: ", (uint32_t)current->pid, current->name);
+        switch (vector)
         {
-            uint64_t cr2;
-            asm volatile("mov %%cr2, %0" : "=r"(cr2));
-            char text[160];
-            screen::capture(text, sizeof(text));
-            screen::printf("[%u] %s crashed: ", (uint32_t)current->pid, current->name);
-            switch (vector)
-            {
-                case 0:  screen::printf("division by zero");                  break;
-                case 6:  screen::printf("invalid instruction");               break;
-                case 13: screen::printf("general protection fault");          break;
-                case 14: screen::printf("page fault at address %llx", cr2);   break;
-                default: screen::printf("CPU exception %u", (uint32_t)vector); break;
-            }
-            screen::printf(", instruction at %llx\n", iret->rip);
-            screen::end_capture();
-            tell_crash(current, text);
-
-            terminate(current, signal_status(n));
-            reschedule(regs, iret);
-            return;
+            case 0:  screen::printf("division by zero");                  break;
+            case 6:  screen::printf("invalid instruction");               break;
+            case 13: screen::printf("general protection fault");          break;
+            case 14: screen::printf("page fault at address %llx", cr2);   break;
+            default: screen::printf("CPU exception %u", (uint32_t)vector); break;
         }
+        screen::printf(", instruction at %llx\n", iret->rip);
+        screen::end_capture();
+        tell_crash(current, text);
 
-        sig::post(&current->sig, n);
-        return_to_user(regs, iret);
+        terminate(current, SF_CRASHED);
+        reschedule(regs, iret);
     }
 
-    void syscall_enter(uint64_t nr, user_regs* regs, iret_frame* iret)
+    void syscall_enter(user_regs* regs, iret_frame* iret)
     {
         // A thread of a process that ended on another CPU goes no further.
         end_if_doomed(regs, iret);
-        if (cur_thread)
-        {
-            cur_thread->syscall_nr = nr;
-            cur_thread->restart_pending = false;
-        }
     }
 
     void syscall_return(user_regs* regs, iret_frame* iret)
@@ -2509,18 +2177,10 @@ namespace process
             return;
         }
         return_to_user(regs, iret);
-
-        // Interrupted, but no handler ran after all (the signal went away
-        // meanwhile): restart as if nothing had happened.
-        if (cur_thread && cur_thread->restart_pending)
-        {
-            restart_syscall(cur_thread, regs, iret);
-            cur_thread->restart_pending = false;
-        }
     }
 
     // -----------------------------------------------------------------------
-    // Hooks for sys_fs.cpp (file-descriptor syscalls)
+    // Hooks for the file calls (sffile.cpp, fileio.cpp)
     // -----------------------------------------------------------------------
 
     handle_table* cur_handles()
@@ -2544,14 +2204,7 @@ namespace process
 
     void sf_exit(user_regs* regs, iret_frame* iret)
     {
-        // The exit code a parent's wait sees: 0 for success, else the low
-        // byte of the status (never 0 for an error).
-        uint64_t s = regs->rdi;
-        int code = 0;
-        if (SF_ERROR(s))
-            code = (s & 0xFF) ? (int)(s & 0xFF) : 1;
-        current->sf_status = s;
-        terminate(current, exit_code_status(code));
+        terminate(current, regs->rdi);
         reschedule(regs, iret);
     }
 
@@ -2708,17 +2361,17 @@ namespace process
             arg_roots[i + 1] = f ? f->vn : nullptr;
         }
 
-        ArgEnv ae;
+        ArgList ae;
         if (!ae.init())
         {
             regs->rax = SF_OUT_OF_RESOURCES;
             return;
         }
-        int rc = ae.push_kstr(false, name);
+        int rc = ae.push_kstr(name);
         for (uint64_t i = 0; rc == 0 && i < argc; i++)
         {
             uint64_t str = 0;
-            rc = uaccess::copy_from_user(&str, regs->rdx + i * 8, 8) ? ae.push_user(false, str)
+            rc = uaccess::copy_from_user(&str, regs->rdx + i * 8, 8) ? ae.push_user(str)
                                                                      : -EFAULT;
         }
         // In the background: a hidden screen of its own, taken first.
@@ -2744,7 +2397,6 @@ namespace process
             return;
         }
 
-        p->pgid   = current->pgid;
         p->screen = current->screen;
         char log_name[128];
         if (background)
@@ -2782,7 +2434,7 @@ namespace process
         sint32_t h = -1;
         if (open(&current->handles, p->pid, 0, &h) != 0)
         {
-            terminate(p, signal_status(SIGKILL));
+            terminate(p, SF_ABORTED);
             regs->rax = SF_OUT_OF_RESOURCES;
             return;
         }

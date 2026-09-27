@@ -5,7 +5,6 @@
 #include "context.h"
 #include "paging.h"
 #include "../drivers/keyboard.h"
-#include "../../sdk/include/abi/process.h"
 #include "../../sdk/include/sfos/status.h"
 
 // Defined in obj/object.h and fs/vfs.h.
@@ -17,9 +16,8 @@ struct vnode;
 // ---------------------------------------------------------------------------
 //
 //   0x0000000000000000  NULL guard, never mapped            (below USER_MIN)
-//   0x0000000000400000  ELF image (PT_LOAD segments, see src/sdk/linker.ld)
-//   image_end           heap, grows up via SYS_BRK          (up to USER_MMAP_BASE)
-//   0x0000000010000000  anonymous mmap window               (USER_MMAP_SIZE)
+//   0x0000000000400000  ELF image (PT_LOAD segments, see src/sdk/sfos.ld)
+//   0x0000000010000000  pages of SfMemory AllocatePages     (USER_MMAP_SIZE)
 //   ...                 unused
 //   0x00007FFF00000000  SDK runtime code, R+X, shared   (abi/sdkimage.h)
 //   0x00007FFF00100000  SDK start info, R
@@ -29,14 +27,14 @@ struct vnode;
 //   0x00007FFFFFFFF000  USER_STACK_TOP; one unmapped guard page above it
 //
 // Every address space has the whole lower half to itself, so all programs
-// link at the same address. The regions are sized independently: the mmap
-// window is a fixed span because sys_mmap scans it page by page, and the
+// link at the same address. The regions are sized independently: the page
+// window is a fixed span because AllocatePages scans it page by page, and the
 // stack sits at the top of the half so either can grow without moving the
 // other. paging::map_user_page enforces [USER_MIN, USER_LIMIT).
 //
 // A program starts with an empty stack in the SDK runtime, mapped at
 // SDK_CODE_ADDRESS and above (abi/sdkimage.h, sdkpage.h).
-#define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/linker.ld
+#define USER_IMAGE_VADDR    0x400000ULL             // must match src/sdk/sfos.ld
 #define USER_IMAGE_MAX      (64 * 1024 * 1024)      // largest executable file
 #define USER_MMAP_BASE      0x10000000ULL
 #define USER_MMAP_SIZE      0x30000000ULL           // 768 MiB
@@ -54,7 +52,7 @@ struct vnode;
 // Scheduling model
 // ---------------------------------------------------------------------------
 //
-// A process is a running program: address space, handles, roots, signals.
+// A process is a running program: address space, handles, roots, screen.
 // What runs are its threads, and the scheduler picks threads.
 //
 // Every CPU schedules on its own: each thread belongs to a CPU - the least
@@ -63,8 +61,8 @@ struct vnode;
 // once: a change that shrinks an address space flushes the TLBs of the
 // other CPUs that have it loaded (smp::flush_tlb). Only one CPU at a time
 // runs kernel code (the big kernel lock, spinlock.h); user code runs on
-// all of them at once. A process's signals are acted on by its home CPU
-// only. When a process ends while one of its threads runs on another CPU,
+// all of them at once. A request to end a process is acted on by its home
+// CPU only. When a process ends while one of its threads runs on another CPU,
 // that thread ends at its next kernel entry, and the address space goes
 // with the last thread.
 //
@@ -78,23 +76,14 @@ struct vnode;
 // user-mode fault - so the drivers (xHCI, FAT32, screen) never see
 // reentrancy.
 //
-// The console is a kernel process of its own (pid 0, no user address
-// space), scheduled like any other: it sleeps until a command line is typed,
-// and while a program it started runs, it sleeps until that program exits.
-// When nothing can run, a CPU's idle task - its boot task, once the kernel
-// is up - halts until an interrupt wakes somebody; every CPU's own timer
-// wakes it at least every tick to look for work.
+// The console, CMD.BIN, is a program like any other on every screen, kept
+// running by cmdkeeper, a kernel process (no user address space). When
+// nothing can run, a CPU's idle task - its boot task, once the kernel is
+// up - halts until an interrupt wakes somebody; every CPU's own timer wakes
+// it at least every tick to look for work.
 //
-// A syscall that has to wait (a tty read, waitpid, nanosleep, pause) sleeps
-// in the kernel on a wait queue (wait.h) and carries on from where it was
-// when it is woken. A signal that runs a handler also ends the sleep; the
-// call then either fails with EINTR or, under SA_RESTART, is restarted from
-// scratch on the way back to ring 3 (syscall_interrupted).
-//
-// A handler runs in ring 3 like any other code, and rt_sigreturn restores
-// the saved context wholesale rather than resuming a kernel call, so
-// delivery is just a rewrite of the trap frame at the same boundary (see
-// the signal section of process.cpp).
+// A call that has to wait (ReadLine, Wait, Sleep) sleeps in the kernel on a
+// wait queue (wait.h) and carries on from where it was when it is woken.
 //
 // The stack belongs to the thread table *slot*, not to the thread:
 // terminate() can free a thread while executing on that very stack, so the
@@ -156,22 +145,17 @@ namespace process
     void sf_allocate_pages(user_regs* regs, iret_frame* iret);
     void sf_free_pages (user_regs* regs, iret_frame* iret);
 
-    // Status encoding for terminate(): Linux wait(2) format.
-    inline int exit_code_status(int code) { return (code & 0xFF) << 8; }
-    inline int signal_status(int sig)     { return sig & 0x7F; }
+    // First step of every call: a thread whose process ended on another
+    // CPU meanwhile ends here instead (no return).
+    void syscall_enter(user_regs* regs, iret_frame* iret);
 
-    // First step of every syscall: remembers the number, in case the call
-    // is interrupted and has to be restarted. A thread whose process ended
-    // on another CPU meanwhile ends here instead (no return).
-    void syscall_enter(uint64_t nr, user_regs* regs, iret_frame* iret);
-
-    // Last step of every syscall: honours a pending Esc, applies signals
-    // and may switch to another process.
+    // Last step of every call: acts on Ctrl+Alt+C / Ctrl+Alt+Z and end
+    // requests, and may switch to another process.
     void syscall_return(user_regs* regs, iret_frame* iret);
 
     // The process that gets screen `screen`'s keys (-1: none). A ReadLine
-    // waits (wait_for_input) until its process is the one; false when a
-    // signal ended the wait.
+    // waits (wait_for_input) until its process is the one; false when the
+    // process is to be ended.
     pid_t screen_input_owner(uint32_t screen);
 
     // Ctrl+Alt+C: end every program on `screen` at the next scheduling

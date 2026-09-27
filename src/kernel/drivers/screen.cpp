@@ -71,7 +71,7 @@ static inline void put_px(uint32_t* px, uint32_t c)
     *px = native_color(c);
 }
 
-// The 16 ANSI colours, in the same 0x00RRGGBB form as enum Colors, so both
+// The 16 colours, in the same 0x00RRGGBB form as enum Colors, so both
 // go through native_color() on the way to the panel. Index 7 keeps the grey
 // the console has always used for normal text.
 static const uint32_t palette[16] = {
@@ -117,9 +117,8 @@ static void utoa(uint64_t v, char* b, uint32_t base)
     }
 }
 
-// Everything printed goes through the terminal, which owns the cursor,
-// the control characters and (step 2) the escape sequences - unless it is
-// being captured (screen::capture): then into that buffer.
+// Everything printed goes through the terminal, which owns the cursor and
+// the control characters - unless it is being captured (screen::capture): then into that buffer.
 static char*    capture_buf  = nullptr;
 static uint64_t capture_size = 0;
 static uint64_t capture_len  = 0;

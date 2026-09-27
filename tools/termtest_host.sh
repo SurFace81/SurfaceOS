@@ -1,7 +1,7 @@
 #!/bin/bash
-# Unit-test the escape parser on the host. term.cpp only needs four kernel
-# functions, all stubbed in tools/termhost/stubs.cpp, so the state machine
-# can be exercised in milliseconds instead of through a build-and-boot cycle.
+# Unit-test the screens' text (term.cpp) on the host. term.cpp needs only a
+# few kernel functions, all stubbed in tools/termhost/stubs.cpp, so it can be
+# exercised in milliseconds instead of through a build-and-boot cycle.
 set -u
 cd "$(dirname "$0")/.."
 

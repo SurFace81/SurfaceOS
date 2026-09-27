@@ -3,16 +3,14 @@
 
 #include "../cpu/types.h"
 
-// Terminal emulator (stage 4).
+// The screens' text: `term` owns the logical state of each screen - a grid
+// of character cells with their colours and the cursor - and the title
+// bar. `screen` below it owns pixels only: it knows how to rasterise one
+// cell and how to get the back buffer onto the panel.
 //
-// `term` owns the logical state of the console: a grid of character cells
-// with their attributes, the cursor, the scroll region and - from step 2 -
-// the escape-sequence parser. `screen` below it owns pixels only: it knows
-// how to rasterise one cell and how to get the back buffer onto the panel.
-//
-// The split exists because the console has to *remember* what is on it.
-// Applications address individual cells and never repaint the whole screen,
-// so scrolling, erasing and the alternate screen all need the previous
+// The split exists because a screen has to *remember* what is on it.
+// Programs address individual cells and never repaint the whole screen,
+// so scrolling, erasing and switching screens all need the previous
 // contents. Pixels alone cannot answer "what character is at (12, 3)?".
 //
 // Writes only touch the grid and mark the row dirty; nothing is rasterised
@@ -24,7 +22,7 @@
 #define TERM_BOLD       0x01
 #define TERM_REVERSE    0x02
 
-// ANSI colour indices (0-7 normal, 8-15 bright).
+// Colour indices (0-7 normal, 8-15 bright), as SF_COLOR_* (sfos/console.h).
 #define TERM_BLACK      0
 #define TERM_RED        1
 #define TERM_GREEN      2
@@ -39,7 +37,7 @@
 struct term_cell
 {
     uint8_t ch;
-    uint8_t fg;         // ANSI index 0..15
+    uint8_t fg;         // colour index 0..15
     uint8_t bg;
     uint8_t attr;       // TERM_*
 };
@@ -85,8 +83,8 @@ namespace term
     uint32_t cols();
     uint32_t rows();
 
-    // Bytes in, cells out. Control characters are handled here; escape
-    // sequences join them in step 2.
+    // Bytes in, cells out: \n, \r, \b and \t move the cursor, other
+    // control characters are left out.
     void feed(const char* s, uint64_t len);
     void putc(char c);
 

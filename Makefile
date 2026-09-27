@@ -79,7 +79,6 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/spinlock.o \
 				bin/kernel/cpu/smp.o \
 				bin/kernel/cpu/smp.asm.o \
-				bin/kernel/cpu/signal.o \
 				bin/kernel/cpu/process.o \
 				bin/kernel/cpu/task.o \
 				bin/kernel/cpu/task.asm.o \

@@ -22,9 +22,7 @@ namespace keyboard {
 
     static keyboard_state_t kb_state  = {0};
 
-    // Index 1 is Escape: 0x1B, not 0. It used to be 0, so the raw-mode
-    // encoder saw a key with no byte and dropped it - an application could
-    // not receive Escape at all.
+    // Index 1 is Escape: it types 0x1B.
     static const char scancode_to_ascii_en[] = {
         0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -339,9 +337,8 @@ namespace keyboard {
             }
         }
 
-        // Ctrl folding. Without this Ctrl+D delivered 'd', so the EOF check
-        // in tty::assemble (KeyChar == 0x04) could never fire, and
-        // Ctrl+letter was inserted into the line as the bare letter.
+        // Ctrl folding: Ctrl+letter types its control character (Ctrl+C is
+        // 0x03, Ctrl+D 0x04 - what ReadLine looks for), not the bare letter.
         if (ctrl_held()) {
             if (c >= 'a' && c <= 'z') {
                 c = c - 'a' + 1;            // ^A..^Z -> 0x01..0x1A

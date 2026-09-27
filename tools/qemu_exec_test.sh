@@ -111,7 +111,11 @@ result() {  # result <ok:0/1> "<description>"
     if [ "$1" -eq 0 ]; then echo "PASS  $2"; else echo "FAIL  $2"; FAILS=$((FAILS+1)); fi
 }
 
-last_status() { grep -a "console: program end" "$LOG" | tail -1 | grep -aoE '[0-9]+$'; }
+# The SfStatus a program ended with, as the kernel logs it.
+last_status() { grep -a "console: program end" "$LOG" | tail -1 | grep -aoE '0x[0-9A-F]+$'; }
+ST_SUCCESS=0x0000000000000000
+ST_ABORTED=0x8000000000000006       # SF_ABORTED: Ctrl+Alt+C, EndProcess
+ST_CRASHED=0x800000000000000E       # SF_CRASHED: a CPU exception
 
 wait_for "boot: console ready" "$BOOT_WAIT"; result $? "kernel boots to the console"
 wait_for "boot: root mounted" 10; result $? "root volume automounted at boot"
@@ -131,7 +135,7 @@ type_cmd "sdkcheck args.txt word"
 wait_for "sdkcheck: " 20; result $? "sdkcheck finished"
 grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no failed checks"
 wait_session_end $WANT 15; result $? "sdkcheck exits"
-[ "$(last_status)" = "0" ]; result $? "its SfStatus comes back as exit status 0"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "its SfStatus comes back: SF_SUCCESS"
 
 # 1a. Input owners: a child started with SF_START_GIVE_INPUT reads the
 #     first line, the parent the next one once the child has ended; keys
@@ -177,7 +181,7 @@ WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "sdkcheck reader"; sleep 2
 key ctrl-alt-c
 wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a program waiting in ReadLine"
-[ "$(last_status)" = "9" ]; result $? "  as SIGKILL (9)"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "  with SF_ABORTED"
 
 # 1c. Ctrl+Alt+Z pauses the programs on the screen, pressed again it lets
 #     them go on; a paused program still ends on Ctrl+Alt+C.
@@ -193,7 +197,7 @@ key ctrl-alt-z; sleep 2; T3=$(ticks)
 key ctrl-alt-z; sleep 1
 key ctrl-alt-c
 wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a paused program"
-[ "$(last_status)" = "9" ]; result $? "  as SIGKILL (9)"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "  with SF_ABORTED"
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "sdkcheck reader"; sleep 2
 key ctrl-alt-z; sleep 1; key ctrl-alt-z; sleep 1
@@ -263,7 +267,7 @@ WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "admin taskmgr"; sleep 3
 key q
 wait_session_end $WANT 10; result $? "admin taskmgr runs and ends on q"
-[ "$(last_status)" = "0" ]; result $? "  with status 0"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "  with SF_SUCCESS"
 
 # 1g. CMD.BIN, the console of screens 2..9: the "zz" typed on screen 2
 #     above waits in its line; it runs programs, handing them the keys,
@@ -308,7 +312,7 @@ key ctrl-alt-z; sleep 1
 T1=$(ticks); sleep 2
 [ "$(ticks)" = "$T1" ]; result $? "  paused again with Ctrl+Alt+Z"
 type_cmd "kill $JOB"
-wait_for "process: pid $JOB sdkcheck ended, status 9" 10; result $? "kill ends it by its number"
+wait_for "process: pid $JOB sdkcheck ended, status $ST_ABORTED" 10; result $? "kill ends it by its number"
 
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.
@@ -320,13 +324,12 @@ grep -aq "sfstest: [0-9]* passed, 0 failed" "$LOG"; result $? "sfstest: no faile
 wait_session_end $WANT 15; result $? "sfstest exits"
 
 # 3. threadtest: however a program with several threads ends, all of them
-#    end - a fault in one (SIGSEGV = 11), Ctrl+Alt+C (SIGKILL = 9), or the
-#    last thread leaving after the first (its status 42, wait format
-#    42 << 8).
+#    end - a fault in one (SF_CRASHED), Ctrl+Alt+C (SF_ABORTED), or the
+#    last thread leaving after the first (its status, SF_ERROR_BIT | 42).
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest fault"
 wait_session_end $WANT 15; result $? "threadtest fault ends"
-[ "$(last_status)" = "11" ]; result $? "a fault in one thread ends the program (SIGSEGV)"
+[ "$(last_status)" = "$ST_CRASHED" ]; result $? "a fault in one thread ends the program (SF_CRASHED)"
 grep -aq "threadtest crashed: page fault at address 0x0, instruction at" "$LOG"
 result $? "  and the kernel says so on its screen"
 
@@ -336,12 +339,12 @@ key alt-f2; key ctrl-alt-c; key alt-f1; sleep 3    # another screen's
 [ "$(sessions_ended)" -lt "$WANT" ]; result $? "Ctrl+Alt+C on screen 2 leaves screen 1's program alone"
 monitor "sendkey ctrl-alt-c"
 wait_session_end $WANT 15; result $? "threadtest spin ends on Ctrl+Alt+C"
-[ "$(last_status)" = "9" ]; result $? "Ctrl+Alt+C ends every thread (SIGKILL)"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "Ctrl+Alt+C ends every thread (SF_ABORTED)"
 
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest lastexit"
 wait_session_end $WANT 15; result $? "threadtest lastexit ends"
-[ "$(last_status)" = "$((42 << 8))" ]; result $? "the last thread's status is the program's"
+[ "$(last_status)" = "0x800000000000002A" ]; result $? "the last thread's status is the program's"
 
 # Many threads at once, over every CPU there is (run with SMP=4 too).
 WANT=$(( $(sessions_ended) + 1 ))

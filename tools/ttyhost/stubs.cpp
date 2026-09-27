@@ -1,9 +1,8 @@
 // Host-side stubs for what tty.cpp needs from the kernel, plus a recorder
 // for everything it echoes. Built by tools/ttytest_host.sh.
 //
-// Same trick as tools/termhost: the line discipline and the raw-mode
-// encoder are pure logic over a keyboard-event ring, so they can be
-// exercised on the host instead of through a build-and-boot cycle.
+// Same trick as tools/termhost: the key queues are pure logic, so they can
+// be exercised on the host instead of through a build-and-boot cycle.
 
 #include "../../src/include/drivers/screen.h"
 #include "../../src/include/drivers/pit.h"
@@ -46,8 +45,7 @@ namespace pit
     uint32_t real_frequency() { return 1000; }
 }
 
-// Nothing sleeps on the host: a wait just reports the condition as it is
-// (the tests call the tty the way a reader would after waking).
+// Nothing sleeps on the host: a wait just reports the condition as it is.
 namespace wait
 {
     void wake_up(wait_queue*) {}
