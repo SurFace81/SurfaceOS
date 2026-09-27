@@ -37,8 +37,8 @@
 //            was stopped short (Ctrl+Alt+C, EndProcess), SF_CRASHED when a
 //            CPU exception ended it (the kernel says which on its screen).
 //            Handle is used up.
-//   IdOf     (revision 1.1) *Id gets the number of the program behind
-//            Handle (sfos/admin.h speaks of programs by number).
+//   IdOf     *Id gets the number of the program behind Handle
+//            (sfos/admin.h speaks of programs by number).
 typedef struct SfProcess SfProcess;
 
 struct SfProcess
@@ -51,7 +51,6 @@ struct SfProcess
                       const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
                       uint64_t* Handle);
     SfStatus (*Wait)(SfProcess* This, uint64_t Handle, SfStatus* Status);
-    // Revision 1.1
     SfStatus (*IdOf)(SfProcess* This, uint64_t Handle, uint64_t* Id);
 };
 
@@ -61,7 +60,7 @@ struct SfProcess
 #define SF_START_ADMIN          0x4
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)
-#define SF_PROCESS_REVISION     SF_REVISION(1, 1)
+#define SF_PROCESS_REVISION     SF_REVISION(1, 0)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, GetArgs) == 24, "SfProcess layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, Start) == 32, "SfProcess layout");

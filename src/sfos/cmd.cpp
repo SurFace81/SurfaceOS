@@ -1228,7 +1228,7 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
     Con   = System->Console;
-    Admin = SF_HAS_FIELD(System, SfSystem, Admin) ? System->Admin : nullptr;
+    Admin = System->Admin;
     if (!Admin)
     {
         Print("cmd: started without the admin right\n");

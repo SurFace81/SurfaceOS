@@ -87,11 +87,12 @@ static bool SameText(const char* A, const char* B)
     return *A == *B;
 }
 
-static bool HeaderOk(const SfTableHeader* Hdr, uint64_t Signature, uint32_t Size)
+// The table the system filled in is the one this program was built with:
+// its signature, revision and size.
+static bool HeaderOk(const SfTableHeader* Hdr, uint64_t Signature, uint32_t Revision,
+                     uint32_t Size)
 {
-    return Hdr->Signature == Signature &&
-           SF_REVISION_MAJOR(Hdr->Revision) == 1 &&
-           Hdr->Size >= Size;
+    return Hdr->Signature == Signature && Hdr->Revision == Revision && Hdr->Size == Size;
 }
 
 static bool SameBytes(const char* A, const char* B, uint64_t Size)
@@ -163,6 +164,8 @@ static void CheckArgs(SfApp* App, SfProcess* Process, SfFiles* Files)
           Files->Open(Files, "arg1:", SF_FILE_READ | SF_FILE_WRITE, &File) == SF_SUCCESS && File);
     if (File)
     {
+        Check("SfFile header",
+              HeaderOk(&File->Hdr, SF_FILE_SIGNATURE, SF_FILE_REVISION, sizeof(SfFile)));
         Size = sizeof(Buffer);
         Check("... which the console created empty",
               File->Read(File, Buffer, &Size) == SF_SUCCESS && Size == 0);
@@ -321,7 +324,7 @@ static SfStatus PongEntry(void*)
 static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
 {
     Check("CreateMutex", Sync->CreateMutex(Sync, &CountMutex) == SF_SUCCESS && CountMutex &&
-                         HeaderOk(&CountMutex->Hdr, SF_MUTEX_SIGNATURE, sizeof(SfMutex)));
+                         HeaderOk(&CountMutex->Hdr, SF_MUTEX_SIGNATURE, SF_MUTEX_REVISION, sizeof(SfMutex)));
     if (!CountMutex)
         return;
     uint64_t Ids[4] = {};
@@ -336,7 +339,7 @@ static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
     // A manual-reset event stays set until Reset.
     SfEvent* Event = nullptr;
     Check("CreateEvent", Sync->CreateEvent(Sync, 0, &Event) == SF_SUCCESS && Event &&
-                         HeaderOk(&Event->Hdr, SF_EVENT_SIGNATURE, sizeof(SfEvent)));
+                         HeaderOk(&Event->Hdr, SF_EVENT_SIGNATURE, SF_EVENT_REVISION, sizeof(SfEvent)));
     if (!Event)
         return;
     Check("Wait(0) on an event not set is SF_TIMEOUT", Event->Wait(Event, 0) == SF_TIMEOUT);
@@ -503,7 +506,7 @@ static SfStatus RunAdmin(SfSystem* Sys)
     Print("sdkcheck admin - what the admin right gives\n");
     SfAdmin* Admin = SF_HAS_FIELD(Sys, SfSystem, Admin) ? Sys->Admin : nullptr;
     Check("Sys->Admin is there: signature, revision 1.x, size",
-          Admin && HeaderOk(&Admin->Hdr, SF_ADMIN_SIGNATURE, sizeof(SfAdmin)));
+          Admin && HeaderOk(&Admin->Hdr, SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin)));
     if (!Admin)
         return SF_ERROR_BIT | Failed;
 
@@ -747,15 +750,15 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Print("sdkcheck - the tables SfMain gets\n");
 
     Check("SfSystem: signature, revision 1.x, size",
-          HeaderOk(&Sys->Hdr, SF_SYSTEM_SIGNATURE, sizeof(SfSystem)));
+          HeaderOk(&Sys->Hdr, SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem)));
     Check("SfSystem has the Console field", SF_HAS_FIELD(Sys, SfSystem, Console));
     Check("SfConsole: signature, revision 1.x, size",
-          HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, sizeof(SfConsole)));
+          HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole)));
     if (SF_HAS_FIELD(Con, SfConsole, SetTitle))
         CheckConsole(Con);
     CheckNoAdmin(Sys);
     Check("SfApp: signature, revision 1.x, size",
-          App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, sizeof(SfApp)));
+          App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp)));
     Check("App->Name is the program's name", App && SameText(App->Name, "sdkcheck"));
 
     Check("Print returns SF_SUCCESS", Con->Print(Con, "") == SF_SUCCESS);
@@ -778,13 +781,13 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
     Check("SfMemory: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory &&
-          HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, sizeof(SfMemory)));
+          HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, SF_MEMORY_REVISION, sizeof(SfMemory)));
     if (SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory)
         CheckMemory(Sys->Memory);
 
     Check("SfProcess: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process &&
-          HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, sizeof(SfProcess)));
+          HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess)));
     if (App && SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process && Sys->Files)
         CheckArgs(App, Sys->Process, Sys->Files);
     if (SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process)
@@ -792,21 +795,21 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
     Check("SfTime: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time &&
-          HeaderOk(&Sys->Time->Hdr, SF_TIME_SIGNATURE, sizeof(SfTime)));
+          HeaderOk(&Sys->Time->Hdr, SF_TIME_SIGNATURE, SF_TIME_REVISION, sizeof(SfTime)));
     if (SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time)
         CheckTime(Sys->Time);
 
     Check("SfFiles: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&
-          HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, sizeof(SfFiles)));
+          HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles)));
 
     Check("SfThread: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread &&
-          HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, sizeof(SfThread)));
+          HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, SF_THREAD_REVISION, sizeof(SfThread)));
     System = Sys;
     Check("SfSync: signature, revision 1.x, size",
           SF_HAS_FIELD(Sys, SfSystem, Sync) && Sys->Sync &&
-          HeaderOk(&Sys->Sync->Hdr, SF_SYNC_SIGNATURE, sizeof(SfSync)));
+          HeaderOk(&Sys->Sync->Hdr, SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync)));
     if (SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread)
     {
         CheckThreads(Sys->Thread);

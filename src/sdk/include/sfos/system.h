@@ -22,12 +22,11 @@
 //   Process   processes.
 //   Thread    threads of this program.
 //   Sync      mutexes and events between them.
-//   Admin     (revision 1.1) what only a program with the admin right can
-//             do; nullptr for any other (sfos/admin.h).
+//   Admin     what only a program with the admin right can do; nullptr
+//             for any other (sfos/admin.h).
 //
-// More services (Memory, Time, Process, ...) are added at the end in later
-// revisions; check Hdr.Size (SF_HAS_FIELD) before using one that came
-// later than the revision a program needs.
+// More services are added at the end in later revisions; check Hdr.Size
+// (SF_HAS_FIELD) before using one that came later than revision 1.0.
 typedef struct SfSystem
 {
     SfTableHeader Hdr;
@@ -42,7 +41,7 @@ typedef struct SfSystem
 } SfSystem;
 
 #define SF_SYSTEM_SIGNATURE SF_SIGNATURE('S', 'F', 'S', 'Y', 'S', 'T', 'E', 'M')
-#define SF_SYSTEM_REVISION  SF_REVISION(1, 1)
+#define SF_SYSTEM_REVISION  SF_REVISION(1, 0)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Console) == 16, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Files) == 24, "SfSystem layout");

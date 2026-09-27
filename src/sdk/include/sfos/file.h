@@ -19,9 +19,9 @@
 //                the count written.
 //   GetPosition  *Position gets the byte offset of the next Read/Write.
 //   SetPosition  move it; a position past the end is allowed for writing.
-//   ReadDir      (revision 1.1) This is a folder: *Entry gets its next
-//                entry ("." and ".." are left out), SF_END_OF_FILE after
-//                the last. SetPosition(This, 0) starts again.
+//   ReadDir      This is a folder: *Entry gets its next entry ("." and
+//                ".." are left out), SF_END_OF_FILE after the last.
+//                SetPosition(This, 0) starts again.
 //   GetInfo      *Info gets what This is: its size, whether it is a
 //                folder, when it last changed (Name is left empty).
 typedef struct SfFile SfFile;
@@ -46,7 +46,6 @@ struct SfFile
     SfStatus (*Write)(SfFile* This, const void* Buffer, uint64_t* Size);
     SfStatus (*GetPosition)(SfFile* This, uint64_t* Position);
     SfStatus (*SetPosition)(SfFile* This, uint64_t Position);
-    // Revision 1.1
     SfStatus (*ReadDir)(SfFile* This, SfDirEntry* Entry);
     SfStatus (*GetInfo)(SfFile* This, SfDirEntry* Info);
 };
@@ -59,7 +58,7 @@ struct SfFile
 #define SF_FILE_TRUNCATE    0x10ULL     // empty it on open (with SF_FILE_WRITE)
 
 #define SF_FILE_SIGNATURE   SF_SIGNATURE('S', 'F', 'F', 'I', 'L', 'E', 0, 0)
-#define SF_FILE_REVISION    SF_REVISION(1, 1)
+#define SF_FILE_REVISION    SF_REVISION(1, 0)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFile, Open) == 16, "SfFile layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFile, SetPosition) == 56, "SfFile layout");

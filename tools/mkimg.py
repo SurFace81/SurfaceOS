@@ -8,7 +8,7 @@ The image is GPT with one EFI System Partition (EF00) filling the disk,
 formatted FAT32 with mkfs.fat --offset - how a real USB stick is laid out.
 The firmware boots /EFI/Boot/BOOTX64.EFI; the loader and the kernel expect
 /sfos/KERNEL.BIN and /sfos/FONT.FNT, and the kernel starts the console of
-screens 2..9 from /sfos/CMD.BIN. Programs land in /apps/<lowercase
+every screen from /sfos/CMD.BIN. Programs land in /apps/<lowercase
 name> without an extension, through LFN. The top-level /files, /tmp and
 /mount are created too.
 

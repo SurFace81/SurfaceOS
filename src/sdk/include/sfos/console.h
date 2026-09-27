@@ -41,12 +41,12 @@
 //   SetMode    SF_CONSOLE_LINE or SF_CONSOLE_RAW, see above.
 //   SetTitle   the program's own words in the title bar, after its name
 //              (a file name, say); an empty Text clears them.
-//   Clear      (revision 1.2) blank the screen in the current colours and
-//              put the cursor at (0, 0).
-//   WaitInput  (revision 1.3) wait until this program owns its screen's
-//              input: the console waits so for the program it started to
-//              end, or to be paused (Ctrl+Alt+Z hands the keys back to the
-//              console), or to move away (fg, bg). SF_ABORTED when the
+//   Clear      blank the screen in the current colours and put the cursor
+//              at (0, 0).
+//   WaitInput  wait until this program owns its screen's input: the
+//              console waits so for the program it started to end, or to
+//              be paused (Ctrl+Alt+Z hands the keys back to the console),
+//              or to move away (fg, bg). SF_ABORTED when the
 //              program is being ended instead.
 //
 // ReadLine and ReadKey also end with SF_ABORTED when another program on the
@@ -90,7 +90,6 @@ struct SfConsole
     SfTableHeader Hdr;
     SfStatus (*Print)(SfConsole* This, const char* Text);
     SfStatus (*ReadLine)(SfConsole* This, char* Buffer, uint64_t Size, uint64_t* Length);
-    // Revision 1.1
     SfStatus (*GetSize)(SfConsole* This, uint32_t* Columns, uint32_t* Rows);
     SfStatus (*SetCursor)(SfConsole* This, uint32_t Column, uint32_t Row, uint8_t Visible);
     SfStatus (*SetColor)(SfConsole* This, uint8_t Foreground, uint8_t Background);
@@ -100,14 +99,12 @@ struct SfConsole
     SfStatus (*ReadKey)(SfConsole* This, SfKey* Key);
     SfStatus (*SetMode)(SfConsole* This, uint64_t Mode);
     SfStatus (*SetTitle)(SfConsole* This, const char* Text);
-    // Revision 1.2
     SfStatus (*Clear)(SfConsole* This);
-    // Revision 1.3
     SfStatus (*WaitInput)(SfConsole* This);
 };
 
 #define SF_CONSOLE_SIGNATURE    SF_SIGNATURE('S', 'F', 'C', 'O', 'N', 'S', 'O', 'L')
-#define SF_CONSOLE_REVISION     SF_REVISION(1, 3)
+#define SF_CONSOLE_REVISION     SF_REVISION(1, 0)
 
 SF_STATIC_ASSERT(sizeof(SfCell) == 2, "SfCell layout");
 SF_STATIC_ASSERT(sizeof(SfKey) == 4, "SfKey layout");

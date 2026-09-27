@@ -33,7 +33,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   open file descriptions with shared offsets
 - devfs (outside the directory tree, no /dev): null, zero, tty, console;
   canonical-mode terminal with echo; stdin/stdout/stderr are fds 0/1/2
-- SurfaceOS SDK (<sfos.h>): a program implements SfMain(SfApp*, SfSystem*)
+- SurfaceOS SDK (<sfos.h>, how to write a program: src/sdk/README.md): a program implements SfMain(SfApp*, SfSystem*)
   and reaches the system through tables of the SDK runtime
   (src/sdk/runtime), which the kernel maps into every program and which
   enters the kernel with the syscall instruction. Sys->Files opens,
