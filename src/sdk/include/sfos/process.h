@@ -22,6 +22,10 @@
 //            input (the keys), the new one gets it until it ends - then it
 //            comes back. Without it, or from a program that does not own
 //            the input, a ReadLine of the new program waits for its turn.
+//            SF_START_BACKGROUND: it runs on a hidden screen of its own
+//            instead, what it prints logged to console_<date>_<time>.log in
+//            its data folder (as the console's `&`). Handle may be null
+//            when nobody is going to Wait for it.
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
 //            was stopped short (a fault, Ctrl+Alt+C). Handle is used up.
@@ -40,6 +44,7 @@ struct SfProcess
 
 // Start flags
 #define SF_START_GIVE_INPUT     0x1
+#define SF_START_BACKGROUND     0x2
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)
 #define SF_PROCESS_REVISION     SF_REVISION(1, 0)

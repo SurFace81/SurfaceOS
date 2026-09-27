@@ -14,7 +14,7 @@ IMG="$1"
 APPS="$2"
 SIZE="${3:-64}"
 
-make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt >/dev/null
+make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt bin/sfos/cmd.bin >/dev/null
 for a in $APPS; do make bin/apps/$a.bin >/dev/null; done
 
 rm -f "$IMG"
@@ -26,5 +26,6 @@ python3 tools/mkimg.py "$IMG" \
     bin/boot/efi/BOOTX64.EFI \
     bin/kernel/kernel.bin \
     bin/kernel/data/stdfont.fnt \
+    bin/sfos/cmd.bin \
     $APP_BINS \
     --size="$SIZE" >/dev/null

@@ -673,13 +673,28 @@ namespace process
     static pid_t      input_owner[TERM_ALL_SCREENS];
     static wait_queue input_owner_wq;   // ReadLine waits here for its turn
 
+    // Each shown screen has a console: the kernel's (pid 0) on screen 1,
+    // CMD.BIN on the others (-1 while there is none, -2 when it cannot be
+    // started). It is who the input goes back to in the end.
+    static pid_t screen_console[TERM_ALL_SCREENS];
+    static wait_queue keeper_wq;        // cmdkeeper: woken when one is gone
+
+    // The title bar names the input owner of a shown screen.
     static void set_input_owner(uint32_t screen, pid_t pid)
     {
         input_owner[screen] = pid;
         wait::wake_up(&input_owner_wq);
+        if (screen >= TERM_SCREENS || pid < 0)
+            return;
+        Process* p = pid ? find_live(pid) : nullptr;
+        uint32_t prev = term::selected();
+        term::select(screen);
+        term::set_program(p ? p->name : "console");
+        term::select(prev);
     }
 
-    // p ends: whatever screen it owns goes back.
+    // p ends: whatever screen it owns goes back - to whoever gave it, if
+    // that one still runs on the screen, or else to the screen's console.
     static void return_input(Process* p)
     {
         for (uint32_t s = 0; s < TERM_ALL_SCREENS; s++)
@@ -687,7 +702,11 @@ namespace process
             if (input_owner[s] != p->pid)
                 continue;
             Process* giver = find_live(p->input_giver);
-            set_input_owner(s, giver ? giver->pid : 0);
+            if (giver && giver != p && giver->screen == s)
+                set_input_owner(s, giver->pid);
+            else
+                set_input_owner(s, screen_console[s] >= 0 && screen_console[s] != p->pid
+                                   ? screen_console[s] : -1);
         }
     }
 
@@ -874,19 +893,6 @@ namespace process
             return nullptr;
         }
         return nullptr;
-    }
-
-    // -----------------------------------------------------------------------
-    // Session keyboard input (the line discipline itself lives in tty.cpp)
-    // -----------------------------------------------------------------------
-
-    // Runs in the keyboard IRQ while the console runs a program: forwards to
-    // the tty ring. The tty decides what interrupts a program (Ctrl+C,
-    // c_cc[VINTR]); Esc used to do it here, which meant an application could
-    // never see Esc or any escape sequence built on it.
-    static void program_key_handler(keyboard_event_t e)
-    {
-        tty::on_key(e);
     }
 
     // -----------------------------------------------------------------------
@@ -1394,6 +1400,13 @@ namespace process
                 q->ppid = 0;
         }
 
+        // A screen's console ended: cmdkeeper starts a new one. The programs
+        // it started run on.
+        if (p->screen > 0 && p->screen < TERM_SCREENS && screen_console[p->screen] == p->pid)
+        {
+            screen_console[p->screen] = -1;
+            wait::wake_up(&keeper_wq);
+        }
         return_input(p);
         release_screen(p);
 
@@ -1488,26 +1501,42 @@ namespace process
     // (a process running on another CPU cannot be torn down from here).
     static void post_signal(Process* p, int n);
 
-    static void end_programs_on(uint32_t screen)
+    // A program on `screen` other than its console?
+    static bool others_on(uint32_t screen)
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (alive(p) && !p->kernel && p->screen == screen)
+            if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
+                return true;
+        }
+        return false;
+    }
+
+    // The screen's console is left alone while anything else runs there;
+    // on its own, it ends too (and cmdkeeper starts a new one).
+    static void end_programs_on(uint32_t screen)
+    {
+        bool others = others_on(screen);
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++)
+        {
+            Process* p = &table[i];
+            if (alive(p) && !p->kernel && p->screen == screen &&
+                (!others || p->pid != screen_console[screen]))
                 post_signal(p, SIGKILL);
         }
     }
 
-    // Ctrl+Alt+Z: the programs on the screen pause - every thread of each,
-    // SIGSTOP, which nothing can catch either - or, when they are paused,
-    // go on (SIGCONT). The title bar says so.
+    // Ctrl+Alt+Z: the programs on the screen but its console pause - every
+    // thread of each, SIGSTOP, which nothing can catch either - or, when
+    // they are paused, go on (SIGCONT). The title bar says so.
     static void pause_programs_on(uint32_t screen)
     {
         bool any = false, paused = false;
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (alive(p) && !p->kernel && p->screen == screen)
+            if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
             {
                 any = true;
                 paused |= p->state == State::Stopped || (p->sig.pending & SIGMASK(SIGSTOP));
@@ -1519,7 +1548,7 @@ namespace process
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
-            if (alive(p) && !p->kernel && p->screen == screen)
+            if (alive(p) && !p->kernel && p->screen == screen && p->pid != screen_console[screen])
                 post_signal(p, paused ? SIGCONT : SIGSTOP);
         }
         term::set_paused(screen, !paused);
@@ -1948,9 +1977,10 @@ namespace process
         memory::memset((uint8_t*)table, 0x00, sizeof(table));
         vfs::set_busy_hook(mount_in_use);
 
-        input_owner[0] = 0;             // the console's screen
+        input_owner[0] = 0;             // the kernel's console's screen
+        screen_console[0] = 0;
         for (uint32_t s = 1; s < TERM_ALL_SCREENS; s++)
-            input_owner[s] = -1;
+            input_owner[s] = screen_console[s] = -1;
 
         task::init(&this_cpu()->idle_task, "idle");
 
@@ -1961,25 +1991,30 @@ namespace process
         copy_bytes(fpu_template + 24, (const uint8_t*)&mxcsr, sizeof(mxcsr));
     }
 
-    void start_console(void (*entry)(void*))
+    // launch flags
+    const uint32_t LAUNCH_ADMIN   = 0x1;    // the admin right
+    const uint32_t LAUNCH_CONSOLE = 0x2;    // a screen's console: no data folder
+
+    // Load program `path` as a new process, not started yet (below).
+    static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots,
+                           uint32_t flags = 0);
+
+    // A kernel process: no user address space, runs `entry` on its task.
+    static Process* start_kernel_process(const char* name, void (*entry)(void*))
     {
         Process* p = alloc_process();
         if (!p)
         {
-            uart::printf("process: no memory for the console\n");
-            screen::printf("\n\rprocess: no memory for the console");
+            uart::printf("process: no memory for %s\n", name);
+            screen::printf("\n\rprocess: no memory for %s", name);
             for (;;)
                 asm volatile("cli; hlt");
         }
 
-        // pid 0: the value every program it starts sees as its ppid. The
-        // console works in the system cwd, not a per-process one.
-        p->pid    = 0;
-        p->pgid   = 0;
+        // It works in the system cwd, not a per-process one.
         p->kernel = true;
-        p->obj->pid = 0;
         p->cr3    = paging::kernel_pml4();
-        copy_name(p->name, "console");
+        copy_name(p->name, name);
         if (p->cwd)
         {
             vfs::unref(p->cwd);
@@ -1988,10 +2023,86 @@ namespace process
         Thread* t = first_thread(p);
         copy_bytes(t->fpu, fpu_template, sizeof(t->fpu));
 
-        task::prepare_kernel(&t->task, "console", kstack_top(t), entry, nullptr);
+        task::prepare_kernel(&t->task, name, kstack_top(t), entry, nullptr);
         start(p);
+        return p;
+    }
+
+    void start_console(void (*entry)(void*))
+    {
+        Process* p = start_kernel_process("console", entry);
+        // pid 0: the value every program it starts sees as its ppid.
+        p->pid    = 0;
+        p->pgid   = 0;
+        p->obj->pid = 0;
         console_proc = p;
         term::set_program("console");
+    }
+
+    // -----------------------------------------------------------------------
+    // cmdkeeper: CMD.BIN on screens 2..9
+    // -----------------------------------------------------------------------
+
+    static const char CMD_PATH[] = "/sfos/CMD.BIN";
+
+    // A new CMD.BIN on screen s, with the admin right and no data folder. It
+    // gets the screen's input - unless a program the last one started still
+    // has it; that gives it back when it ends.
+    static void start_cmd(uint32_t s)
+    {
+        Process* p = nullptr;
+        ArgEnv ae;
+        if (ae.init())
+        {
+            if (ae.push_kstr(false, "cmd") == 0)
+                p = launch(CMD_PATH, &ae, nullptr, LAUNCH_ADMIN | LAUNCH_CONSOLE);
+            ae.destroy();
+        }
+        if (!p)
+        {
+            uart::printf("cmdkeeper: cannot start %s on screen %u\n", CMD_PATH, s + 1);
+            screen_console[s] = -2;
+            return;
+        }
+
+        copy_name(p->name, "cmd");
+        p->ppid   = 0;
+        p->screen = s;
+        Thread* t = first_thread(p);
+        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
+        screen_console[s] = p->pid;
+        start(p);
+        if (!find_live(input_owner[s]))
+            set_input_owner(s, p->pid);
+        uart::printf("cmdkeeper: cmd pid %u on screen %u\n", (uint32_t)p->pid, s + 1);
+    }
+
+    static bool console_missing(void*)
+    {
+        for (uint32_t s = 1; s < TERM_SCREENS; s++)
+            if (screen_console[s] == -1)
+                return true;
+        return false;
+    }
+
+    static void cmdkeeper_main(void*)
+    {
+        for (;;)
+        {
+            wait::wait_event(&keeper_wq, console_missing, nullptr, 0);
+            for (uint32_t s = 1; s < TERM_SCREENS; s++)
+                if (screen_console[s] == -1)
+                    start_cmd(s);
+            // One that ends as soon as it starts is not restarted more than
+            // once a second.
+            uint32_t hz = pit::real_frequency();
+            wait::sleep_until(pit::ticks() + (hz ? hz : 1000));
+        }
+    }
+
+    void start_cmdkeeper()
+    {
+        start_kernel_process("cmdkeeper", cmdkeeper_main);
     }
 
     void run_cpu()
@@ -2068,8 +2179,9 @@ namespace process
     // Load `path` with the collected argv/envp and allocate a process for
     // it, with its roots. ppid is left at 0; it is not started yet.
     static Process* launch(const char* path, const ArgEnv* ae, vnode* const* arg_roots,
-                           bool admin = false)
+                           uint32_t flags)
     {
+        bool admin = flags & LAUNCH_ADMIN;
         Image img;
         if (load_program(path, vfs::cwd(), ae, &img, admin ? SDK_START_ADMIN : 0) < 0)
             return nullptr;
@@ -2085,7 +2197,8 @@ namespace process
 
         vnode* data = nullptr;
         vnode* tmp  = nullptr;
-        sffile::open_roots(p->name, &data, &tmp);
+        if (!(flags & LAUNCH_CONSOLE))
+            sffile::open_roots(p->name, &data, &tmp);
         if (data)
             add_root(p, "data", data);
         if (tmp)
@@ -2168,6 +2281,31 @@ namespace process
     // Console
     // -----------------------------------------------------------------------
 
+    // Put p, not started yet, on hidden screen s with a log (its path into
+    // log_name, 128 bytes; "" when there is none).
+    static void to_background(Process* p, uint32_t s, char* log_name)
+    {
+        log_name[0] = '\0';
+        p->screen = s;
+        char file[64];
+        screen_log[s].v   = create_log(p, file);
+        screen_log[s].off = 0;
+        if (screen_log[s].v)
+        {
+            // /files/<name>/<file>: what data:/ is (sffile.cpp).
+            char* e = log_name;
+            for (const char* c = "/files/"; *c; c++) *e++ = *c;
+            for (const char* c = p->name; *c; c++)  *e++ = *c;
+            *e++ = '/';
+            for (const char* c = file; *c; c++)     *e++ = *c;
+            *e = '\0';
+        }
+        uint32_t prev = term::selected();
+        term::select(s);
+        term::set_program(p->name);
+        term::select(prev);
+    }
+
     // A program the console starts, loaded and ready but not started yet.
     static Process* launch_program(const char* path, int argc, const char* const* argv,
                                    vnode* const* arg_roots, bool admin)
@@ -2189,7 +2327,7 @@ namespace process
         if (rc == 0)
             rc = push_default_env(&ae);
 
-        Process* p = rc == 0 ? launch(path, &ae, arg_roots, admin) : nullptr;
+        Process* p = rc == 0 ? launch(path, &ae, arg_roots, admin ? LAUNCH_ADMIN : 0) : nullptr;
         ae.destroy();
         if (!p)
             return nullptr;
@@ -2215,25 +2353,7 @@ namespace process
             return false;
         }
 
-        p->screen = (uint32_t)s;
-        char file[64];
-        screen_log[s].v   = create_log(p, file);
-        screen_log[s].off = 0;
-        if (screen_log[s].v)
-        {
-            // /files/<name>/<file>: what data:/ is (sffile.cpp).
-            char* e = log_name;
-            for (const char* c = "/files/"; *c; c++) *e++ = *c;
-            for (const char* c = p->name; *c; c++)  *e++ = *c;
-            *e++ = '/';
-            for (const char* c = file; *c; c++)     *e++ = *c;
-            *e = '\0';
-        }
-        uint32_t prev = term::selected();
-        term::select((uint32_t)s);
-        term::set_program(p->name);
-        term::select(prev);
-
+        to_background(p, (uint32_t)s, log_name);
         start(p);
         *pid = p->pid;
         uart::printf("console: background start, pid %u %s, screen %u, log %s\n",
@@ -2264,12 +2384,9 @@ namespace process
         tty::set_fg_pgrp(p->pgid);
         p->input_giver = 0;
         set_input_owner(p->screen, p->pid);
-        keyboard_callback_t prev_callback = keyboard::get_callback();
-        keyboard::set_keyboard_callback(program_key_handler);
 
         screen::hide_cursor();
         screen::clear();
-        term::set_program(p->name);
 
         uart::printf("console: program start, pid %u %s entry=%llx cpu %u\n",
                      (uint32_t)p->pid, p->name, entry, p->cpu);
@@ -2286,10 +2403,8 @@ namespace process
         // The console takes its screen back, even from a program the one it
         // ran gave the input to and that runs on.
         set_input_owner(console_proc->screen, 0);
-        term::set_program("console");
         screen::clear();
         screen::show_cursor();
-        keyboard::set_keyboard_callback(prev_callback);
 
         *exit_status = status;
         return true;
@@ -3430,10 +3545,22 @@ namespace process
             rc = uaccess::copy_from_user(&str, regs->rdx + i * 8, 8) ? ae.push_user(false, str)
                                                                      : -EFAULT;
         }
+        // In the background: a hidden screen of its own, taken first.
+        bool background = regs->r8 & SF_START_BACKGROUND;
+        sint32_t hidden = background ? term::open_hidden() : 0;
+        if (hidden < 0)
+        {
+            ae.destroy();
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+
         Process* p = rc == 0 ? launch(path, &ae, nullptr) : nullptr;
         ae.destroy();
         if (!p)
         {
+            if (background)
+                term::close_hidden((uint32_t)hidden);
             regs->rax = rc == 0 || rc == -ENOMEM || rc == -E2BIG ? SF_OUT_OF_RESOURCES
                                                                  : SF_INVALID_PARAMETER;
             return;
@@ -3441,14 +3568,25 @@ namespace process
 
         p->pgid   = current->pgid;
         p->screen = current->screen;
-        if ((regs->r8 & SF_START_GIVE_INPUT) && owns_input(nullptr))
+        char log_name[128];
+        if (background)
+            to_background(p, (uint32_t)hidden, log_name);
+        Thread* t = first_thread(p);
+        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
+        start(p);                       // runs once this call is back in ring 3
+        if (!background && (regs->r8 & SF_START_GIVE_INPUT) && owns_input(nullptr))
         {
             p->input_giver = current->pid;
             set_input_owner(p->screen, p->pid);
         }
-        Thread* t = first_thread(p);
-        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
-        start(p);                       // runs once this call is back in ring 3
+        uart::printf("process: pid %u started %s (pid %u, cpu %u%s)\n",
+                     (uint32_t)current->pid, p->name, (uint32_t)p->pid, p->cpu,
+                     background ? ", in the background" : "");
+
+        // No Handle: nobody follows it.
+        regs->rax = SF_SUCCESS;
+        if (!regs->r10)
+            return;
 
         sint32_t h = -1;
         if (open(&current->handles, p->pid, 0, &h) != 0)
@@ -3464,9 +3602,6 @@ namespace process
             regs->rax = SF_INVALID_PARAMETER;
             return;
         }
-        uart::printf("process: pid %u started %s (pid %u, cpu %u)\n",
-                     (uint32_t)current->pid, p->name, (uint32_t)p->pid, p->cpu);
-        regs->rax = SF_SUCCESS;
     }
 
     // SFCALL_PROCESS_WAIT (Handle, *Status): sleep until the process has

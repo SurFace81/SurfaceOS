@@ -135,7 +135,7 @@ wait_session_end $WANT 15; result $? "sdkcheck exits"
 
 # 1a. Input owners: a child started with SF_START_GIVE_INPUT reads the
 #     first line, the parent the next one once the child has ended; keys
-#     typed on screen 2, which nobody owns, go nowhere.
+#     typed on screen 2 go to its own console, not to screen 1.
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "sdkcheck input"
 wait_for "the reader has the keys" 20; result $? "sdkcheck input started its reader"
@@ -147,6 +147,7 @@ wait_session_end $WANT 15; result $? "sdkcheck input exits"
 key alt-f2
 python3 tools/send_keys.py "$MON" "zz"     # no Enter: leaked, it would
 key alt-f1                                  # prefix the next command
+                                            # (screen 2's CMD runs it in 1g)
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "sdkcheck reader"
 type_cmd "screens"
@@ -256,6 +257,31 @@ wait_for "sdkcheck admin: " 30; result $? "admin sdkcheck admin finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
 grep -aq "sdkcheck admin: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck admin: no failed checks"
 wait_session_end $WANT 15; result $? "admin sdkcheck admin exits"
+
+# 1g. CMD.BIN, the console of screens 2..9: the "zz" typed on screen 2
+#     above waits in its line; it runs programs, handing them the keys,
+#     and in the background; Ctrl+Alt+C ends its program but not it, and
+#     on its own it ends too - and is started again.
+key alt-f2; key ret
+wait_for "zz: no such program" 10; result $? "CMD on screen 2 got what was typed there"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "via cmd"
+wait_for "sdkcheck input: child got via cmd" 10; result $? "CMD runs a program and hands it the keys"
+T0=$(ticks); type_cmd "sdkcheck ticks"; sleep 2
+key ctrl-alt-c; sleep 2
+T1=$(ticks); sleep 1
+[ "$T1" -gt "$T0" ] && [ "$(ticks)" = "$T1" ]
+result $? "Ctrl+Alt+C ends CMD's program (after $((T1 - T0)) ticks)"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "cmd lives"
+wait_for "sdkcheck input: child got cmd lives" 10; result $? "and leaves CMD itself running"
+CMDS=$(grep -ac "cmdkeeper: cmd pid" "$LOG")
+key ctrl-alt-c; sleep 3
+[ "$(grep -ac "cmdkeeper: cmd pid" "$LOG")" -gt "$CMDS" ]; result $? "CMD on its own ends on Ctrl+Alt+C and is started again"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "new cmd"
+wait_for "sdkcheck input: child got new cmd" 10; result $? "the new CMD works"
+type_cmd "sdkcheck late &"
+wait_for "started sdkcheck (pid" 10
+grep -aq "in the background)" "$LOG"; result $? "CMD runs a program in the background"
+sleep 2; key alt-f1
 
 # 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
 #    leaves in data:/ is read back after a restart by qemu_verify.sh.

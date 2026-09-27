@@ -2,12 +2,13 @@
 """Build a bootable SurfaceOS disk image (no sudo required).
 
 Usage:
-  mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> [apps...] [--size MiB]
+  mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> <cmd.bin> [apps...] [--size MiB]
 
 The image is GPT with one EFI System Partition (EF00) filling the disk,
 formatted FAT32 with mkfs.fat --offset - how a real USB stick is laid out.
 The firmware boots /EFI/Boot/BOOTX64.EFI; the loader and the kernel expect
-/sfos/KERNEL.BIN and /sfos/FONT.FNT. Programs land in /apps/<lowercase
+/sfos/KERNEL.BIN and /sfos/FONT.FNT, and the kernel starts the console of
+screens 2..9 from /sfos/CMD.BIN. Programs land in /apps/<lowercase
 name> without an extension, through LFN. The top-level /files, /tmp and
 /mount are created too.
 
@@ -43,7 +44,7 @@ def build_gpt(image, size_mib):
     return start * 512
 
 
-def populate(image, off_bytes, efi, kernel, font, apps):
+def populate(image, off_bytes, efi, kernel, font, cmd, apps):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
     for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/files", "/tmp", "/mount"):
@@ -56,6 +57,7 @@ def populate(image, off_bytes, efi, kernel, font, apps):
     put("/EFI/Boot/BOOTX64.EFI", efi)
     put("/sfos/KERNEL.BIN", kernel)
     put("/sfos/FONT.FNT", font)
+    put("/sfos/CMD.BIN", cmd)
 
     for app in apps:
         base = app.rsplit("/", 1)[-1]
@@ -95,18 +97,18 @@ def main(argv):
             print("mkimg: unknown option %s" % a)
             return 1
 
-    if len(args) < 4:
+    if len(args) < 5:
         print(__doc__)
         return 1
 
-    image, efi, kernel, font = args[0:4]
-    apps = args[4:]
+    image, efi, kernel, font, cmd = args[0:5]
+    apps = args[5:]
 
     if os.path.exists(image):
         os.remove(image)
 
     off = build_gpt(image, size_mib)
-    populate(image, off, efi, kernel, font, apps)
+    populate(image, off, efi, kernel, font, cmd, apps)
     fsck_repair(image, off)
 
     print("Image built: %s (GPT, FAT32 at %d bytes)" % (image, off))

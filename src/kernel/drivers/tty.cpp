@@ -3,6 +3,7 @@
 
 #include "../../include/drivers/tty.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/term.h"
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/pit.h"
 #include "../../include/cpu/wait.h"
@@ -16,9 +17,16 @@ namespace
     const uint32_t ENC_MAX     = 32;        // one encoded key, worst case
     const uint32_t RAWQ_SIZE   = 256;       // encoded bytes awaiting a reader
 
-    keyboard_event_t ring[RING_SIZE];
-    volatile uint32_t head = 0;
-    volatile uint32_t tail = 0;
+    // Key events, one queue per screen: what is typed on a screen waits for
+    // that screen's reader (sfconsole.cpp). The line discipline below - the
+    // old ABI's - reads screen 1's.
+    struct KeyRing
+    {
+        keyboard_event_t ev[RING_SIZE];
+        volatile uint32_t head;
+        volatile uint32_t tail;
+    };
+    KeyRing rings[TERM_ALL_SCREENS];
 
 
     pid_t fg = 0;                       // foreground process group
@@ -119,16 +127,20 @@ namespace
         }
     }
 
-    bool ring_pop(keyboard_event_t* out)
+    bool ring_pop(keyboard_event_t* out, uint32_t screen = 0)
     {
-        if (head == tail)
+        KeyRing* r = &rings[screen];
+        if (r->head == r->tail)
             return false;
-        *out = ring[tail];
-        tail = (tail + 1) % RING_SIZE;
+        *out = r->ev[r->tail];
+        r->tail = (r->tail + 1) % RING_SIZE;
         return true;
     }
 
-    inline bool ring_empty() { return head == tail; }
+    inline bool ring_empty(uint32_t screen = 0)
+    {
+        return rings[screen].head == rings[screen].tail;
+    }
 
     // --- canonical line editing -------------------------------------------
 
@@ -402,8 +414,8 @@ namespace tty
 {
     void reset()
     {
-        head = 0;
-        tail = 0;
+        rings[0].head = 0;
+        rings[0].tail = 0;
         fg = 0;
         line_len_ = 0;
         line_cur = 0;
@@ -418,18 +430,21 @@ namespace tty
         wait::wake_up(&input_wq);
     }
 
-    void on_key(keyboard_event_t e)
+    void on_key(keyboard_event_t e, uint32_t screen)
     {
         // Ctrl+C, Ctrl+\ and Ctrl+Z are keys like any other: every program
         // is a SurfaceOS one, and what they mean is up to it (in a ReadLine,
         // Ctrl+C ends the line - sfconsole.cpp). No ISIG signals any more.
 
-        uint32_t next = (head + 1) % RING_SIZE;
-        if (next == tail)
+        if (screen >= TERM_ALL_SCREENS)
+            return;
+        KeyRing* r = &rings[screen];
+        uint32_t next = (r->head + 1) % RING_SIZE;
+        if (next == r->tail)
             return;                 // full: drop
 
-        ring[head] = e;
-        head = next;
+        r->ev[r->head] = e;
+        r->head = next;
         wait::wake_up(&input_wq);
     }
 
@@ -437,14 +452,14 @@ namespace tty
     pid_t fg_pgrp()              { return fg; }
     void  set_fg_pgrp(pid_t pgid) { fg = pgid; }
 
-    bool pop_key(keyboard_event_t* out)
+    bool pop_key(keyboard_event_t* out, uint32_t screen)
     {
-        return ring_pop(out);
+        return screen < TERM_ALL_SCREENS && ring_pop(out, screen);
     }
 
-    static bool key_available(void*)
+    static bool key_available(void* screen)
     {
-        return !ring_empty();
+        return !ring_empty((uint32_t)(uintptr_t)screen);
     }
 
     static bool input_readable(void*)
@@ -452,9 +467,11 @@ namespace tty
         return readable();
     }
 
-    bool wait_key()
+    bool wait_key(uint32_t screen)
     {
-        return wait::wait_event(&input_wq, key_available, nullptr, 0);
+        if (screen >= TERM_ALL_SCREENS)
+            return false;
+        return wait::wait_event(&input_wq, key_available, (void*)(uintptr_t)screen, 0);
     }
 
     bool wait_readable()

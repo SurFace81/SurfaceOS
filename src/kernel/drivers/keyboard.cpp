@@ -14,6 +14,7 @@
 
 #include "../../include/drivers/keyboard.h"
 #include "../../include/drivers/term.h"
+#include "../../include/drivers/tty.h"
 #include "../../include/cpu/process.h"
 
 namespace keyboard {
@@ -181,10 +182,12 @@ namespace keyboard {
     static void emit(uint8_t code, char ch, bool pressed) {
         if (system_key(code, pressed))
             return;
-        // Keys typed on a screen nobody owns go nowhere.
-        if (process::screen_input_owner(term::shown_screen()) < 0)
-            return;
-        if (user_callback == nullptr)
+        // The key goes to the shown screen's input owner: nowhere when there
+        // is none, to the kernel's own console (pid 0) through its callback,
+        // and to any program through that screen's queue (tty.cpp).
+        uint32_t screen = term::shown_screen();
+        pid_t owner = process::screen_input_owner(screen);
+        if (owner < 0 || (owner == 0 && user_callback == nullptr))
             return;
 
         keyboard_event_t e = {0};
@@ -208,7 +211,10 @@ namespace keyboard {
         if (kb_state.scroll_lock)    m |= KMOD_SCROLL;
         e.Mods = m;
 
-        user_callback(e);
+        if (owner == 0)
+            user_callback(e);
+        else
+            tty::on_key(e, screen);
     }
 
     // A key behind the 0xE0 prefix.

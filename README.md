@@ -49,6 +49,9 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   removed.
 - Nine screens, Alt+F1..F9, each with a system title bar (screen,
   program, subtitle, clock); keys go to the screen's input owner.
+  Screens 2..9 run CMD.BIN (/sfos), a console in ring 3 with the admin
+  right, started again whenever it ends; screen 1 keeps the kernel's
+  console until its commands move over.
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
   ends every program on the shown screen, Ctrl+Alt+Z pauses them (again:

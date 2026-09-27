@@ -17,8 +17,10 @@
 
 namespace
 {
-    // Output goes to the caller's screen for the length of a call; the
-    // kernel's own output goes on where it went before.
+    // Output goes to the caller's screen while it draws; the kernel's own
+    // output goes on where it went before. Never held across a sleep: the
+    // selected screen is everyone's, and whoever runs meanwhile selects
+    // their own.
     struct OnScreen
     {
         uint32_t prev;
@@ -71,8 +73,9 @@ namespace
             return false;
         for (;;)
         {
-            while (!tty::pop_key(e))
-                if (!tty::wait_key())
+            uint32_t screen = process::current_screen();
+            while (!tty::pop_key(e, screen))
+                if (!tty::wait_key(screen))
                     return false;
             if (e->type == KEY_PRESS)
                 return true;
@@ -130,16 +133,20 @@ namespace
     // SF_SUCCESS with the line in l->text, SF_ABORTED or SF_END_OF_FILE.
     SfStatus edit_line(Line* l)
     {
-        l->len = l->cur = 0;
-        l->start_x = term::cursor_x();
-        l->start_y = (sint32_t)term::cursor_y();
-        term::show_cursor();
+        {
+            OnScreen on;
+            l->len = l->cur = 0;
+            l->start_x = term::cursor_x();
+            l->start_y = (sint32_t)term::cursor_y();
+            term::show_cursor();
+        }
 
         for (;;)
         {
             keyboard_event_t e;
             if (!next_key(&e))
                 return SF_ABORTED;
+            OnScreen on;
 
             if (is_ctrl_c(e))
             {
@@ -221,11 +228,7 @@ namespace
             return;
         }
 
-        SfStatus st;
-        {
-            OnScreen on;
-            st = edit_line(l);
-        }
+        SfStatus st = edit_line(l);
         if (st == SF_SUCCESS)
         {
             uint64_t len = l->len < size - 1 ? l->len : size - 1;     // a longer line is cut

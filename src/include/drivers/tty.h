@@ -28,8 +28,10 @@ namespace tty
     // Reset the ring, the line buffer and termios (session start).
     void reset();
 
-    // Producer side (called from the keyboard IRQ).
-    void on_key(keyboard_event_t e);
+    // Producer side (called from the keyboard IRQ): a key typed on screen
+    // `screen`, queued for that screen's reader. The line discipline reads
+    // screen 1's (0).
+    void on_key(keyboard_event_t e, uint32_t screen = 0);
 
 
     // The foreground process group: who ^C goes to, and who is allowed to
@@ -43,15 +45,15 @@ namespace tty
     // or the VTIME deadline.
     bool readable();
 
-    // Raw event interface (SYSX_READ_KEY): pop one queued event. Returns
-    // false when the ring is empty.
-    bool pop_key(keyboard_event_t* out);
+    // Raw event interface (SYSX_READ_KEY, SfConsole): pop one event queued
+    // for `screen`. Returns false when there is none.
+    bool pop_key(keyboard_event_t* out, uint32_t screen = 0);
 
     // Sleep until read() can make progress (readable(), including the
     // VTIME deadline) or until pop_key has an event. False when a signal
     // ended the sleep.
     bool wait_readable();
-    bool wait_key();
+    bool wait_key(uint32_t screen = 0);
 
     // Read at most n bytes into dst.
     //   > 0   bytes read

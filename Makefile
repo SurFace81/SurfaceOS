@@ -246,9 +246,20 @@ bin/apps/$(1).bin: $$(patsubst src/apps/%.cpp,bin/apps/%.o,$$(wildcard src/apps/
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
 
+# The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
+# out of /apps.
+CMD_BIN = bin/sfos/cmd.bin
+
+bin/sfos/cmd.o: src/sfos/cmd.cpp
+	mkdir -p $(dir $@)
+	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
+
+$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld
+	$(LD) $(APP_LDFLAGS) -o $@ $<
+
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
-.SECONDARY: $(APP_OBJS)
+.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o
 
 
 # Generating version
@@ -274,11 +285,12 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # Disk image: GPT with one FAT32 EFI System Partition, built by
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(APP_BINS)
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
 		bin/kernel/data/stdfont.fnt \
+		$(CMD_BIN) \
 		$(APP_BINS) \
 		--size=$(IMG_SIZE_MIB)
 

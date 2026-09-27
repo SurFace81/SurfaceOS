@@ -473,6 +473,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     console::init();
     process::start_console(console::main);
+    process::start_cmdkeeper();
     uart::printf("boot: console ready\n");
 
     // From here on the boot task is the idle task: the console and the

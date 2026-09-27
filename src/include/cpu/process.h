@@ -44,8 +44,8 @@ struct vnode;
 #define USER_STACK_TOP      (USER_LIMIT - PAGE_SIZE_4K)
 
 #define KERNEL_STACK_SIZE   (64 * 1024)
-#define MAX_PROCESSES       32
-#define MAX_THREADS         64
+#define MAX_PROCESSES       64
+#define MAX_THREADS         128
 #define THREAD_STACK_SIZE   (256 * 1024)            // a created thread's user stack
 #define MAX_ROOTS           16      // data, tmp and argN of one process
 
@@ -110,6 +110,11 @@ namespace process
     // Create the console: a kernel process (pid 0) whose task runs
     // entry(nullptr). It starts running once the boot code calls idle().
     void start_console(void (*entry)(void*));
+
+    // Keep CMD.BIN (sfos/) running on screens 2..9: started now, started
+    // again whenever one ends - a crash or Ctrl+Alt+C - while the programs
+    // it started run on.
+    void start_cmdkeeper();
 
     // The rest of the boot task's life: run whatever can run, halt when
     // nothing can. Never returns.
