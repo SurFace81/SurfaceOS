@@ -835,6 +835,29 @@ namespace process
         term::close_hidden(s);
     }
 
+    // p crashed: `text` (one line) on its screen - on a line of its own -
+    // into its log when it runs in the background, and (as all a screen
+    // shows) into the kernel's.
+    static void tell_crash(Process* p, const char* text)
+    {
+        uint64_t len = 0;
+        while (text[len])
+            len++;
+        p->sf_status = SF_CRASHED;      // what Wait tells (the console says no more)
+
+        uint32_t prev = term::selected();
+        term::select(p->screen);
+        if (term::cursor_x())
+            term::putc('\n');
+        tty::write(text, len);
+        term::select(prev);
+
+        ScreenLog* l = &screen_log[p->screen];
+        uint64_t done = 0;
+        if (l->v && l->v->ops->write(l->v, l->off, text, len, &done) == 0)
+            l->off += done;
+    }
+
     // p ends: the hidden screen it ran on goes once nothing else runs there.
     static void release_screen(Process* p)
     {
@@ -1844,8 +1867,12 @@ namespace process
         // No usable stack to run the handler on. POSIX kills the process
         // with SIGSEGV, and it must not be catchable here or delivery would
         // recurse on the same broken stack.
-        screen::printf("\n[pid %u %s killed: no room for a signal frame]\n",
-                       (uint32_t)p->pid, p->name);
+        char text[96];
+        screen::capture(text, sizeof(text));
+        screen::printf("[%u] %s crashed: no room for a signal frame\n", (uint32_t)p->pid,
+                       p->name);
+        screen::end_capture();
+        tell_crash(p, text);
         uart::printf("process: pid %u signal frame unwritable\n", (uint32_t)p->pid);
         terminate(p, signal_status(SIGSEGV));
         return true;
@@ -2457,8 +2484,22 @@ namespace process
         if (!sig::caught(&current->sig, n) ||
             (current->sig.blocked & SIGMASK(n)))
         {
-            screen::printf("\n[pid %u %s terminated: CPU exception %u]\n",
-                           (uint32_t)current->pid, current->name, (uint32_t)vector);
+            uint64_t cr2;
+            asm volatile("mov %%cr2, %0" : "=r"(cr2));
+            char text[160];
+            screen::capture(text, sizeof(text));
+            screen::printf("[%u] %s crashed: ", (uint32_t)current->pid, current->name);
+            switch (vector)
+            {
+                case 0:  screen::printf("division by zero");                  break;
+                case 6:  screen::printf("invalid instruction");               break;
+                case 13: screen::printf("general protection fault");          break;
+                case 14: screen::printf("page fault at address %llx", cr2);   break;
+                default: screen::printf("CPU exception %u", (uint32_t)vector); break;
+            }
+            screen::printf(", instruction at %llx\n", iret->rip);
+            screen::end_capture();
+            tell_crash(current, text);
 
             terminate(current, signal_status(n));
             reschedule(regs, iret);
@@ -3141,8 +3182,12 @@ namespace process
         sig::frame f;
         if (!uaccess::copy_from_user(&f, base, sizeof(f)) || !sig::check_frame(&f))
         {
-            screen::printf("\n[pid %u %s killed: corrupt signal frame]\n",
+            char text[96];
+            screen::capture(text, sizeof(text));
+            screen::printf("[%u] %s crashed: corrupt signal frame\n",
                            (uint32_t)current->pid, current->name);
+            screen::end_capture();
+            tell_crash(current, text);
             uart::printf("process: pid %u bad sigreturn frame at %llx\n",
                          (uint32_t)current->pid, base);
             terminate(current, signal_status(SIGSEGV));

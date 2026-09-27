@@ -841,7 +841,8 @@ static void Ended(Job* J, bool Always)
     SfStatus Result = SF_SUCCESS;
     if (J->Handle)
         Sys->Process->Wait(Sys->Process, J->Handle, &Result);
-    if (Result == SF_SUCCESS && !Always)
+    // A crash the kernel has told of on this screen already.
+    if ((Result == SF_SUCCESS || Result == SF_CRASHED) && !Always)
         return;
     if (!Always && !J->Paused)
         Print("\n");                   // its output may not have ended the line
@@ -850,6 +851,8 @@ static void Ended(Job* J, bool Always)
         Print(": done\n");
     else if (Result == SF_ABORTED)
         Print(": ended before it finished\n");
+    else if (Result == SF_CRASHED)
+        Print(": crashed\n");
     else
     {
         Print(": ended with status 0x");

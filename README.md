@@ -55,7 +55,9 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
   ends every program on the shown screen, Ctrl+Alt+Z pauses them and
-  hands the keys to the console (again: they go on). A program on the shown screen gets twice the CPU time of
+  hands the keys to the console (again: they go on). A program that
+  crashes (a CPU exception) ends with a line saying why and where, on
+  its screen and in its log. A program on the shown screen gets twice the CPU time of
   one elsewhere
 - The console (CMD.BIN, `help`): ls, cat, xxd, write, cp, mv, rm, mkdir,
   rmdir, cd, pwd, mount <dev> (partitions go to /mount/<dev>pN), umount

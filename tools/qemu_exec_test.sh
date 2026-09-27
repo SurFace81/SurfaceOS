@@ -320,6 +320,8 @@ WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest fault"
 wait_session_end $WANT 15; result $? "threadtest fault ends"
 [ "$(last_status)" = "11" ]; result $? "a fault in one thread ends the program (SIGSEGV)"
+grep -aq "threadtest crashed: page fault at address 0x0, instruction at" "$LOG"
+result $? "  and the kernel says so on its screen"
 
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "threadtest spin"; sleep 3

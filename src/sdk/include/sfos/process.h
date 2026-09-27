@@ -34,7 +34,9 @@
 //            admin right (sfos/admin.h) - for a program that has it.
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
-//            was stopped short (a fault, Ctrl+Alt+C). Handle is used up.
+//            was stopped short (Ctrl+Alt+C, EndProcess), SF_CRASHED when a
+//            CPU exception ended it (the kernel says which on its screen).
+//            Handle is used up.
 //   IdOf     (revision 1.1) *Id gets the number of the program behind
 //            Handle (sfos/admin.h speaks of programs by number).
 typedef struct SfProcess SfProcess;

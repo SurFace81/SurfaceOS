@@ -29,6 +29,7 @@
 #define SF_DEVICE_ERROR         (SF_ERROR_BIT | 11)
 #define SF_BUFFER_TOO_SMALL     (SF_ERROR_BIT | 12)  // the size needed is returned
 #define SF_IN_USE               (SF_ERROR_BIT | 13)  // e.g. a volume with files open
+#define SF_CRASHED              (SF_ERROR_BIT | 14)  // a program ended by a CPU exception
 
 // Call numbers. The table grows from 0; the SDK runtime makes these calls,
 // programs never do directly. A file is its handle number.
