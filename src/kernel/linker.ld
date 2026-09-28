@@ -16,7 +16,7 @@ ENTRY(_start)
  *   0x004000            font.fnt            (loaded by the bootloader)
  *   0x100000 - 0x108000 StartData           (boot header + memory map)
  *   0x200000 - __kernel_phys_end            kernel image + .bss
- *   0x300000 - 0x334000 static + boot page tables (AllocatePages'd by the
+ *   0x300000 - 0x394000 static + boot page tables (AllocatePages'd by the
  *                       bootloader; layout in include/cpu/paging.h)
  *
  * The ASSERT below turns a kernel that grew into the page tables into a

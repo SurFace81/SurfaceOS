@@ -76,7 +76,7 @@
 
 #define DIRECT_MAP_PML4_INDEX 273
 #define DIRECT_MAP_BASE       0xFFFF888000000000ULL
-#define DIRECT_MAP_MAX        (32ULL * 1024 * 1024 * 1024) // 32 static PDs
+#define DIRECT_MAP_MAX        (128ULL * 1024 * 1024 * 1024) // 128 static PDs
 
 #define KERNEL_PML4_INDEX     511
 #define KERNEL_PDPT_INDEX     510
@@ -94,15 +94,15 @@
 #define PAGE_TABLES_PHYS      0x300000ULL
 #define PT_PML4_OFFSET        0x0000      // PML4
 #define PT_DM_PDPT_OFFSET     0x1000      // PDPT for PML4[273]
-#define PT_DM_PD_OFFSET       0x2000      // 32 PDs -> 32 GiB of direct map
-#define PT_DM_PD_COUNT        32
-#define PT_DEV_PDPT_OFFSET    0x22000     // PDPT for PML4[256]
-#define PT_DEV_PD_OFFSET      0x23000     // 4 PDs -> 4 GiB of device window
+#define PT_DM_PD_OFFSET       0x2000      // 128 PDs -> 128 GiB of direct map
+#define PT_DM_PD_COUNT        128
+#define PT_DEV_PDPT_OFFSET    0x82000     // PDPT for PML4[256]
+#define PT_DEV_PD_OFFSET      0x83000     // 4 PDs -> 4 GiB of device window
 #define PT_DEV_PD_COUNT       4
-#define PT_KERN_PDPT_OFFSET   0x27000     // PDPT for PML4[511]
-#define PT_KERN_PD_OFFSET     0x28000     // 1 PD -> 1 GiB for the kernel image
-#define PT_TOTAL_SIZE         0x29000
-#define PT_BOOT_OFFSET        0x30000     // kentry.asm: PML4, PDPT lo, PDPT hi, PD
+#define PT_KERN_PDPT_OFFSET   0x87000     // PDPT for PML4[511]
+#define PT_KERN_PD_OFFSET     0x88000     // 1 PD -> 1 GiB for the kernel image
+#define PT_TOTAL_SIZE         0x89000
+#define PT_BOOT_OFFSET        0x90000     // kentry.asm: PML4, PDPT lo, PDPT hi, PD
 #define PT_BOOT_SIZE          0x4000
 
 // Physical <-> kernel-virtual translation through the direct map. Valid for

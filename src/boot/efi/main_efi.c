@@ -153,11 +153,19 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         Entry.Type = getEntryType(desc->Type);
     }    
 
+    // One pass more than there are descriptors: the extra one (desc = NULL)
+    // writes out the last entry, which used to be dropped - and with it the
+    // RAM above 4 GB, the last descriptor on most machines.
     UINT64 entNum = 0;
-    for (long long i = 1; i < MemoryMapSize / DescriptorSize; i++) {
-        EFI_MEMORY_DESCRIPTOR* desc = (EFI_MEMORY_DESCRIPTOR*)((UINT64)MemoryMap + (i * DescriptorSize));
+    UINT64 descNum = MemoryMapSize / DescriptorSize;
+    for (UINT64 i = 1; i <= descNum; i++) {
+        EFI_MEMORY_DESCRIPTOR* desc = i < descNum
+            ? (EFI_MEMORY_DESCRIPTOR*)((UINT64)MemoryMap + (i * DescriptorSize))
+            : NULL;
 
-        if (getEntryType(desc->Type) == Entry.Type) {
+        // Merge only a descriptor that continues the entry: a gap between
+        // two of the same type is not memory and must not become part of it.
+        if (desc && getEntryType(desc->Type) == Entry.Type && desc->PhysicalStart == Entry.End) {
             Entry.End += desc->NumberOfPages * 4096;
         } else {
             entNum++;
@@ -170,11 +178,13 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             SystemTable->BootServices->CopyMem(lastEntry, (void*)&Entry, BootHeader.MemoryMapEntrySize);
             lastEntry += BootHeader.MemoryMapEntrySize;
 
+            if (!desc)
+                break;
             Entry.Start = desc->PhysicalStart;
             Entry.End = Entry.Start + desc->NumberOfPages * 4096;
             Entry.Type = getEntryType(desc->Type);
         }
-        
+
         totalMemory += desc->NumberOfPages * 4096;
     }
     BootHeader.TotalMemorySize = totalMemory;
