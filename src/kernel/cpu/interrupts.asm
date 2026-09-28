@@ -9,7 +9,10 @@ load_idt:
 
 ; Came from ring 3 (the CS of the trap frame at [rsp + %1] has RPL 3)?
 ; Then the GS base is the program's: swap in the kernel's, which points at
-; this CPU's Cpu (percpu.h). The same test on the way out swaps it back.
+; this CPU's Cpu (percpu.h). The same test on the way out swaps it back -
+; with interrupts off: one taken between that swapgs and the iretq comes
+; from ring 0, so its stub would not swap, and the kernel would run on the
+; program's GS base. iretq gives the frame's IF back.
 %macro SWAPGS_IF_USER 1
     test byte [rsp + %1], 3
     jz %%kernel
@@ -77,6 +80,7 @@ load_idt:
     extern handle_exception
     call handle_exception
 
+    cli
     RESTORE_REGS
     add rsp, 8                 ; drop the error code
     SWAPGS_IF_USER 8
@@ -120,8 +124,8 @@ irq_common_stub:
     mov rdi, rsp            ; Pass pointer to interrupt frame as first argument
     extern irq_handler
     call irq_handler
-    
-    RESTORE_REGS    
+    cli
+    RESTORE_REGS
     add rsp, 16             ; Remove int_no and err_code (8 bytes each)
     SWAPGS_IF_USER 8
     iretq
@@ -228,6 +232,7 @@ sfcall_entry:
     extern sfcall_dispatch
     call sfcall_dispatch
 
+    cli
     RESTORE_REGS
     SWAPGS_IF_USER 8
     iretq

@@ -77,5 +77,6 @@ task_user_start:
     pop rcx
     pop rbx
     pop rax
+    cli                         ; no interrupt on the program's GS base
     swapgs
     iretq
