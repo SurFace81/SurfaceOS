@@ -18,6 +18,10 @@
 #define PAGE_SIZE       (1ULL << 7)     // PS: this entry maps a huge page
 #define PAGE_PAT_4K     (1ULL << 7)     // PAT bit in a 4 KiB PTE
 #define PAGE_GLOBAL     (1ULL << 8)
+// Bit 9 is free for the OS. A user page with PAGE_SHARED maps a frame the
+// process does not own (the SDK runtime's code): tearing the address space down
+// leaves the frame alone.
+#define PAGE_SHARED     (1ULL << 9)
 #define PAGE_PAT_2M     (1ULL << 12)    // PAT bit in a 2 MiB PDE
 #define PAGE_NX         (1ULL << 63)    // needs EFER.NXE, see cpu::has_nx()
 
@@ -39,7 +43,7 @@
 // space.
 //
 //   0x0000000000000000  not mapped: the NULL guard (USER_MIN)
-//   0x0000000000400000  ELF image, brk heap, mmap window  (see process.h)
+//   0x0000000000400000  ELF image, AllocatePages window  (see process.h)
 //   0x00007FFFFFFFF000  top of the user stack; the last page stays unmapped
 //   0x0000800000000000  USER_LIMIT, start of the non-canonical hole
 //
@@ -152,11 +156,9 @@ namespace paging
     // currently user-accessible. 0 if unmapped.
     uint64_t    page_frame(uint64_t virt);
 
-    // Deep-copy the lower half of `src_pml4` into `dst_pml4` (a fresh address
-    // space from create_address_space): every present page gets its own new
-    // frame with the same contents and permissions. Used by fork(). On
-    // failure the partial copy is left for destroy_address_space().
-    bool        clone_user_space(uint64_t dst_pml4, uint64_t src_pml4);
+    // The 4 KiB pages of the lower half of `pml4` that are its own: mapped,
+    // and not PAGE_SHARED (the SDK runtime's code).
+    uint64_t    count_user_pages(uint64_t pml4);
 
     // OR additional permission bits into an already-mapped 4 KiB page, and
     // clear PAGE_NX if the new flags make it executable.

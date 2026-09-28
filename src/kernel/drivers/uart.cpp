@@ -241,7 +241,16 @@ namespace uart
                 case 'c':
                     send_char((char)__builtin_va_arg(args, int));
                     break;
+                case 'd':
                 case 'i':
+                {
+                    sint64_t v = ll ? __builtin_va_arg(args, sint64_t)
+                                    : (sint64_t)__builtin_va_arg(args, int);
+                    if (v < 0)
+                        send_char('-');
+                    log_uint64_dec(v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v);
+                    break;
+                }
                 case 'u':
                     if (ll)
                         log_uint64_dec(__builtin_va_arg(args, uint64_t));

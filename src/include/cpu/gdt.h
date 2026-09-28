@@ -31,7 +31,7 @@ struct GDT {
     gdt_entry_t UserNull;     // 0x18
     gdt_entry_t UserCode;     // 0x20
     gdt_entry_t UserData;     // 0x28
-    // 16-byte system segment descriptor for the 64-bit TSS (filled by tss::init)
+    // 16-byte system segment descriptor for the 64-bit TSS (filled by cpu::setup, percpu.h)
     uint64_t    TssLow;       // 0x30
     uint64_t    TssHigh;      // 0x38
 }__attribute__((packed))

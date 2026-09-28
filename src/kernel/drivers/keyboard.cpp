@@ -13,15 +13,16 @@
 // DOS-era software saw a consistent shift state; they are dropped here.
 
 #include "../../include/drivers/keyboard.h"
+#include "../../include/drivers/term.h"
+#include "../../include/drivers/tty.h"
+#include "../../include/cpu/process.h"
 
 namespace keyboard {
     uint8_t scancode_to_ascii(uint8_t scancode);
 
     static keyboard_state_t kb_state  = {0};
 
-    // Index 1 is Escape: 0x1B, not 0. It used to be 0, so the raw-mode
-    // encoder saw a key with no byte and dropped it - an application could
-    // not receive Escape at all.
+    // Index 1 is Escape: it types 0x1B.
     static const char scancode_to_ascii_en[] = {
         0, 0x1B, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -62,16 +63,6 @@ namespace keyboard {
         { KEY_KP_0,      '0', KEY_INSERT      },   // 0x52
         { KEY_KP_PERIOD, '.', KEY_DELETE      },   // 0x53
     };
-
-    static keyboard_callback_t user_callback = nullptr;
-
-    void set_keyboard_callback(keyboard_callback_t callback) {
-        user_callback = callback;
-    }
-
-    void del_keyboard_callback(void) {
-        user_callback = nullptr;
-    }
 
     static void send_command(uint8_t command) {
         int attempts = 1000;
@@ -129,10 +120,6 @@ namespace keyboard {
         set_leds();
     }
 
-    keyboard_callback_t get_callback() {
-        return user_callback;
-    }
-
     static inline bool shift_held() {
         return kb_state.lshift_pressed || kb_state.rshift_pressed;
     }
@@ -143,8 +130,46 @@ namespace keyboard {
         return kb_state.lalt_pressed || kb_state.ralt_pressed;
     }
 
+    // The kernel's keys; neither the press nor its release reaches anyone:
+    //   Alt+F1..F9   show screen 1..9;
+    //   Ctrl+Alt+C   end every program on the shown screen, whatever it is
+    //                doing - nothing a program does can keep it alive;
+    //   Ctrl+Alt+Z   pause them, and pressed again, let them go on.
+    static const uint8_t KEY_C = 46;
+    static uint8_t system_held = 0;     // the key whose release to swallow
+
+    static bool system_key(uint8_t code, bool pressed) {
+        if (code == system_held && !pressed) {
+            system_held = 0;
+            return true;
+        }
+        if (!pressed || !alt_held())
+            return false;
+        if (code >= KEY_F1 && code <= KEY_F9) {
+            system_held = code;
+            term::show((uint32_t)(code - KEY_F1));
+            return true;
+        }
+        if (code == KEY_C && ctrl_held()) {
+            system_held = code;
+            process::end_screen_programs(term::shown_screen());
+            return true;
+        }
+        if (code == KEY_Z && ctrl_held()) {
+            system_held = code;
+            process::pause_screen_programs(term::shown_screen());
+            return true;
+        }
+        return false;
+    }
+
     static void emit(uint8_t code, char ch, bool pressed) {
-        if (user_callback == nullptr)
+        if (system_key(code, pressed))
+            return;
+        // The key goes to the shown screen's input owner, through that
+        // screen's queue (tty.cpp) - nowhere when there is none.
+        uint32_t screen = term::shown_screen();
+        if (process::screen_input_owner(screen) < 0)
             return;
 
         keyboard_event_t e = {0};
@@ -168,7 +193,7 @@ namespace keyboard {
         if (kb_state.scroll_lock)    m |= KMOD_SCROLL;
         e.Mods = m;
 
-        user_callback(e);
+        tty::on_key(e, screen);
     }
 
     // A key behind the 0xE0 prefix.
@@ -312,9 +337,8 @@ namespace keyboard {
             }
         }
 
-        // Ctrl folding. Without this Ctrl+D delivered 'd', so the EOF check
-        // in tty::assemble (KeyChar == 0x04) could never fire, and
-        // Ctrl+letter was inserted into the line as the bare letter.
+        // Ctrl folding: Ctrl+letter types its control character (Ctrl+C is
+        // 0x03, Ctrl+D 0x04 - what ReadLine looks for), not the bare letter.
         if (ctrl_held()) {
             if (c >= 'a' && c <= 'z') {
                 c = c - 'a' + 1;            // ^A..^Z -> 0x01..0x1A

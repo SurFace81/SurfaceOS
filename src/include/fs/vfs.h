@@ -3,7 +3,7 @@
 
 #include "../cpu/types.h"
 #include "../dev/blkdev.h"
-#include "../../sdk/include/abi/stat.h"
+#include "stat.h"
 
 // Virtual filesystem layer (stage 3.3/3.4).
 //
@@ -13,7 +13,7 @@
 //        |
 //      vnode cache (two opens of one file share one vnode)
 //        |
-//    vnode_ops  <- fat32, devfs
+//    vnode_ops  <- fat32
 //
 // Every operation returns 0/>=0 on success or a negative errno. vnodes are
 // reference counted; a caller that gets a vnode* owns one reference and must
@@ -31,7 +31,6 @@ enum class vtype : uint8_t
 {
     REG,        // regular file
     DIR,        // directory
-    CHR,        // character device (devfs)
 };
 
 struct vnode;
@@ -89,8 +88,8 @@ struct vnode_ops
 
     // Readiness for blocking syscalls: true when read would not return
     // -EAGAIN right now (a tty line is complete, /dev/null is always
-    // ready). null == always ready. The process layer pairs this with
-    // Wait::Key + syscall restart.
+    // ready). null == always ready. Nothing consults it yet: a tty read
+    // sleeps in tty::wait_readable.
     bool     (*poll_ready)(vnode* v);
 
     // Last reference dropped and the vnode is about to be freed: flush the
@@ -129,7 +128,7 @@ struct mount
     mount*  parent;             // mount that contains `point`
     vfs_fs* fs;                 // the driver behind it
     void*   fs_priv;            // driver state (fat_super* for fat32)
-    char    devname[16];        // "usb0p1", "devfs", ...
+    char    devname[16];        // "usb0p1", ...
     // Unique per mounted instance, handed out by mount_at. st_dev must
     // distinguish volumes, or (st_dev, st_ino) stops identifying a file and
     // "is this the same file?" checks across mounts go wrong.
@@ -140,11 +139,11 @@ struct mount
 // One filesystem driver.
 struct vfs_fs
 {
-    const char* name;           // "fat32", "devfs"
+    const char* name;           // "fat32"
     vnode_ops*  ops;
     // Create (and reference) the root vnode for a new mount. `m` is the
     // mount slot being filled - use it as the vnode-cache key namespace.
-    // `arg` is driver-specific (blkdev* for fat32, unused for devfs).
+    // `arg` is driver-specific (blkdev* for fat32).
     sint64_t (*mount_fs)(mount* m, void* arg, vnode** out_root);
     // Flush everything, release driver state. Called by umount after the
     // vnode sweep, so no vnode of this FS exists any more.
@@ -186,10 +185,9 @@ namespace vfs
     // nullptr for the root mount. arg goes to fs->mount_fs.
     sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs,
                       void* arg);
-    // umount must refuse while a process still has the filesystem open, but
-    // the VFS cannot see fd tables or process cwds from down here, and a
-    // plain refcount test cannot either: drivers legitimately pin their own
-    // vnodes (devfs keeps one per device for the life of the mount). So the
+    // umount must refuse while a program still has the filesystem open, but
+    // the VFS cannot see handle tables or roots from down here, and a plain
+    // refcount test cannot either: drivers may pin their own vnodes. So the
     // process layer registers a predicate at boot.
     typedef bool (*busy_hook_t)(mount* m);
     void set_busy_hook(busy_hook_t hook);
@@ -206,15 +204,25 @@ namespace vfs
     uint32_t mount_count();
 
     // --- namei --------------------------------------------------------------
+    // lookup flags:
+    //   LOOKUP_BENEATH  the walk may not leave `cwd`, the directory it
+    //                   starts from: an absolute path, or a ".." that would
+    //                   climb above it, fails with -EXDEV: a root of a
+    //                   program stays its own. Going down through mount points is
+    //                   fine. FAT has no symlinks, so counting depth is exact.
+    const uint32_t LOOKUP_BENEATH = 0x1;
+
     // Resolve `path` (absolute, or relative to `cwd`) to a referenced vnode.
     // If `must_be_dir`, a trailing '/' or O_DIRECTORY-style mismatch gives
     // -ENOTDIR. namei walks through mount points in both directions.
-    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir);
+    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir,
+                    uint32_t lflags = 0);
 
     // Resolve everything but the last component: *out_dir is referenced and
     // `name` (NAME_MAX+1 buffer) holds the final component. -ENOENT etc.
+    // Under LOOKUP_BENEATH a final ".." that would leave `cwd` is -EXDEV too.
     sint64_t lookup_parent(const char* path, vnode* cwd, vnode** out_dir,
-                           char* name);
+                           char* name, uint32_t lflags = 0);
 
     // Convenience wrappers used by the console until the fd layer lands.
     sint64_t open_path(const char* path, vnode* cwd, vnode** out);

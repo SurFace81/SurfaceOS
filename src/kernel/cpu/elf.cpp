@@ -17,7 +17,7 @@
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
+#include "../../include/errno.h"
 
 namespace elf
 {
@@ -87,7 +87,7 @@ namespace elf
 
     LoadResult load_file(vnode* v, uint64_t file_size, sint64_t* out_rc)
     {
-        LoadResult result = {0, 0, 0, 0, 0, false};
+        LoadResult result = {0, 0, false};
 
         if (file_size < sizeof(Elf64_Ehdr))
         {
@@ -162,7 +162,6 @@ namespace elf
         }
 
         uint64_t image_end = 0;
-        uint64_t phdr_vaddr = 0;
 
         for (uint16_t i = 0; i < ehdr->e_phnum; i++)
         {
@@ -170,6 +169,10 @@ namespace elf
                 (const Elf64_Phdr*)((const uint8_t*)phdrs + (uint64_t)i * ehdr->e_phentsize);
 
             if (phdr->p_type != PT_LOAD)
+                continue;
+            // An empty segment maps nothing. The linker emits one for a
+            // program with no writable data, at address 0.
+            if (phdr->p_memsz == 0)
                 continue;
 
             if (phdr->p_filesz > phdr->p_memsz)
@@ -259,26 +262,8 @@ namespace elf
             goto fail;
         }
 
-        // AT_PHDR: does a PT_LOAD segment carry the program header table?
-        for (uint16_t i = 0; i < ehdr->e_phnum; i++)
-        {
-            const Elf64_Phdr* phdr =
-                (const Elf64_Phdr*)((const uint8_t*)phdrs + (uint64_t)i * ehdr->e_phentsize);
-            if (phdr->p_type != PT_LOAD)
-                continue;
-            if (ehdr->e_phoff >= phdr->p_offset &&
-                ehdr->e_phoff + ph_bytes <= phdr->p_offset + phdr->p_filesz)
-            {
-                phdr_vaddr = phdr->p_vaddr + (ehdr->e_phoff - phdr->p_offset);
-                break;
-            }
-        }
-
         result.entry        = ehdr->e_entry;
         result.image_end    = (image_end + PAGE_SIZE_4K - 1) & ~(PAGE_SIZE_4K - 1);
-        result.phdr_vaddr   = phdr_vaddr;
-        result.phdr_entsize = ehdr->e_phentsize;
-        result.phdr_num     = ehdr->e_phnum;
         result.valid        = true;
         *out_rc = 0;
 

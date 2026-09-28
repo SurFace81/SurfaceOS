@@ -12,10 +12,9 @@ BOOT_WAIT=${2:-20}
 RUN_WAIT=${3:-20}
 IMG=test_disk.img
 MON=/tmp/qmon_int
-LAYOUT=${LAYOUT:-gpt}
 
 rm -f uart.log /tmp/screen_int.ppm
-bash tools/make_test_image.sh "$IMG" "hello" "$LAYOUT"
+bash tools/make_test_image.sh "$IMG" "sdkcheck"
 
 rm -f "$MON"
 qemu-system-x86_64 \

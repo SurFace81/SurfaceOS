@@ -27,6 +27,9 @@ static struct
     uint32_t vp_y;      // viewport pixel offset from top
     uint32_t vp_width;  // viewport width in pixels
     uint32_t vp_height; // viewport height in pixels
+
+    uint32_t bar_y;     // the title bar: the top of the loader's viewport
+    uint32_t bar_h;
 } scr;
 
 static const uint32_t BBP = 4;
@@ -68,7 +71,7 @@ static inline void put_px(uint32_t* px, uint32_t c)
     *px = native_color(c);
 }
 
-// The 16 ANSI colours, in the same 0x00RRGGBB form as enum Colors, so both
+// The 16 colours, in the same 0x00RRGGBB form as enum Colors, so both
 // go through native_color() on the way to the panel. Index 7 keeps the grey
 // the console has always used for normal text.
 static const uint32_t palette[16] = {
@@ -114,15 +117,35 @@ static void utoa(uint64_t v, char* b, uint32_t base)
     }
 }
 
-// Everything printed goes through the terminal, which owns the cursor,
-// the control characters and (step 2) the escape sequences.
-static inline void emit_char(char c) { term::putc(c); }
-static inline void emit_str(const char* s) { while (*s) term::putc(*s++); }
+// Everything printed goes through the terminal, which owns the cursor and
+// the control characters - unless it is being captured (screen::capture): then into that buffer.
+static char*    capture_buf  = nullptr;
+static uint64_t capture_size = 0;
+static uint64_t capture_len  = 0;
 
-static struct
+static inline void emit_char(char c)
 {
-    uint32_t x, y, w, h;
-} saved_vp;
+    if (!capture_buf)
+        term::putc(c);
+    else if (capture_len + 1 < capture_size)
+        capture_buf[capture_len++] = c;
+    else
+        capture_len++;                  // counted: the size it would need
+}
+static inline void emit_str(const char* s) { while (*s) emit_char(*s++); }
+
+// A black glyph on the title bar: `cell` columns in from the left of the
+// panel's viewport, top at pixel row `y`.
+static void bar_glyph(uint8_t chr, uint32_t cell, uint32_t y)
+{
+    const unsigned char* glyph = (const unsigned char*)scr.font + chr * scr.sym_h;
+    uint32_t x0 = scr.vp_x + cell * scr.sym_w;
+    for (uint32_t gy = 0; gy < scr.sym_h; gy++)
+        for (uint32_t gx = 0; gx < scr.sym_w; gx++)
+            if (glyph[gy] & (0x80 >> gx))
+                put_px((uint32_t*)(scr.buffer + (x0 + gx + (y + gy) * scr.pixels_per_scanline) * BBP),
+                       0x00000000);
+}
 
 // API
 namespace screen
@@ -164,6 +187,16 @@ namespace screen
         scr.vp_y      = header->ViewportY;
         scr.vp_width  = header->ViewportWidth;
         scr.vp_height = header->ViewportHeight;
+
+        // The title bar takes the top of the viewport; the text area is
+        // what is left below it. ~2.5% of the height, but never less than
+        // a glyph plus 4px of padding (a 20px strip on a 2K panel is lost).
+        uint32_t min_h = scr.sym_h + 4;
+        uint32_t pct_h = scr.height * 25 / 1000;
+        scr.bar_y      = scr.vp_y;
+        scr.bar_h      = pct_h > min_h ? pct_h : min_h;
+        scr.vp_y      += scr.bar_h;
+        scr.vp_height -= scr.bar_h;
 
         // The cell grid is sized to the whole panel once; a viewport change
         // later just selects a smaller rectangle of it (term::resize).
@@ -228,87 +261,27 @@ namespace screen
         term::set_cursor(x, y);
     }
 
-    void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+    void draw_title_bar(const char* left, const char* right)
     {
-        saved_vp.x = scr.vp_x;
-        saved_vp.y = scr.vp_y;
-        saved_vp.w = scr.vp_width;
-        saved_vp.h = scr.vp_height;
-
-        scr.vp_x = x;
-        scr.vp_y = y;
-        scr.vp_width = w;
-        scr.vp_height = h;
-        term::resize(max_cols(), max_rows());
-        term::set_cursor(0, 0);
-    }
-
-    void pop_viewport()
-    {
-        scr.vp_x = saved_vp.x;
-        scr.vp_y = saved_vp.y;
-        scr.vp_width = saved_vp.w;
-        scr.vp_height = saved_vp.h;
-        term::resize(max_cols(), max_rows());
-        term::set_cursor(0, 0);
-    }
-
-    uint32_t title_bar_height()
-    {
-        // ~2.5% of the screen height, but never smaller than the glyph
-        // height + 4px padding. On a 2K panel this gives a bar that is
-        // actually visible instead of a thin 20px strip.
-        uint32_t min_h = scr.sym_h + 4;
-        uint32_t pct_h = scr.height * 25 / 1000;   // 2.5%
-        return pct_h > min_h ? pct_h : min_h;
-    }
-
-    void draw_title_bar(const char* title)
-    {
-        uint32_t bar_height = title_bar_height();
-
-        // Fill bar with gray
-        for (uint32_t y = scr.vp_y; y < scr.vp_y + bar_height; y++)
+        for (uint32_t y = scr.bar_y; y < scr.bar_y + scr.bar_h; y++)
             for (uint32_t x = scr.vp_x; x < scr.vp_x + scr.vp_width; x++)
-            {
-                uint32_t* px = (uint32_t*)(scr.buffer +
-                    (x + y * scr.pixels_per_scanline) * BBP);
-                put_px(px, Colors::GRAY);
-            }
+                put_px((uint32_t*)(scr.buffer + (x + y * scr.pixels_per_scanline) * BBP),
+                       Colors::GRAY);
 
-        // Measure title length
-        uint32_t len = 0;
-        while (title[len])
-            len++;
+        // One cell of padding at each end; the left text stops short of
+        // the right one.
+        uint32_t cells = scr.vp_width / scr.sym_w;
+        uint32_t rlen = 0;
+        while (right[rlen])
+            rlen++;
+        uint32_t rstart = cells > rlen + 1 ? cells - rlen - 1 : 0;
+        uint32_t text_y = scr.bar_y + (scr.bar_h - scr.sym_h) / 2;
 
-        // Center text horizontally and vertically inside the bar
-        uint32_t text_px_w = len * scr.sym_w;
-        uint32_t text_x = scr.vp_x + (scr.vp_width - text_px_w) / 2;
-        uint32_t text_y = scr.vp_y + (bar_height - scr.sym_h) / 2;
-
-        // Draw each character in black on the gray background
-        const unsigned char* glyph;
-        for (uint32_t i = 0; i < len; i++)
-        {
-            glyph = (const unsigned char*)scr.font +
-                    (unsigned char)title[i] * scr.sym_h;
-            for (uint32_t gy = 0; gy < scr.sym_h; gy++)
-                for (uint32_t gx = 0; gx < scr.sym_w; gx++)
-                {
-                    uint32_t* px = (uint32_t*)(scr.buffer +
-                        (text_x + i * scr.sym_w + gx +
-                        (text_y + gy) * scr.pixels_per_scanline) * BBP);
-                    if (glyph[gy] & (0x80 >> gx))
-                        put_px(px, 0x00000000); // black text
-                    // else leave gray
-                }
-        }
+        for (uint32_t i = 0; left[i] && 1 + i + 1 < rstart; i++)
+            bar_glyph((uint8_t)left[i], 1 + i, text_y);
+        for (uint32_t i = 0; i < rlen && rstart + i < cells; i++)
+            bar_glyph((uint8_t)right[i], rstart + i, text_y);
     }
-
-    uint32_t vp_x() { return scr.vp_x; }
-    uint32_t vp_y() { return scr.vp_y; }
-    uint32_t vp_w() { return scr.vp_width; }
-    uint32_t vp_h() { return scr.vp_height; }
 
     void show_cursor() { term::show_cursor(); }
     void hide_cursor() { term::hide_cursor(); }
@@ -380,11 +353,33 @@ namespace screen
         term::set_fg((uint8_t)best);
     }
 
-    void putc(char c) { term::putc(c); }
+    void putc(char c) { emit_char(c); }
 
     void write(const char* s) { emit_str(s); }
 
-    void write(const char* s, uint64_t len) { term::feed(s, len); }
+    void write(const char* s, uint64_t len)
+    {
+        if (!capture_buf)
+            term::feed(s, len);
+        else
+            for (uint64_t i = 0; i < len; i++)
+                emit_char(s[i]);
+    }
+
+    void capture(char* buf, uint64_t size)
+    {
+        capture_buf  = buf;
+        capture_size = size;
+        capture_len  = 0;
+    }
+
+    uint64_t end_capture()
+    {
+        if (capture_buf && capture_size)
+            capture_buf[capture_len < capture_size ? capture_len : capture_size - 1] = '\0';
+        capture_buf = nullptr;
+        return capture_len + 1;
+    }
 
     void printf(const char* fmt, ...)
     {
@@ -402,13 +397,20 @@ namespace screen
             }
             fmt++;
 
-            // Parse flags
+            // Parse flags: '-' pads on the right, '0' with zeroes.
             char pad_char = ' ';
-            if (*fmt == '0')
+            bool left = false;
+            for (;; fmt++)
             {
-                pad_char = '0';
-                fmt++;
+                if (*fmt == '-')
+                    left = true;
+                else if (*fmt == '0')
+                    pad_char = '0';
+                else
+                    break;
             }
+            if (left)
+                pad_char = ' ';
 
             // Parse width
             uint32_t width = 0;
@@ -426,22 +428,56 @@ namespace screen
             switch (*fmt)
             {
                 case 's':
-                    emit_str(__builtin_va_arg(a, char*));
+                {
+                    const char* s = __builtin_va_arg(a, char*);
+                    uint32_t len = 0;
+                    while (s[len]) len++;
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
+                    emit_str(s);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
+                }
                 case 'c':
                     emit_char((char)__builtin_va_arg(a, int));
                     break;
-                case 'u':
+                case 'd':
                 case 'i':
+                {
+                    sint64_t v = ll ? __builtin_va_arg(a, sint64_t)
+                                    : (sint64_t)__builtin_va_arg(a, int);
+                    uint32_t start = 0;
+                    if (v < 0)
+                        buf[start++] = '-';
+                    utoa(v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v, buf + start, 10);
+                    uint32_t len = 0;
+                    while (buf[len]) len++;
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
+                    emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
+                    break;
+                }
+                case 'u':
                 {
                     utoa(ll ? __builtin_va_arg(a, uint64_t)
                             : __builtin_va_arg(a, uint32_t), buf, 10);
                     // Pad if needed
                     uint32_t len = 0;
                     while (buf[len]) len++;
-                    for (uint32_t p = len; p < width; p++)
-                        emit_char(pad_char);
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
                     emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
                 }
                 case 'x':
@@ -451,9 +487,13 @@ namespace screen
                             : __builtin_va_arg(a, uint32_t), buf, 16);
                     uint32_t len = 0;
                     while (buf[len]) len++;
-                    for (uint32_t p = len; p < width; p++)
-                        emit_char(pad_char);
+                    if (!left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(pad_char);
                     emit_str(buf);
+                    if (left)
+                        for (uint32_t p = len; p < width; p++)
+                            emit_char(' ');
                     break;
                 }
                 case '%':

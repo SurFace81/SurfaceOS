@@ -44,9 +44,14 @@ namespace pit
         port::byte_out(PIT_CHANNEL0, (uint8_t)((divisor >> 8) & 0xFF));
     }
 
+    void count_tick()
+    {
+        __atomic_add_fetch(&tick_count, 1, __ATOMIC_RELAXED);
+    }
+
     void handler()
     {
-        tick_count++;
+        count_tick();
 
         // ~45 fps: rasterise whatever the terminal marked dirty (cursor
         // blink included) and push the back buffer to VRAM. Nothing else
@@ -77,6 +82,17 @@ namespace pit
     uint64_t ticks()
     {
         return tick_count;
+    }
+
+    uint64_t deadline_ms(uint64_t ms)
+    {
+        uint32_t hz = real_frequency();
+        if (!hz)
+            hz = frequency();
+        uint64_t n = ~0ULL / 2;             // "forever", without overflow
+        if (ms < n / hz)
+            n = (ms * hz + 999) / 1000;
+        return tick_count + (n ? n : 1);
     }
 
     void sleep_ms(uint32_t ms)

@@ -54,6 +54,11 @@ namespace screen
     void write(const char* s);
     void write(const char* s, uint64_t len);   // raw bytes, NUL included
     void printf(const char* fmt, ...);
+    // Take what is printed from now on into buf (size bytes, NUL-terminated
+    // by end_capture) instead of onto the screen. end_capture returns the
+    // bytes it needed, the NUL included - more than size when it was cut.
+    void     capture(char* buf, uint64_t size);
+    uint64_t end_capture();
 
     // Screen operations
     void clear();
@@ -63,7 +68,7 @@ namespace screen
 
     // --- rasteriser, used by the terminal emulator (see term.h) ----------
     // One character cell, in cell coordinates relative to the viewport.
-    // fg/bg are ANSI palette indices, attr is TERM_* from term.h.
+    // fg/bg are colour indices 0..15, attr is TERM_* from term.h.
     void draw_cell(uint32_t col, uint32_t row, uint8_t ch,
                    uint8_t fg, uint8_t bg, uint8_t attr);
     // XOR a cell's pixels; drawing the text cursor, and its own inverse.
@@ -76,16 +81,9 @@ namespace screen
     // Virtual address the framebuffer is mapped at (kernel device window).
     uint64_t vram_base();
 
-    void push_viewport(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
-    void pop_viewport();
-    void draw_title_bar(const char* title);
-    uint32_t title_bar_height();  // px, ~2.5% of screen height
-
-    uint32_t vp_x();
-    uint32_t vp_y();
-    uint32_t vp_w();
-    uint32_t vp_h();
-
+    // The system title bar above the text area (term.cpp decides what it
+    // says): `left` from the left edge, `right` against the right one.
+    void draw_title_bar(const char* left, const char* right);
 } // namespace screen
 
 #endif // SCREEN_H

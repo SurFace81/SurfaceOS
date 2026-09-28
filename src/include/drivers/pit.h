@@ -23,11 +23,19 @@ namespace pit
     void init(uint32_t frequency_hz);
     void handler();
 
+    // Just advance the clock by one tick (what handler() does first), for
+    // a tick taken while another CPU is in the kernel.
+    void count_tick();
+
     // System uptime in milliseconds
     uint64_t uptime_ms();
 
     // Current tick count since boot
     uint64_t ticks();
+
+    // The tick `ms` milliseconds from now, rounded up: a deadline for a
+    // sleep. Never 0; a huge ms gives a tick that is never reached.
+    uint64_t deadline_ms(uint64_t ms);
 
     // Blocking delay
     void sleep_ms(uint32_t ms);

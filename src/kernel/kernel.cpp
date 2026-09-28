@@ -7,27 +7,32 @@
 #include "../include/cpu/pci.h"
 #include "../include/cpu/features.h"
 #include "../include/cpu/process.h"
-#include "../include/cpu/syscall.h"
+#include "../include/cpu/sfcall.h"
+#include "../include/cpu/sdkpage.h"
 #include "../include/acpi/acpi.h"
+#include "../include/cpu/apic.h"
+#include "../include/cpu/percpu.h"
+#include "../include/cpu/smp.h"
+#include "../include/cpu/spinlock.h"
 #include "../include/dev/blkdev.h"
 #include "../include/dev/part.h"
 #include "../include/dev/bcache.h"
 #include "../include/fs/vfs.h"
 #include "../include/fs/file.h"
 #include "../include/fs/fat32fs.h"
-#include "../include/fs/devfs.h"
-#include "../include/drivers/console.h"
 #include "../include/drivers/keyboard.h"
 #include "../include/drivers/uart.h"
 #include "../include/drivers/screen.h"
 #include "../include/drivers/pit.h"
 #include "../include/drivers/rtc.h"
 #include "../include/mm/memory.h"
+#include "version.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/xhci.h"
 #include "../include/stdlib/string.h"
-#include "../sdk/include/abi/errno.h"
+#include "../include/errno.h"
+#include "../include/fs/dirent.h"
 
 namespace
 {
@@ -101,7 +106,7 @@ namespace
     //    loaded image. A blkdev matches when it starts at that LBA on a disk
     //    with that signature.
     // 2. No match (unknown layout, several sticks, ...): take the first
-    //    volume with a KERNEL.BIN in its root - that is our kernel, so that
+    //    volume with a /sfos/KERNEL.BIN - that is our kernel, so that
     //    volume is where we booted from in all but the strangest setups.
     // 3. Nothing at all: say so explicitly and run the console rootless;
     //    every fs command then fails cleanly instead of hanging.
@@ -177,7 +182,6 @@ namespace
             if (try_mount_root(d))
             {
                 uart::printf("boot: root mounted on %s (boot volume)\n", d->name);
-                screen::printf("Root: %s\n\r", d->name);
                 return;
             }
         }
@@ -196,11 +200,10 @@ namespace
                 continue;
 
             vnode* v = nullptr;
-            if (vfs::lookup("/KERNEL.BIN", nullptr, &v, false) == 0)
+            if (vfs::lookup("/sfos/KERNEL.BIN", nullptr, &v, false) == 0)
             {
                 vfs::unref(v);
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
-                screen::printf("Root: %s\n\r", d->name);
                 return;
             }
             unmount_root();
@@ -226,6 +229,112 @@ namespace
         //                (uint32_t)usb::get_block_device_count(),
         //                blkdevs);
     }
+
+    // Look up the top-level directory /<name>, creating it on the root
+    // volume when it is missing (an image made by hand, or an older mkimg).
+    // *created is set when the directory had to be made.
+    sint64_t ensure_root_dir(const char* name, bool* created)
+    {
+        char path[16];
+        path[0] = '/';
+        uint32_t n = 1;
+        for (const char* p = name; *p && n < sizeof(path) - 1; p++)
+            path[n++] = *p;
+        path[n] = '\0';
+
+        vnode* dir = nullptr;
+        sint64_t rc = vfs::lookup(path, nullptr, &dir, true);
+        if (rc == -ENOENT)
+        {
+            vnode* root = nullptr;
+            rc = vfs::lookup("/", nullptr, &root, true);
+            if (rc == 0 && root->ops->mkdir)
+            {
+                rc = root->ops->mkdir(root, name, 0755);
+                if (rc == 0)
+                {
+                    uart::printf("boot: created %s\n", path);
+                    *created = true;
+                }
+            }
+            if (root)
+                vfs::unref(root);
+        }
+
+        if (dir)
+            vfs::unref(dir);
+        return rc;
+    }
+
+    // Delete everything inside `dir`, subdirectories included. Deeper than
+    // TMP_MAX_DEPTH is left alone: each level costs a dirent_out on the
+    // kernel stack. Returns the number of entries removed.
+    const uint32_t TMP_MAX_DEPTH = 16;
+
+    uint32_t clear_dir(vnode* dir, uint32_t depth)
+    {
+        uint32_t removed = 0;
+        uint64_t cookie = 0;
+        for (;;)
+        {
+            // FAT marks a deleted entry in place, so the cookie stays valid
+            // across the unlinks below.
+            dirent_out d;
+            bool eof = false;
+            if (dir->ops->readdir(dir, &cookie, &d, &eof) != 0 || eof)
+                break;
+            if (strcmp(d.name, ".") == 0 || strcmp(d.name, "..") == 0)
+                continue;
+
+            sint64_t rc;
+            if (d.type == DT_DIR)
+            {
+                if (depth + 1 >= TMP_MAX_DEPTH)
+                {
+                    uart::printf("boot: /tmp too deep, %s left in place\n", d.name);
+                    continue;
+                }
+                vnode* sub = nullptr;
+                rc = vfs::lookup(d.name, dir, &sub, true);
+                if (rc == 0)
+                {
+                    removed += clear_dir(sub, depth + 1);
+                    vfs::unref(sub);
+                    rc = dir->ops->rmdir(dir, d.name);
+                }
+            }
+            else
+                rc = dir->ops->unlink(dir, d.name);
+
+            if (rc == 0)
+                removed++;
+            else
+                uart::printf("boot: cannot remove %s from /tmp (%d)\n",
+                             d.name, (int)rc);
+        }
+        return removed;
+    }
+
+    // Mount points left in /mount by a power cut without umount: remove the
+    // empty directories. A non-empty one is someone's data and stays.
+    uint32_t clear_stale_mount_points(vnode* dir)
+    {
+        uint32_t removed = 0;
+        uint64_t cookie = 0;
+        for (;;)
+        {
+            dirent_out d;
+            bool eof = false;
+            if (dir->ops->readdir(dir, &cookie, &d, &eof) != 0 || eof)
+                break;
+            if (d.type != DT_DIR || strcmp(d.name, ".") == 0 ||
+                strcmp(d.name, "..") == 0)
+                continue;
+            if (dir->ops->rmdir(dir, d.name) == 0)
+                removed++;
+        }
+        return removed;
+    }
 }
 
 extern "C" void kmain(uint64_t boot_header_phys)
@@ -246,7 +355,8 @@ extern "C" void kmain(uint64_t boot_header_phys)
     cpu::init_features();
 
     gdt::init();
-    tss::init();
+    cpu::init_boot_cpu();
+    bkl::enter();               // the boot CPU runs kernel code from here on
     // The bootloader AllocatePages()es 5 MB at PAGE_TABLES_PHYS and
     // linker.ld asserts that the kernel image stops short of it.
     paging::init(PAGE_TABLES_PHYS, BootHeader);
@@ -261,8 +371,9 @@ extern "C" void kmain(uint64_t boot_header_phys)
     pmm::init(BootHeader);
     memory::init(BootHeader->TotalMemorySize);
 
-    // Tables only, no AML: just enough for reboot/shutdown.
+    // Tables only, no AML: reboot/shutdown, the CPUs and the APICs.
     acpi::init(BootHeader);
+    apic::init();
 
     // From here on every stage announces itself on the serial line. On real
     // hardware a hang before the timer IRQ starts flushing the back buffer
@@ -287,6 +398,8 @@ extern "C" void kmain(uint64_t boot_header_phys)
     irq::install_handler(IRQ1_KEYBOARD, keyboard::handler);
     pit::calibrate();
     uart::printf("boot: pit calibrated at %u Hz\n", pit::real_frequency());
+    apic::start_timer();
+    smp::start(BootHeader->ApTrampolineAddress);
 
     usb::init();
     uart::printf("boot: usb ready\n");
@@ -301,50 +414,60 @@ extern "C" void kmain(uint64_t boot_header_phys)
 
     automount_root(BootHeader);
 
-    // Mount devfs over /dev. The directory comes from the disk image
-    // (tools/mkimg.py creates it); when it is missing, create it on the
-    // root volume.
+    // The top-level directories come from the disk image (tools/mkimg.py
+    // creates them); the ones that are missing are created on the root
+    // volume. /tmp starts empty on every boot, and /mount loses the empty
+    // mount points a power cut left. All of it is flushed right away, so a
+    // power cut does not undo it.
+    if (vfs::root_mount())
     {
-        vnode* dev_dir = nullptr;
-        sint64_t rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
-        if (rc == -ENOENT)
+        static const char* const dirs[] = { "files", "tmp", "mount" };
+        bool changed = false;
+        for (const char* d : dirs)
         {
-            vnode* root = nullptr;
-            rc = vfs::lookup("/", nullptr, &root, true);
-            if (rc == 0 && root->ops->mkdir)
-            {
-                rc = root->ops->mkdir(root, "dev", 0755);
-                if (rc == 0)
-                    rc = vfs::lookup("/dev", nullptr, &dev_dir, true);
-            }
-            vfs::unref(root);
-        }
-        if (rc == 0 && dev_dir)
-        {
-            rc = vfs::mount_at(dev_dir, "devfs", &devfs::fs, nullptr);
+            sint64_t rc = ensure_root_dir(d, &changed);
             if (rc != 0)
-            {
-                uart::printf("boot: devfs mount failed (%d)\n", (int)rc);
-                vfs::unref(dev_dir);
-            }
-            else
-                uart::printf("boot: devfs mounted on /dev\n");
+                uart::printf("boot: /%s unavailable (%d)\n", d, (int)rc);
         }
-        else if (dev_dir)
-            vfs::unref(dev_dir);
+
+        vnode* tmp = nullptr;
+        if (vfs::lookup("/tmp", nullptr, &tmp, true) == 0)
+        {
+            uint32_t removed = clear_dir(tmp, 0);
+            vfs::unref(tmp);
+            if (removed)
+            {
+                uart::printf("boot: /tmp cleared, %u entries removed\n", removed);
+                changed = true;
+            }
+        }
+
+        vnode* mnt = nullptr;
+        if (vfs::lookup("/mount", nullptr, &mnt, true) == 0)
+        {
+            uint32_t removed = clear_stale_mount_points(mnt);
+            vfs::unref(mnt);
+            if (removed)
+            {
+                uart::printf("boot: %u stale mount point(s) removed\n", removed);
+                changed = true;
+            }
+        }
+
+        if (changed)
+            vfs::sync_all();
     }
 
-    syscall::init();
+
+    sfcall::init();
+    sdkpage::init();
     process::init();
 
-    console::init();
+    uart::printf("boot: SurfaceOS v%s\n", VERSION_STRING);
+    process::start_cmdkeeper();
     uart::printf("boot: console ready\n");
 
-    while (1)
-    {
-        // Execute any command queued by the keyboard handler (e.g. `exec`).
-        // Runs in process context, not in the keyboard IRQ.
-        console::poll();
-        asm volatile("hlt");
-    }
+    // From here on the boot task is the idle task: the consoles and the
+    // programs they start run as scheduled tasks.
+    process::idle();
 }

@@ -1,14 +1,14 @@
-// Host-side stubs for the four things term.cpp needs from the kernel, plus
-// a recorder for what it rasterises. Built by tools/termtest_host.sh.
+// Host-side stubs for what term.cpp needs from the kernel, plus a recorder
+// for what it rasterises. Built by tools/termtest_host.sh.
 //
-// This is the whole point of splitting term out of screen: the parser has
-// no kernel dependencies worth the name, so it can be exercised on the host
+// This is the point of splitting term out of screen: the grids have no
+// kernel dependencies worth the name, so they can be exercised on the host
 // in milliseconds instead of through a build-and-boot cycle.
 
 #include "../../src/include/drivers/screen.h"
 #include "../../src/include/drivers/term.h"
 #include "../../src/include/drivers/pit.h"
-#include "../../src/include/drivers/tty.h"
+#include "../../src/include/drivers/rtc.h"
 #include "../../src/include/drivers/uart.h"
 #include "../../src/include/mm/heap.h"
 #include "../../src/include/mm/memory.h"
@@ -48,17 +48,16 @@ namespace pit
     uint64_t uptime_ms() { return fake_ms; }
 }
 
-// The terminal relays the CSI u toggle to the tty; recorded here so the
-// tests can assert that ESC [ > 1 u reached the input side.
-static bool csi_u_state = false;
-
-namespace tty
+// The title bar: not looked at here.
+namespace screen
 {
-    void set_csi_u(bool on) { csi_u_state = on; }
-    bool csi_u()            { return csi_u_state; }
+    void draw_title_bar(const char*, const char*) {}
 }
 
-bool host_csi_u() { return csi_u_state; }
+namespace rtc
+{
+    void read(rtc_time* t) { *t = rtc_time(); }
+}
 
 namespace uart
 {

@@ -10,7 +10,7 @@
 // worked in one place would time out in the other.
 //
 // Now it waits on the PIT. That needs interrupts enabled, which is why
-// console::poll() no longer runs commands under cli.
+// the console no longer runs commands under cli.
 static void delay_ms(uint32_t ms)
 {
     if (ms == 0)
@@ -52,9 +52,13 @@ static uint64_t read_mmio64(volatile uint64_t* reg)
 // Memory allocation with xHCI alignment and boundary requirements
 static void* alloc_xhci_memory(size_t size, size_t alignment, size_t boundary)
 {
-    if (size == 0 || alignment == 0)
+    // A block larger than `boundary` cannot help crossing one; moving it
+    // up to the next boundary would run it past the end of what kmalloc
+    // gave (and over the neighbouring heap blocks).
+    if (size == 0 || alignment == 0 || (boundary && size > boundary))
     {
-        uart::printf("xhci: bad alloc params size=%u align=%u\n", (uint32_t)size, (uint32_t)alignment);
+        uart::printf("xhci: bad alloc params size=%u align=%u boundary=%u\n", (uint32_t)size,
+                     (uint32_t)alignment, (uint32_t)boundary);
         while (1);
     }
 
@@ -296,6 +300,9 @@ struct usb_mass_storage_dev
     xhci_transfer_ring bulk_out_ring;
     bool configured;
     bool found;
+    // SYNCHRONIZE CACHE was rejected as an unknown command: the device has
+    // no cache it lets us flush, so flushes are skipped from then on.
+    bool no_sync_cache;
 };
 
 // Driver state
@@ -335,10 +342,10 @@ static uint32_t msd_block_size[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_last_lba[MAX_MASS_STORAGE_DEVS];
 static bool msd_capacity_cached[MAX_MASS_STORAGE_DEVS];
 
-// One reusable DMA bounce buffer per device, sized
-// USB_MAX_XFER_SECTORS * sector_size. Allocating per request made every
-// FAT sector read a kmalloc + a DMA-capable carve-out; on real USB sticks
-// that dominated small-transfer latency.
+// One reusable DMA bounce buffer per device, USB_MAX_XFER_BYTES long.
+// Allocating per request made every FAT sector read a kmalloc + a
+// DMA-capable carve-out; on real USB sticks that dominated small-transfer
+// latency.
 static uint8_t* msd_dma_buf[MAX_MASS_STORAGE_DEVS];
 static uintptr_t msd_dma_phys[MAX_MASS_STORAGE_DEVS];
 static uint32_t msd_dma_size[MAX_MASS_STORAGE_DEVS];
@@ -908,7 +915,8 @@ read_csw:
 
     if (shared_csw->bCSWStatus != 0)
     {
-        uart::printf("bot: command failed status=%u\n", (uint32_t)shared_csw->bCSWStatus);
+        uart::printf("bot: command 0x%x failed status=%u\n", (uint32_t)scsi_cmd[0],
+                     (uint32_t)shared_csw->bCSWStatus);
         return (sint32_t)shared_csw->bCSWStatus;
     }
 
@@ -940,9 +948,9 @@ static bool scsi_inquiry(usb_mass_storage_dev* msd)
     {
         if (device_infos[d].slot_id == msd->slot_id)
         {
-            memory::memcpy(data + 8, (uint8_t*)device_infos[d].vendor_str, 8);
+            memory::memcpy((uint8_t*)device_infos[d].vendor_str, data + 8, 8);
             device_infos[d].vendor_str[8] = '\0';
-            memory::memcpy(data + 16, (uint8_t*)device_infos[d].product_str, 16);
+            memory::memcpy((uint8_t*)device_infos[d].product_str, data + 16, 16);
             device_infos[d].product_str[16] = '\0';
             break;
         }
@@ -1042,13 +1050,51 @@ static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sect
     return result == 0;
 }
 
+// Fetch the sense data of the command that just failed. Returns the sense
+// key, or -1 when even that did not work.
+static sint32_t scsi_request_sense(usb_mass_storage_dev* msd)
+{
+    const uint32_t len = 18;            // fixed-format sense data
+    uint8_t* data = (uint8_t*)alloc_xhci_memory(len, 64, 4096);
+    if (!data)
+        return -1;
+    memory::memset(data, 0, len);
+
+    uint8_t cmd[6];
+    memory::memset(cmd, 0, 6);
+    cmd[0] = SCSI_REQUEST_SENSE;
+    cmd[4] = (uint8_t)len;
+
+    sint32_t result = bot_scsi_command(msd, cmd, 6, data, xhci_virt_to_phys(data),
+                                       len, USB_CBW_FLAG_IN);
+    sint32_t key = result == 0 ? (sint32_t)(data[2] & 0x0F) : -1;
+    free_xhci_memory(data);
+    return key;
+}
+
 static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
 {
+    if (msd->no_sync_cache)
+        return true;
+
     uint8_t cmd[10];
     memory::memset(cmd, 0, 10);
     cmd[0] = SCSI_SYNCHRONIZE_CACHE;    // whole LBA range, no data phase
     sint32_t result = bot_scsi_command(msd, cmd, 10, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-    return result == 0;
+    if (result == 0)
+        return true;
+
+    // Plenty of USB sticks do not implement SYNCHRONIZE CACHE and answer
+    // with ILLEGAL REQUEST. They write through (or manage their cache on
+    // their own), so there is nothing to flush. Anything else is a real
+    // failure.
+    if (result == 1 && scsi_request_sense(msd) == SCSI_SENSE_ILLEGAL_REQUEST)
+    {
+        uart::printf("scsi: SYNCHRONIZE CACHE not supported, flushes skipped\n");
+        msd->no_sync_cache = true;
+        return true;
+    }
+    return false;
 }
 
 // Allocate (once) the reusable per-device DMA bounce buffer.
@@ -1057,9 +1103,10 @@ static bool ensure_dma_buffer(uint8_t dev_index)
     if (msd_dma_buf[dev_index])
         return true;
 
-    uint32_t bs = msd_block_size[dev_index];
-    uint32_t size = (uint32_t)USB_MAX_XFER_SECTORS * bs;
-    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 4096);
+    // One Normal TRB carries it, and a TRB's buffer may not cross a 64 KiB
+    // boundary.
+    uint32_t size = USB_MAX_XFER_BYTES;
+    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 65536);
     if (!buf)
         return false;
 
@@ -2275,7 +2322,7 @@ namespace usb
 
         // One request may not exceed the reusable DMA buffer; the block layer
         // above splits larger transfers.
-        if (count > USB_MAX_XFER_SECTORS)
+        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
 
         // Bounds-check against the capacity READ CAPACITY reported: a bogus
@@ -2314,7 +2361,7 @@ namespace usb
         if (st != USB_OK)
             return st;
 
-        if (count > USB_MAX_XFER_SECTORS)
+        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
 
         if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)

@@ -1,71 +1,52 @@
 #!/bin/bash
 # Full user-space regression test in QEMU. Everything is checked through the
-# serial log: the kernel mirrors app output (SYS_WRITE) and logs every session
-# start/end with its exit status.
+# serial log: the kernel mirrors app output (SYS_WRITE) and the console logs
+# every program start/end with its exit status.
 #
-#   1. hi, Enter                  -> normal exit, status 0
-#   2. hi, Ctrl+C                 -> interrupt while blocked in read(0)
-#   3. proctest.bin spin, Ctrl+C  -> interrupt while spinning in ring 3
-#   4. memtest.bin                -> all memory checks pass
-#   5. proctest.bin               -> all process/scheduler checks pass
-#   6. uptime                     -> the console still works afterwards
-#   7. umount /dev busy vs free   -> EBUSY while the cwd is inside it
-#   8. meminfo around a session   -> no leaked frames (per-process kstacks)
-#   9. hi, Ctrl+D                 -> EOF ends a canonical read
-#  10. termtest                   -> CP437 upper half renders
-#  11. keys                      -> every key reaches the app with its code
-#  12. keys decode               -> raw mode + CSI u: Ctrl+1, Ctrl+Shift+S
-#  13. sigtest                   -> signals, masks, EINTR, stop/continue
-#  14. sigtest catch, Ctrl+C     -> a handler survives what used to kill
+#   1. sdkcheck args.txt word     -> the SDK tables and services, argN: roots,
+#                                    SfStatus as exit status
+#   2. sfstest                    -> files through the SDK, the roots' sandbox;
+#                                    leaves data for qemu_verify.sh
+#   3. threadtest                 -> a fault in one thread, ^C and the last
+#                                    thread's exit end the whole program; ^C
+#                                    ends the programs it started too; the
+#                                    stress run (8 threads x 3, children)
+#   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
+#   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
+#
+# SMP=<n> runs QEMU with n CPUs (default 1).
 set -u
 
-# termtest writes raw CP437 bytes and escape sequences to the serial log, so
-# in a UTF-8 locale grep starts seeing NEL line terminators and stray
-# encodings, and anchors stop matching. Byte semantics everywhere, and -a on
-# every grep, keeps the log parsing independent of what the apps printed.
+# Programs may write any bytes to the serial log: byte semantics everywhere,
+# and -a on every grep, keep the log parsing independent of what they print.
 export LC_ALL=C
 
 cd "$(dirname "$0")/.."
 IMG=test_disk.img
+# Second disk (two FAT32 partitions) for mount/umount: usb1.
+DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="hi hello memtest proctest argtest fstest termtest keys sigtest"
-# LAYOUT: superfloppy | mbr | gpt (default gpt - what a real stick looks like)
-LAYOUT=${LAYOUT:-gpt}
-# SECTOR: 512 | 4096 (4096 only with LAYOUT=superfloppy, see mkimg.py)
-SECTOR=${SECTOR:-512}
-# A 4K-sector FAT32 needs >= 65536 sectors to get a 32-bit TotalSectors:
-# at least 256 MiB.
-if [ "$SECTOR" != "512" ]; then
-    IMG_SIZE=${IMG_SIZE:-512}
-else
-    IMG_SIZE=${IMG_SIZE:-64}
-fi
+APPS="sdkcheck sfstest threadtest taskmgr"
 
-bash tools/make_test_image.sh "$IMG" "$APPS" "$LAYOUT" "$IMG_SIZE" "$SECTOR"
-
-# QEMU device for a non-512 sector size: usb-storage does not forward
-# logical_block_size to its child scsi-hd, so the 4K device is built as
-# usb-bot + explicit scsi-hd. Note: the 4K image must be >= 256 MiB for
-# mkfs.fat to produce a valid FAT32 (64 MiB fits in TotalSectors16).
-if [ "$SECTOR" = "512" ]; then
-    USB_DEV="-device usb-storage,drive=usbstick"
-else
-    USB_DEV="-device usb-bot,id=msd -device scsi-hd,bus=msd.0,drive=usbstick,logical_block_size=$SECTOR,physical_block_size=$SECTOR"
-fi
+bash tools/make_test_image.sh "$IMG" "$APPS"
+bash tools/make_data_disk.sh "$DATA_IMG"
 
 rm -f "$LOG" /tmp/scr_*.ppm
 rm -f "$MON"
 qemu-system-x86_64 \
     -chardev file,id=uart0,path=$LOG \
     -m ${QEMU_MEM:-128M} \
+    -smp ${SMP:-1} \
     -bios uefi64.bin \
     -cpu ${QEMU_CPU:-qemu64} \
     -device qemu-xhci \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
-    $USB_DEV \
+    -device usb-storage,drive=usbstick \
+    -drive id=data,if=none,format=raw,file="$DATA_IMG" \
+    -device usb-storage,drive=data \
     -display none -no-reboot -no-shutdown \
     -monitor unix:$MON,server,nowait >/dev/null 2>&1 &
 QEMU_PID=$!
@@ -99,7 +80,7 @@ wait_for() {
 # Occurrences, not lines: an app that ends its output without a newline
 # shares a line with the kernel message that follows, and grep -c would
 # count the pair once.
-sessions_ended() { grep -ao "process: session end" "$LOG" 2>/dev/null | wc -l; }
+sessions_ended() { grep -ao "console: program end" "$LOG" 2>/dev/null | wc -l; }
 
 # wait until the N-th session has ended
 wait_session_end() {
@@ -130,7 +111,11 @@ result() {  # result <ok:0/1> "<description>"
     if [ "$1" -eq 0 ]; then echo "PASS  $2"; else echo "FAIL  $2"; FAILS=$((FAILS+1)); fi
 }
 
-last_status() { grep -a "process: session end" "$LOG" | tail -1 | grep -aoE '[0-9]+$'; }
+# The SfStatus a program ended with, as the kernel logs it.
+last_status() { grep -a "console: program end" "$LOG" | tail -1 | grep -aoE '0x[0-9A-F]+$'; }
+ST_SUCCESS=0x0000000000000000
+ST_ABORTED=0x8000000000000006       # SF_ABORTED: Ctrl+Alt+C, EndProcess
+ST_CRASHED=0x800000000000000E       # SF_CRASHED: a CPU exception
 
 wait_for "boot: console ready" "$BOOT_WAIT"; result $? "kernel boots to the console"
 wait_for "boot: root mounted" 10; result $? "root volume automounted at boot"
@@ -140,192 +125,304 @@ wait_for "lsblk: usb0" 10; result $? "lsblk lists usb0"
 type_cmd "sync";   sleep 3
 wait_for "sync: ok" 10; result $? "sync flushes the cache"
 
-type_cmd "cd /bin"; sleep 3
+type_cmd "cd /apps"; sleep 3
 
-# 1. normal exit
+# 1. sdkcheck: a program on the SurfaceOS SDK - the tables and services it
+#    starts with, and args.txt (created by the console) as arg1:; its
+#    SfStatus becomes the exit status.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec hi"
-wait_for "Hello world!" 20; result $? "hi runs"
-sleep 1; key ret
-wait_session_end $WANT 15; result $? "hi exits on Enter"
-[ "$(last_status)" = "0" ]; result $? "hi exit status 0"
+type_cmd "sdkcheck args.txt word"
+wait_for "sdkcheck: " 20; result $? "sdkcheck finished"
+grep -aq "sdkcheck: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck: no failed checks"
+wait_session_end $WANT 15; result $? "sdkcheck exits"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "its SfStatus comes back: SF_SUCCESS"
 
-# 2. Ctrl+C while blocked in a syscall. Esc used to be the kill key, which
-#    meant no application could ever see Esc or an escape sequence.
+# 1a. Input owners: a child started with SF_START_GIVE_INPUT reads the
+#     first line, the parent the next one once the child has ended; keys
+#     typed on screen 2 go to its own console, not to screen 1.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec hi"
-sleep 4; key ctrl-c
-wait_session_end $WANT 15; result $? "Ctrl+C ends an app blocked in read"
-[ "$(last_status)" = "2" ]; result $? "blocked app reports SIGINT (2)"
-
-# 3. Ctrl+C while spinning in user mode
+type_cmd "sdkcheck input"
+wait_for "the reader has the keys" 20; result $? "sdkcheck input started its reader"
+type_cmd "first"
+wait_for "sdkcheck input: child got first" 10; result $? "the child got the first line"
+type_cmd "second"
+wait_for "sdkcheck input: parent got second" 10; result $? "the parent got the next one"
+wait_session_end $WANT 15; result $? "sdkcheck input exits"
+key alt-f2
+python3 tools/send_keys.py "$MON" "zz"     # no Enter: leaked, it would
+key alt-f1                                  # prefix the next command
+                                            # (screen 2's CMD runs it in 1g)
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec proctest spin"
-wait_for "spinning without syscalls" 20; result $? "spinner started"
-sleep 2; key ctrl-c
-wait_session_end $WANT 20; result $? "Ctrl+C ends an app spinning in ring 3"
-[ "$(last_status)" = "2" ]; result $? "spinning app reports SIGINT (2)"
-
-# 4. memtest
-WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec memtest"
-wait_for "memtest: " 240; result $? "memtest finished"
-grep -aE "\[FAIL\]|status [0-9-]+, expected" "$LOG" | sed 's/^/      /'
-grep -aq "memtest: [0-9]* passed, 0 failed" "$LOG"; result $? "memtest: no failed checks"
-sleep 1; key ret
-wait_session_end $WANT 20; result $? "memtest exits"
-
-# 5. proctest
-WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec proctest"
-wait_for "proctest: " 240; result $? "proctest finished"
-grep -aq "proctest: [0-9]* passed, 0 failed" "$LOG"; result $? "proctest: no failed checks"
-sleep 1; key ret
-wait_session_end $WANT 20; result $? "proctest exits"
-
-# 6. argtest (SysV stack: argv/envp/auxv, execve with 1000 args, E2BIG)
-WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec argtest"
-wait_for "argtest: " 240; result $? "argtest finished"
-grep -aq "argtest: [0-9]* passed, 0 failed" "$LOG"; result $? "argtest: no failed checks"
-wait_session_end $WANT 20; result $? "argtest exits"
-
-# 7. fstest (fd layer, VFS, FAT32: LFN, O_*, dup/fork, errors, /dev)
-WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec fstest"
-wait_for "fstest: " 600; result $? "fstest finished"
-grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
-grep -aq "fstest: [0-9]* passed, 0 failed" "$LOG"; result $? "fstest: no failed checks"
-wait_session_end $WANT 30; result $? "fstest exits"
-
-# 8. Ctrl+D on an empty line is EOF. Until the keyboard learned to fold Ctrl,
-#    Ctrl+D arrived as plain 'd' and the canonical read blocked forever.
-type_cmd "exec hi"
-wait_for "Hello world!" 20; result $? "hi runs (Ctrl+D scenario)"
-# Snapshot the count *before* the key: the session can end between the
-# substitution and the wait, and we would then sit waiting for one too many.
-WANT=$(( $(sessions_ended) + 1 ))
-sleep 1; key ctrl-d
+type_cmd "sdkcheck reader"
+type_cmd "screens"
+wait_for "sdkcheck input: child got screens" 10
+result $? "keys typed on screen 2 did not reach screen 1"
 wait_session_end $WANT 15
-result $? "Ctrl+D ends a canonical read (EOF)"
-[ "$(last_status)" = "0" ]; result $? "app reading EOF exits cleanly"
 
-# 9. termtest: the CP437 upper half renders (box drawing, blocks, symbols).
+# 1b. Keys through the console protocol: in SF_CONSOLE_RAW every key comes
+#     to ReadKey, Ctrl+C too; in a ReadLine, Ctrl+C ends it (SF_ABORTED).
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec termtest"
-wait_for "termtest: done" 60; result $? "termtest finished"
+type_cmd "sdkcheck keys"
+wait_for "press keys, q ends" 20; result $? "sdkcheck keys switched to SF_CONSOLE_RAW"
+key a
+wait_for "sdkcheck key: code 30 mods 0 char 97" 10; result $? "ReadKey: a letter"
+key ctrl-c
+wait_for "sdkcheck key: code 46 mods 2 char 3" 10; result $? "ReadKey: Ctrl+C is a key in SF_CONSOLE_RAW"
+key up
+wait_for "sdkcheck key: code 200 mods 0 char 0" 10; result $? "ReadKey: an arrow"
+key q
+wait_session_end $WANT 15; result $? "sdkcheck keys ends on q"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"; sleep 2
+key ctrl-c
+wait_for "sdkcheck input: aborted" 10; result $? "Ctrl+C ends a ReadLine with SF_ABORTED"
+wait_session_end $WANT 15
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"; sleep 2
+key ctrl-alt-c
+wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a program waiting in ReadLine"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "  with SF_ABORTED"
+
+# 1c. Ctrl+Alt+Z pauses the programs on the screen, pressed again it lets
+#     them go on; a paused program still ends on Ctrl+Alt+C.
+ticks() { grep -ac "sdkcheck tick " "$LOG"; }
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck ticks"
+wait_for "sdkcheck tick 3" 10; result $? "sdkcheck ticks is ticking"
+key ctrl-alt-z; sleep 1
+T1=$(ticks); sleep 2; T2=$(ticks)
+[ "$T1" = "$T2" ]; result $? "Ctrl+Alt+Z pauses it ($T1 -> $T2 ticks)"
+key ctrl-alt-z; sleep 2; T3=$(ticks)
+[ "$T3" -gt "$T2" ]; result $? "pressed again, it goes on ($T2 -> $T3 ticks)"
+key ctrl-alt-z; sleep 1
+key ctrl-alt-c
+wait_session_end $WANT 15; result $? "Ctrl+Alt+C ends a paused program"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "  with SF_ABORTED"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck reader"; sleep 2
+key ctrl-alt-z; sleep 1; key ctrl-alt-z; sleep 1
+type_cmd "after"
+wait_for "sdkcheck input: child got after" 10; result $? "a pause does not cut a ReadLine short"
+wait_session_end $WANT 15
+
+# 1d. `&`: a program runs in the background on a hidden screen while the
+#     console goes on; what it prints goes to a log in its data folder
+#     (read back from the image at the end). Ctrl+Alt+C on screen 1 does
+#     not reach it.
+type_cmd "& sdkcheck ticks"
+wait_for "console: background start, pid" 10; result $? "sdkcheck ticks & starts in the background"
+T1=$(ticks)
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sdkcheck late"
+wait_session_end $WANT 15; result $? "the console runs another program meanwhile"
+key ctrl-alt-c; sleep 2
+[ "$(ticks)" -gt "$T1" ]; result $? "the background program ticks on, Ctrl+Alt+C on screen 1 or not"
+# Let it finish before the file tests: under QEMU's emulation a busy file
+# test next to it slows down many times over (not under KVM).
+wait_for "sdkcheck tick 150" 60; result $? "and runs to its end"
+
+# 1e. Weights: on one CPU, a program on the shown screen gets twice the time
+#     of one in the background (2:1), and once another screen is shown,
+#     the same as it (1:1). With more CPUs the two do not share one.
+if [ "${SMP:-1}" = "1" ]; then
+    spin_avg() {  # spin_avg <label> <from> <to>: mean of its lines from..to
+        grep -ao "sdkcheck spin $1: [0-9]*" "$LOG" | sed -n "$2,$3p" |
+            awk '{ s += $4; n++ } END { print (n ? int(s / n) : 0) }'
+    }
+    type_cmd "& sdkcheck spin bg 16"; sleep 1
+    WANT=$(( $(sessions_ended) + 1 ))
+    type_cmd "sdkcheck spin fg 9"
+    wait_for "sdkcheck spin fg: " 10; sleep 4
+    key alt-f2; sleep 5; key alt-f1
+    wait_session_end $WANT 20
+    # fg lines 2-4 ran with screen 1 shown, 7-9 with screen 2; the bg lines
+    # at those times are the ones between them in the log.
+    FG1=$(spin_avg fg 2 4); FG2=$(spin_avg fg 7 9)
+    BG1=$(grep -ao "sdkcheck spin [a-z]*: [0-9]*" "$LOG" | awk '/fg:/{f++} /bg:/ && f>=2 && f<4 {s+=$4; n++} END {print (n?int(s/n):0)}')
+    BG2=$(grep -ao "sdkcheck spin [a-z]*: [0-9]*" "$LOG" | awk '/fg:/{f++} /bg:/ && f>=7 && f<9 {s+=$4; n++} END {print (n?int(s/n):0)}')
+    echo "      shown: fg $FG1 bg $BG1; screen 2 shown: fg $FG2 bg $BG2"
+    [ "$BG1" -gt 0 ] && [ $((FG1 * 10 / BG1)) -ge 15 ] && [ $((FG1 * 10 / BG1)) -le 27 ]
+    result $? "the program on the shown screen gets about twice the time"
+    [ "$BG2" -gt 0 ] && [ $((FG2 * 10 / BG2)) -ge 7 ] && [ $((FG2 * 10 / BG2)) -le 14 ]
+    result $? "with another screen shown, both get the same"
+    # Let the background one finish before the file tests (under QEMU's
+    # emulation a file test next to it slows down many times over).
+    for i in $(seq 20); do
+        [ "$(grep -ac "sdkcheck spin bg: " "$LOG")" -ge 16 ] && break; sleep 1
+    done
+    sleep 1
+fi
+
+# 1f. The admin right: `sudo sdkcheck admin` gets Sys->Admin, disk:/ and
+#     mount:/ (a plain sdkcheck checks it gets none of them).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "sudo sdkcheck admin"
+wait_for "sdkcheck admin: " 30; result $? "sudo sdkcheck admin finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
-grep -aq "termtest: [0-9]* passed, 0 failed" "$LOG"
-result $? "termtest: no failed checks"
-monitor "screendump /tmp/scr_term.ppm"
-sleep 1; key ret
-wait_session_end $WANT 20; result $? "termtest exits"
+grep -aq "sdkcheck admin: [0-9]* passed, 0 failed" "$LOG"; result $? "sdkcheck admin: no failed checks"
+wait_session_end $WANT 15; result $? "sudo sdkcheck admin exits"
 
-# 10. keys: every key reaches an application with a distinct code. Function
-#     keys, the navigation cluster and the keypad used to be dropped by a
-#     whitelist in the driver, or arrive with no character at all.
+# 1f2. taskmgr: full screen, live, ends on q.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec keys"
-wait_for "keys: press any key" 30; result $? "keys started"
-key_await f5     "name=F5";     result $? "F5 reaches the app"
-key_await up     "name=Up";     result $? "arrow keys reach the app"
-key_await home   "name=Home";   result $? "Home reaches the app"
-key_await delete "name=Delete"; result $? "Delete reaches the app"
-key_await ctrl-a "mods=CTRL";   result $? "Ctrl+A folds to 0x01"
-key esc
-wait_session_end $WANT 20; result $? "keys exits"
+type_cmd "sudo taskmgr"; sleep 3
+key q
+wait_session_end $WANT 10; result $? "sudo taskmgr runs and ends on q"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "  with SF_SUCCESS"
 
-# 11. keys decode: the same keyboard through raw mode and the SDK decoder.
-#     Ctrl+1 and Ctrl+Shift+S are the point - classic xterm sequences cannot
-#     express either, so they only arrive because CSI u is on. Note Ctrl+C
-#     does not interrupt here: raw mode clears ISIG, so Esc is the way out.
-WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec keys decode"
-wait_for "keys decode: raw mode" 30; result $? "keys decode entered raw mode"
-key_await up           "dec code=200 mods=0 name=Up"
-result $? "arrows decode in raw mode"
-key_await f5           "dec code=63 mods=0 name=F5"
-result $? "function keys decode"
-key_await ctrl-1       "dec code=49 mods=2 name=Ctrl+1"
-result $? "Ctrl+digit survives (CSI u)"
-key_await ctrl-shift-s "dec code=115 mods=3 name=Ctrl+Shift+s"
-result $? "Ctrl+Shift+letter survives"
-key_await alt-x        "dec code=120 mods=4 name=Alt+x"
-result $? "Alt+key decodes"
-key esc
-wait_for "keys decode: done" 20; result $? "raw mode restored on exit"
-wait_session_end $WANT 20; result $? "keys decode exits"
+# 1g. CMD.BIN, the console of screens 2..9: the "zz" typed on screen 2
+#     above waits in its line; it runs programs, handing them the keys,
+#     and in the background; Ctrl+Alt+C ends its program but not it, and
+#     on its own it ends too - and is started again.
+key alt-f2; key ret
+wait_for "zz: no such command or program" 10; result $? "CMD on screen 2 got what was typed there"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "via cmd"
+wait_for "sdkcheck input: child got via cmd" 10; result $? "CMD runs a program and hands it the keys"
+T0=$(ticks); type_cmd "sdkcheck ticks"; sleep 2
+key ctrl-alt-c; sleep 2
+T1=$(ticks); sleep 1
+[ "$T1" -gt "$T0" ] && [ "$(ticks)" = "$T1" ]
+result $? "Ctrl+Alt+C ends CMD's program (after $((T1 - T0)) ticks)"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "cmd lives"
+wait_for "sdkcheck input: child got cmd lives" 10; result $? "and leaves CMD itself running"
+CMDS=$(grep -ac "cmdkeeper: cmd pid" "$LOG")
+key ctrl-alt-c; sleep 3
+[ "$(grep -ac "cmdkeeper: cmd pid" "$LOG")" -gt "$CMDS" ]; result $? "CMD on its own ends on Ctrl+Alt+C and is started again"
+type_cmd "sdkcheck reader"; sleep 2; type_cmd "new cmd"
+wait_for "sdkcheck input: child got new cmd" 10; result $? "the new CMD works"
+type_cmd "& sdkcheck late"
+wait_for "started sdkcheck (pid" 10
+grep -aq "in the background)" "$LOG"; result $? "CMD runs a program in the background"
+sleep 2; key alt-f1
 
-# 11b. sigtest: the signal suite itself.
+# 1h. Jobs: Ctrl+Alt+Z hands the keys back to the console, whose bg sends
+#     the paused program to the background and fg brings it back; kill
+#     ends a program by its number.
+T0=$(ticks)
+type_cmd "sdkcheck ticks"
+sleep 3
+key ctrl-alt-z; wait_for "console: screen 0 paused" 5
+type_cmd "bg"
+wait_for "console: bg pid" 10; result $? "bg sends the paused program to the background"
+JOB=$(grep -a "console: bg pid" "$LOG" | tail -1 | grep -aoE 'pid [0-9]+' | grep -aoE '[0-9]+')
+T1=$(ticks); sleep 2
+[ "$(ticks)" -gt "$T1" ]; result $? "  where it goes on"
+type_cmd "fg $JOB"
+wait_for "console: fg pid $JOB" 10; result $? "fg brings it back"
+key ctrl-alt-z; sleep 1
+T1=$(ticks); sleep 2
+[ "$(ticks)" = "$T1" ]; result $? "  paused again with Ctrl+Alt+Z"
+type_cmd "kill $JOB"
+wait_for "process: pid $JOB sdkcheck ended, status $ST_ABORTED" 10; result $? "kill ends it by its number"
+
+# 2. sfstest: files through the SDK (data:/, tmp:/, the sandbox). What it
+#    leaves in data:/ is read back after a restart by qemu_verify.sh.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec sigtest"
-wait_for "sigtest: " 300; result $? "sigtest finished"
+type_cmd "sfstest"
+wait_for "sfstest: " 240; result $? "sfstest finished"
 grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
-grep -aq "sigtest: [0-9]* passed, 0 failed" "$LOG"; result $? "sigtest: no failed checks"
-wait_session_end $WANT 30; result $? "sigtest exits"
+grep -aq "sfstest: [0-9]* passed, 0 failed" "$LOG"; result $? "sfstest: no failed checks"
+wait_session_end $WANT 15; result $? "sfstest exits"
 
-# 11c. The point of the whole stage: ^C and ^Z reach a handler instead of
-#      killing the session, and the app decides what to do about them.
+# 3. threadtest: however a program with several threads ends, all of them
+#    end - a fault in one (SF_CRASHED), Ctrl+Alt+C (SF_ABORTED), or the
+#    last thread leaving after the first (its status, SF_ERROR_BIT | 42).
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec sigtest catch"
-wait_for "press ^C" 30; result $? "sigtest catch started"
-sleep 1; key ctrl-c
-wait_for "caught 2" 15; result $? "Ctrl+C is delivered as SIGINT, not a kill"
-sleep 1; key ctrl-z
-wait_for "caught 20" 15; result $? "Ctrl+Z is delivered as SIGTSTP"
-# The session is still alive: the app is the one that ends it.
-type_cmd "q"
-wait_for "sigtest: done" 20; result $? "the app survived both signals"
-wait_session_end $WANT 20; result $? "sigtest catch exits"
+type_cmd "threadtest fault"
+wait_session_end $WANT 15; result $? "threadtest fault ends"
+[ "$(last_status)" = "$ST_CRASHED" ]; result $? "a fault in one thread ends the program (SF_CRASHED)"
+grep -aq "threadtest crashed: page fault at address 0x0, instruction at" "$LOG"
+result $? "  and the kernel says so on its screen"
 
-# 11d. A caught signal must also reach a process that never makes a syscall:
-#      delivery has to happen on the timer path, not only on syscall return.
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec sigtest spin"
-wait_for "spinning" 30; result $? "sigtest spin started"
-sleep 2; key ctrl-c
-wait_for "caught 2" 20; result $? "^C reaches a handler from ring-3 spin"
-# Nothing the application honours can end it now: it catches SIGINT and
-# never makes a syscall. Ctrl+Alt+Backspace is the console's own way out.
-sleep 1; key ctrl-alt-backspace
-wait_session_end $WANT 20; result $? "Ctrl+Alt+Backspace kills a runaway app"
+type_cmd "threadtest spin"; sleep 3
+key alt-f2; key ctrl-alt-c; key alt-f1; sleep 3    # another screen's
+[ "$(sessions_ended)" -lt "$WANT" ]; result $? "Ctrl+Alt+C on screen 2 leaves screen 1's program alone"
+monitor "sendkey ctrl-alt-c"
+wait_session_end $WANT 15; result $? "threadtest spin ends on Ctrl+Alt+C"
+[ "$(last_status)" = "$ST_ABORTED" ]; result $? "Ctrl+Alt+C ends every thread (SF_ABORTED)"
 
-# 12. umount refuses while the FS is in use, and succeeds once it is not.
-#    Standing in /dev gives the console cwd a reference on the devfs root;
-#    before the stage-3 cleanup umount freed those vnodes anyway.
-type_cmd "cd /dev"; sleep 2
-type_cmd "umount /dev"; sleep 3
-wait_for "umount: busy /dev" 10; result $? "umount refuses a filesystem in use"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest lastexit"
+wait_session_end $WANT 15; result $? "threadtest lastexit ends"
+[ "$(last_status)" = "0x800000000000002A" ]; result $? "the last thread's status is the program's"
+
+# Many threads at once, over every CPU there is (run with SMP=4 too).
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest stress"
+wait_for "threadtest stress: " 240; result $? "threadtest stress finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "threadtest stress: [0-9]* passed, 0 failed" "$LOG"; result $? "threadtest stress: no failed checks"
+wait_session_end $WANT 15; result $? "threadtest stress exits"
+
+# Ctrl+Alt+C ends the programs a program started too: every program on the
+# screen.
+type_cmd "meminfo"; sleep 3
+FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
+STARTED_BEFORE=$(grep -ac "started threadtest" "$LOG")
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "threadtest group"; sleep 4
+monitor "sendkey ctrl-alt-c"
+wait_session_end $WANT 15; result $? "threadtest group ends on Ctrl+Alt+C"
+# Three: the console started it, and it started two of its own.
+[ "$(grep -ac "started threadtest" "$LOG")" = "$((STARTED_BEFORE + 3))" ]; result $? "it started two programs of its own"
+sleep 2; type_cmd "meminfo"; sleep 3
+FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
+[ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
+result $? "Ctrl+Alt+C ended them too (all their memory is back: $FRAMES_BEFORE -> $FRAMES_AFTER)"
+
+# 4. mount puts every partition of the second disk under /mount; umount
+#    refuses while the FS is in use (the console cwd holds its root), and
+#    succeeds once it is not, removing the mount point.
+type_cmd "mount usb1"; sleep 3
+wait_for "mount: usb1p1 on /mount/usb1p1" 10; result $? "mount usb1 mounts usb1p1"
+wait_for "mount: usb1p2 on /mount/usb1p2" 10; result $? "mount usb1 mounts usb1p2"
+type_cmd "cd /mount/usb1p1"; sleep 2
+type_cmd "umount usb1"; sleep 3
+wait_for "umount: busy usb1p1" 10; result $? "umount refuses a filesystem in use"
+wait_for "umount: ok usb1p2" 10; result $? "umount takes down the idle partition"
 type_cmd "cd /"; sleep 2
-type_cmd "umount /dev"; sleep 3
-wait_for "umount: ok /dev" 10; result $? "umount succeeds once nothing holds it"
+type_cmd "umount usb1"; sleep 3
+wait_for "umount: ok usb1p1" 10; result $? "umount succeeds once nothing holds it"
 
-# 13. per-process kernel stacks are handed back when a session ends: run a
-#    session between two meminfo samples and compare the free-frame counts.
+# 5. per-process kernel stacks and SDK pages are handed back when a program
+#    ends: run one between two meminfo samples and compare free frames.
 type_cmd "meminfo"; sleep 3
 FRAMES_BEFORE=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 WANT=$(( $(sessions_ended) + 1 ))
-type_cmd "exec hi"
-wait_for "Hello world!" 20
-sleep 1; key ret
-wait_session_end $WANT 15; result $? "session between meminfo samples ended"
+type_cmd "sdkcheck"
+wait_session_end $WANT 15; result $? "program between meminfo samples ended"
 type_cmd "meminfo"; sleep 3
 FRAMES_AFTER=$(grep -a "meminfo: frames_free=" "$LOG" | tail -1 | grep -aoE 'frames_free=[0-9]+' | cut -d= -f2)
 echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
-result $? "a session leaks no physical frames (kernel stacks freed)"
+result $? "a program leaks no physical frames"
 
-# 14. console still alive
+# 6. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"
 
+type_cmd "sync"; sleep 3
 monitor "quit"
 sleep 1
 
+# The background programs' logs, read from the image.
+OFF=$(( $(sgdisk -i 1 "$IMG" | awk '/First sector/{print $3}') * 512 ))
+python3 - "$IMG" "$OFF" > /tmp/exec_logs.txt 2>&1 <<'PY'
+import sys
+from pyfatfs.PyFatFS import PyFatFS
+fs = PyFatFS(sys.argv[1], offset=int(sys.argv[2]), read_only=True)
+# (Short names come back in capitals: SDKCHECK.)
+d = '/files/' + [n for n in fs.listdir('/files') if n.lower() == 'sdkcheck'][0]
+for name in sorted(fs.listdir(d)):
+    if name.startswith('console_'):
+        print(name, repr(fs.readtext(d + '/' + name)))
+PY
+grep -q "sdkcheck tick 150" /tmp/exec_logs.txt; result $? "the log of sdkcheck ticks & holds all it printed"
+
 echo
 echo "=== summary lines ==="
-grep -aE "^cpu:|^pmm:|memtest: |proctest: |argtest: |fstest: |session (start|end)|kernel fault|app fault" "$LOG"
+grep -aE "^cpu:|^pmm:|sdkcheck: |program (start|end)|kernel fault|app fault" "$LOG"
 echo
 if [ $FAILS -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$FAILS CHECK(S) FAILED"; fi
 exit $FAILS

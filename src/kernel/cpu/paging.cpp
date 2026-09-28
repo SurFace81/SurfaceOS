@@ -373,63 +373,30 @@ namespace paging {
         return *pte & PAGE_ADDR_MASK;
     }
 
-    // Deep-copy one level of the user half. `level` is that of `src`
-    // (3 = PDPT, 2 = PD, 1 = PT); PT entries are data pages and get a fresh
-    // frame with the same contents. Entries keep their flags.
-    static bool clone_level(uint64_t* dst, const uint64_t* src, int level)
+    static uint64_t count_level(const uint64_t* t, int level)
     {
+        uint64_t n = 0;
         for (uint64_t i = 0; i < 512; i++)
         {
-            uint64_t e = src[i];
+            uint64_t e = t[i];
             if (!(e & PAGE_PRESENT))
                 continue;
-
             if (level == 1)
-            {
-                uint64_t frame = pmm::alloc_frame();
-                if (!frame)
-                    return false;
-                memory::memcpy((uint8_t*)phys_to_virt(frame),
-                               (const uint8_t*)table(e), 4096);
-                dst[i] = frame | (e & ~PAGE_ADDR_MASK);
-                continue;
-            }
-
-            if (e & PAGE_SIZE)
-                continue;       // user space has no huge pages
-
-            uint64_t frame = alloc_table();
-            if (!frame)
-                return false;
-            dst[i] = frame | (e & ~PAGE_ADDR_MASK);
-
-            if (!clone_level(table(frame), table(e), level - 1))
-                return false;
+                n += !(e & PAGE_SHARED);
+            else if (!(e & PAGE_SIZE))
+                n += count_level(table(e), level - 1);
         }
-        return true;
+        return n;
     }
 
-    bool clone_user_space(uint64_t dst_pml4, uint64_t src_pml4)
+    uint64_t count_user_pages(uint64_t pml4)
     {
-        // Tables are walked and written through the direct map, so this
-        // works no matter which address space CR3 currently holds.
-        uint64_t* src = table(src_pml4);
-        uint64_t* dst = table(dst_pml4);
-
+        const uint64_t* top = table(pml4);
+        uint64_t n = 0;
         for (uint64_t i = 0; i < USER_PML4_COUNT; i++)
-        {
-            if (!(src[i] & PAGE_PRESENT))
-                continue;
-
-            uint64_t frame = alloc_table();
-            if (!frame)
-                return false;
-            dst[i] = frame | (src[i] & ~PAGE_ADDR_MASK);
-
-            if (!clone_level(table(frame), table(src[i]), 3))
-                return false;
-        }
-        return true;
+            if (top[i] & PAGE_PRESENT)
+                n += count_level(table(top[i]), 3);
+        return n;
     }
 
     void unmap_page(uint64_t virt)
@@ -484,7 +451,10 @@ namespace paging {
                 continue;
 
             if (level == 1)
-                pmm::free_frame(e & PAGE_ADDR_MASK);
+            {
+                if (!(e & PAGE_SHARED))
+                    pmm::free_frame(e & PAGE_ADDR_MASK);
+            }
             else if (level == 2 && (e & PAGE_SIZE))
                 pmm::free_frames(e & PAGE_ADDR_MASK, 512);   // 2 MiB page
             else if (!(e & PAGE_SIZE))

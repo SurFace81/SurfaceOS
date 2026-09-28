@@ -7,6 +7,19 @@ load_idt:
     lidt [rdi]      ; rdi contains pointer to idtr structure
     ret
 
+; Came from ring 3 (the CS of the trap frame at [rsp + %1] has RPL 3)?
+; Then the GS base is the program's: swap in the kernel's, which points at
+; this CPU's Cpu (percpu.h). The same test on the way out swaps it back -
+; with interrupts off: one taken between that swapgs and the iretq comes
+; from ring 0, so its stub would not swap, and the kernel would run on the
+; program's GS base. iretq gives the frame's IF back.
+%macro SWAPGS_IF_USER 1
+    test byte [rsp + %1], 3
+    jz %%kernel
+    swapgs
+%%kernel:
+%endmacro
+
 ; Macro to save all registers
 %macro SAVE_REGS 0
     push rax
@@ -57,6 +70,7 @@ load_idt:
 ; handle_exception(vector, frame, error_code)
 
 %macro EXCEPTION_BODY 1
+    SWAPGS_IF_USER 16          ; error code, RIP, then CS
     SAVE_REGS
 
     mov rdi, %1                ; vector
@@ -66,8 +80,10 @@ load_idt:
     extern handle_exception
     call handle_exception
 
+    cli
     RESTORE_REGS
     add rsp, 8                 ; drop the error code
+    SWAPGS_IF_USER 8
     iretq
 %endmacro
 
@@ -91,6 +107,7 @@ exception_handler_%1:
 global irq%1
 irq%1:
     cli
+    SWAPGS_IF_USER 8
     push qword 0        ; Push dummy error code (8 bytes)
     push qword %2       ; Push interrupt number (8 bytes)
     jmp irq_common_stub
@@ -107,9 +124,27 @@ irq_common_stub:
     mov rdi, rsp            ; Pass pointer to interrupt frame as first argument
     extern irq_handler
     call irq_handler
-    
-    RESTORE_REGS    
+    cli
+    RESTORE_REGS
     add rsp, 16             ; Remove int_no and err_code (8 bytes each)
+    SWAPGS_IF_USER 8
+    iretq
+
+; Another CPU changed an address space loaded here (smp.cpp): no lock, no
+; scheduling - reload CR3 and say so.
+global tlb_ipi_entry
+tlb_ipi_entry:
+    SWAPGS_IF_USER 8
+    SAVE_REGS
+    extern tlb_ipi_handler
+    call tlb_ipi_handler
+    RESTORE_REGS
+    SWAPGS_IF_USER 8
+    iretq
+
+; The local APIC's spurious interrupt: nothing to handle, and no EOI.
+global apic_spurious
+apic_spurious:
     iretq
 
 ; Define IDT handlers
@@ -163,15 +198,41 @@ IRQ 12, 44   ; PS/2 Mouse
 IRQ 13, 45   ; FPU
 IRQ 14, 46   ; Primary ATA
 IRQ 15, 47   ; Secondary ATA
+IRQ 16, 48   ; Local APIC timer (apic.cpp)
 
-; Syscall handler (int 0x80)
-global syscall_entry
-syscall_entry:
+; The SurfaceOS ABI: the `syscall` instruction (see sfcall.h).
+;
+; The CPU leaves the return RIP in rcx and RFLAGS in r11, masks IF/DF/TF/AC
+; (SFMASK) and does not switch stacks or the GS base. So: swapgs to this
+; CPU's Cpu, park the user rsp there, take the running thread's kernel
+; stack from it (it mirrors TSS rsp0), build the iret frame int 0x80 would
+; have got, and from there on it is the same path: saved registers,
+; dispatch, iretq. Interrupts stay off until the frame is built.
+%define USER_CS 0x23
+%define USER_SS 0x2B
+%define CPU_KERNEL_RSP 8        ; percpu.h
+%define CPU_USER_RSP   16
+
+global sfcall_entry
+sfcall_entry:
+    swapgs
+    mov [gs:CPU_USER_RSP], rsp
+    mov rsp, [gs:CPU_KERNEL_RSP]
+
+    push qword USER_SS
+    push qword [gs:CPU_USER_RSP]
+    push r11                    ; user RFLAGS
+    push qword USER_CS
+    push rcx                    ; user RIP
     SAVE_REGS
 
-    mov rdi, rsp
-    extern syscall_dispatch
-    call syscall_dispatch
+    sti                         ; like int 0x80 (a trap gate): IRQs stay on
 
+    mov rdi, rsp
+    extern sfcall_dispatch
+    call sfcall_dispatch
+
+    cli
     RESTORE_REGS
+    SWAPGS_IF_USER 8
     iretq

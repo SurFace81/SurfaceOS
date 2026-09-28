@@ -3,37 +3,25 @@
 
 #include "../cpu/types.h"
 #include "vfs.h"
+#include "../obj/object.h"
 
-// Open files and descriptor tables (stage 3.4).
+// Open files and their handles.
 //
-//   fd_table (per process)  ->  struct file (open file description)
-//                                     -> vnode
+//   handle table (per process)  ->  struct file (an open file, a kernel
+//                                    object)  ->  vnode
 //
-// POSIX semantics: fork and dup share the *file* (and therefore its offset);
-// each process owns its *table*. FD_CLOEXEC lives on the table slot and is
-// acted on by execve. RLIMIT_NOFILE is FD_TABLE_SIZE (64) for now.
-
-#define FD_TABLE_SIZE   64
+// An open file of a program (SfFile) is a handle: a slot of the process's
+// handle table (obj/object.h) holding a File object, with its own offset.
+// A process has at most HANDLE_TABLE_SIZE (64) handles.
 
 struct file
 {
-    vnode*  vn;             // referenced
+    kobject  hdr;           // type File; the reference count lives here
+    vnode*   vn;            // referenced
     uint64_t offset;
-    uint32_t flags;         // O_ACCMODE | O_APPEND | O_NONBLOCK
-    uint32_t refcnt;        // number of fd slots pointing here
+    uint32_t flags;         // O_ACCMODE | O_APPEND (fs/openflags.h)
     uint32_t id;            // small unique id (diagnostics)
-    bool    used;
-};
-
-struct fd_slot
-{
-    file*   f;              // null: free
-    uint8_t cloexec;
-};
-
-struct fd_table
-{
-    fd_slot slots[FD_TABLE_SIZE];
+    bool     used;          // pool slot taken
 };
 
 namespace filesys
@@ -41,7 +29,8 @@ namespace filesys
     void init();            // one-time: clear the file pool
 
     // --- open file descriptions ---
-    // Takes a reference on `vn`; releases it at the last close.
+    // Takes a reference on `vn`; releases it when the last reference to the
+    // file goes. The caller holds the file's first reference.
     file* file_open(vnode* vn, uint32_t flags);
     // Any open file description still pointing into this mount? umount asks
     // through the VFS busy hook.
@@ -49,31 +38,14 @@ namespace filesys
     void  file_get(file* f);
     void  file_put(file* f);
 
-    // --- fd tables ---
-    void  fdtable_init(fd_table* t);
-    // Allocate the lowest free slot; -EMFILE when full.
-    sint64_t fdtable_alloc(fd_table* t, file* f, bool cloexec, sint32_t* out_fd);
-    // fget: borrow the slot's file (nullptr + -EBADF if closed). The caller
-    // must NOT unref it through the table - the table owns the reference.
-    file* fdtable_get(fd_table* t, sint32_t fd, sint64_t* rc);
-    sint64_t fdtable_close(fd_table* t, sint32_t fd);
-    // Lowest free slot >= minfd, or -1 when the table is full. F_DUPFD needs
-    // this: fdtable_dup with an explicit newfd *takes* an occupied slot, so
-    // the free one has to be found before asking for the dup.
-    sint32_t fdtable_lowest_free(const fd_table* t, sint32_t minfd);
-    // dup: the new slot shares the file (refcnt++). dup2 closes newfd first
-    // (silently, POSIX), dup3 adds flags (O_CLOEXEC) and rejects old==new.
-    // On success *out_fd is always set, including dup2's old==new no-op.
-    sint64_t fdtable_dup(fd_table* t, sint32_t oldfd, sint32_t newfd,
-                         bool cloexec, bool explicit_new, sint32_t* out_fd);
-    sint64_t fdtable_getfd(fd_table* t, sint32_t fd);
-    sint64_t fdtable_setfd(fd_table* t, sint32_t fd, sint64_t arg);
-    // fork: copy every slot, bumping each file's refcnt.
-    void  fdtable_fork(fd_table* dst, const fd_table* src);
-    // execve: close every CLOEXEC slot.
-    void  fdtable_cloexec(fd_table* t);
-    // exit: close everything.
-    void  fdtable_close_all(fd_table* t);
+    // --- handles holding a File ---
+    // Put f into the lowest free slot. The caller's reference moves into the
+    // table - on failure (-EMFILE) it is dropped.
+    sint64_t fd_alloc(handle_table* t, file* f, sint32_t* out_fd);
+    // fget: borrow the file in slot fd (nullptr + -EBADF if the slot is free
+    // or holds something else). The table keeps its reference.
+    file* fd_get(handle_table* t, sint32_t fd, sint64_t* rc);
+    sint64_t fd_close(handle_table* t, sint32_t fd);
 }
 
 #endif // FILE_H

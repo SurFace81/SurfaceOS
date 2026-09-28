@@ -226,7 +226,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     // Load STDFont and set STDFont entry in BootHeader
     UINT64 FontAddress = 0x4000;
-    LoadFile(u"font.fnt", SystemTable, Volume, FontAddress, NULL);
+    if (!LoadFile(u"\\sfos\\font.fnt", SystemTable, Volume, FontAddress, NULL)) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"\\sfos\\font.fnt not found!\n\rFatal error...");
+        while(1){}
+    }
     BootHeader.StandartFontBuffer = (void*)FontAddress;
     BootHeader.FontSymbolSizeX = 8;
     BootHeader.FontSymbolSizeY = 16;
@@ -239,6 +242,14 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
     // ACPI root for the kernel; the loader itself needs it for DMAR below.
     ACPI_RSDP *Rsdp = acpi_find_rsdp(SystemTable);
     BootHeader.AcpiRsdpAddress = (UINT64)Rsdp;
+
+    // The other CPUs start in real mode, so the kernel needs a page below
+    // 1 MiB for their first instructions. Claimed here, while the firmware
+    // still hands out memory; without it the kernel runs on one CPU.
+    EFI_PHYSICAL_ADDRESS ApPage = (EFI_PHYSICAL_ADDRESS)0x8000;
+    if (SystemTable->BootServices->AllocatePages(AllocateAddress, EfiLoaderData, 1,
+                                                 &ApPage) == EFI_SUCCESS)
+        BootHeader.ApTrampolineAddress = ApPage;
 
     // Kernel load address. Must be set before the BootHeader copy: it used
     // to be assigned after, so the kernel saw garbage in KernelAddress.
@@ -259,7 +270,10 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
         SystemTable->ConOut->OutputString(SystemTable->ConOut, L"Kernel memory allocate error!\n\rFatal error...");
         while(1){}
     }
-    LoadFile(u"kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize);
+    if (!LoadFile(u"\\sfos\\kernel.bin", SystemTable, Volume, BootHeader.KernelAddress, &BootHeader.KernelSize)) {
+        SystemTable->ConOut->OutputString(SystemTable->ConOut, L"\\sfos\\kernel.bin not found!\n\rFatal error...");
+        while(1){}
+    }
     // KernelSize is discovered after the copy: write it into the header that
     // the kernel will actually read.
     ((SFOS_BOOT_HEADER*)BootHeaderAddress)->KernelSize = BootHeader.KernelSize;

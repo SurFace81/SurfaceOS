@@ -3,6 +3,8 @@
 
 #include "types.h"
 
+// The caches of the core the caller runs on (CPUID leaf 4). L1 and L2
+// belong to a core, L3 is shared.
 struct CacheInfo {
     uint32_t l1d_size;      // L1 data cache in Kb
     uint32_t l1i_size;      // L1 instruction cache in Kb
@@ -24,6 +26,7 @@ struct CPUTopology {
     uint32_t physical_cores;
     uint32_t packages;         // num of sockets/cpus
     bool hyperthreading;
+    bool hybrid;               // performance and efficiency cores
 };
 
 namespace cpuid {

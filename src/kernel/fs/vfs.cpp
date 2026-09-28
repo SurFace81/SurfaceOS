@@ -9,8 +9,8 @@
 #include "../../include/stdlib/string.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/drivers/uart.h"
-#include "../../sdk/include/abi/errno.h"
-#include "../../sdk/include/abi/dirent.h"
+#include "../../include/errno.h"
+#include "../../include/fs/dirent.h"
 
 namespace
 {
@@ -321,8 +321,7 @@ namespace vfs
         root->mnt = m;
         mount_cnt++;
 
-        uart::printf("vfs: %s mounted%s\n", devname,
-                     point_dir ? "" : " as root");
+        uart::printf("vfs: %s mounted%s\n", devname, point_dir ? "" : " as root");
         return 0;
     }
 
@@ -345,10 +344,10 @@ namespace vfs
     }
 
     // Is anything still using this filesystem? Counting references does not
-    // answer that: a driver may hold its own (devfs pins a vnode per device
-    // until umount), so a refcount threshold would either report every
-    // devfs umount busy or miss a real open fd on another FS. Ask the layers
-    // that actually own the users instead.
+    // answer that: a driver may hold its own, so a refcount threshold would
+    // either report a busy filesystem idle or the other way round. Ask the
+    // layers that actually own the users instead: the processes' roots and
+    // the open files.
     static bool fs_busy(mount* m)
     {
         if (system_cwd && system_cwd->mnt == m)
@@ -546,10 +545,22 @@ namespace vfs
         return 0;
     }
 
-    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir)
+    static inline bool is_dotdot(const char* c, uint32_t n)
+    {
+        return n == 2 && c[0] == '.' && c[1] == '.';
+    }
+
+    // lookup() with the depth below `cwd` the walk ended at, for
+    // LOOKUP_BENEATH callers that still have a component to judge.
+    static sint64_t walk(const char* path, vnode* cwd, vnode** out,
+                         bool must_be_dir, uint32_t lflags, uint32_t* depth_out)
     {
         if (!path || !path[0])
             return -ENOENT;
+
+        bool beneath = (lflags & LOOKUP_BENEATH) != 0;
+        if (beneath && path[0] == '/')
+            return -EXDEV;
 
         // Copy the path into a heap buffer: PATH_MAX on the kernel stack is
         // not an option, and the walk below needs a mutable scratch copy.
@@ -590,6 +601,7 @@ namespace vfs
         bool trailing_slash = (len > 1 && p[len - 1] == '/');
 
         sint64_t rc = 0;
+        uint32_t depth = 0;     // levels below cwd (LOOKUP_BENEATH)
         const char* seg = p;
         while (*seg)
         {
@@ -604,12 +616,25 @@ namespace vfs
                 end++;
 
             uint32_t clen = (uint32_t)(end - seg);
+            bool up = is_dotdot(seg, clen);
+            bool here = (clen == 1 && seg[0] == '.');
+            if (beneath && up && depth == 0)
+            {
+                rc = -EXDEV;    // would climb above where the walk began
+                break;
+            }
+
             vnode* next = nullptr;
             rc = step(cur, seg, clen, &next);
             if (rc != 0)
                 break;          // cur keeps its reference; freed below
             cur = next;         // step() released cur on success
             seg = end;
+
+            if (up)
+                depth--;
+            else if (!here)
+                depth++;
         }
 
         kfree(p);
@@ -630,15 +655,27 @@ namespace vfs
             }
         }
 
+        if (depth_out)
+            *depth_out = depth;
         *out = cur;
         return 0;
     }
 
+    sint64_t lookup(const char* path, vnode* cwd, vnode** out, bool must_be_dir,
+                    uint32_t lflags)
+    {
+        return walk(path, cwd, out, must_be_dir, lflags, nullptr);
+    }
+
     sint64_t lookup_parent(const char* path, vnode* cwd, vnode** out_dir,
-                           char* name)
+                           char* name, uint32_t lflags)
     {
         if (!path || !path[0])
             return -ENOENT;
+
+        bool beneath = (lflags & LOOKUP_BENEATH) != 0;
+        if (beneath && path[0] == '/')
+            return -EXDEV;
 
         uint32_t len = 0;
         while (path[len])
@@ -663,9 +700,15 @@ namespace vfs
             name[i] = path[cut + i];
         name[nlen] = '\0';
 
+        // Beneath, a final ".." is fine only when the parent lies below cwd;
+        // the two early returns below have the parent *at* cwd.
+        bool last_up = is_dotdot(name, nlen);
+
         if (nlen == len)
         {
             // No slash at all: relative to cwd, parent is cwd itself.
+            if (beneath && last_up)
+                return -EXDEV;
             if (!cwd)
                 return -ENOENT;
             ref(cwd);
@@ -680,6 +723,8 @@ namespace vfs
         if (plen == 0 && path[0] != '/')
         {
             // Relative "name" or "name/": the parent is cwd itself.
+            if (beneath && last_up)
+                return -EXDEV;
             if (!cwd)
                 return -ENOENT;
             ref(cwd);
@@ -701,10 +746,16 @@ namespace vfs
         }
 
         vnode* dir = nullptr;
-        sint64_t rc = lookup(pp, cwd, &dir, true);
+        uint32_t depth = 0;
+        sint64_t rc = walk(pp, cwd, &dir, true, lflags, &depth);
         kfree(pp);
         if (rc != 0)
             return rc;
+        if (beneath && last_up && depth == 0)
+        {
+            unref(dir);
+            return -EXDEV;
+        }
 
         *out_dir = dir;
         return 0;

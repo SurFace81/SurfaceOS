@@ -23,7 +23,7 @@
 #include "../../../include/mm/memory.h"
 #include "../../../include/stdlib/string.h"
 #include "../../../include/drivers/uart.h"
-#include "../../../sdk/include/abi/errno.h"
+#include "../../../include/errno.h"
 
 // The scanner below validates LFN runs with the short-name checksum.
 namespace fatdir { uint8_t short_checksum(const uint8_t* name11); }
@@ -49,7 +49,7 @@ namespace
     }
 
     // Case-insensitive compare of two UTF-8 names (ASCII folding - what
-    // every simple FAT driver does; fstest checks the ASCII cases).
+    // every simple FAT driver does; sfstest checks the ASCII cases).
     bool eq_nocase(const char* a, const char* b)
     {
         for (uint32_t i = 0; ; i++)

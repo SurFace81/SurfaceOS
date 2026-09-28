@@ -1,8 +1,7 @@
 #!/bin/bash
-# Unit-test the line discipline and the raw-mode key encoder on the host.
-# tty.cpp needs only screen/uart/pit/memory, all stubbed in
-# tools/ttyhost/stubs.cpp, so the discipline can be exercised in
-# milliseconds instead of through a build-and-boot cycle.
+# Unit-test the key queues (tty.cpp) on the host. tty.cpp needs only
+# screen/uart/wait, all stubbed in tools/ttyhost/stubs.cpp, so it can be
+# exercised in milliseconds instead of through a build-and-boot cycle.
 set -u
 cd "$(dirname "$0")/.."
 

@@ -24,7 +24,6 @@ struct idtr {
 
 #define IDT_ENTRIES 256
 #define IDT_FLAG_INTERRUPT_GATE 0x8E  // Present=1, DPL=00, Type=1110 (interrupt gate)
-#define IDT_FLAG_TRAP_GATE_USER 0xEF  // Present=1, DPL=11, Type=1111 (trap gate, int 0x80)
 
 // Exception numbers
 #define EXCEPTION_DIVIDE_ERROR          0   // #DE
@@ -67,6 +66,9 @@ namespace idt {
     // `ist` selects an Interrupt Stack Table slot (1..7) from the TSS, or 0
     // to keep using the interrupted stack. See IST_* in tss.h.
     void set_entry(int index, uint64_t handler, uint8_t flags, uint8_t ist = 0);
+
+    // Load the one IDT on the CPU this runs on (every other CPU at start).
+    void load();
 }
 
 // Exception handlers

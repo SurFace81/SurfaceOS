@@ -1,26 +1,16 @@
 #!/bin/bash
-# Persistence check (stage 3.7): reboot QEMU with the image the fstest run
-# left behind, run `fstest verify` and confirm everything survived -
-# including the host-side fsck.fat of the volume.
+# Persistence check: reboot QEMU with the image the sfstest run left behind,
+# run `sfstest verify` and confirm everything survived - including the
+# host-side fsck.fat of the volume.
 #
-# Usage: tools/qemu_verify.sh [layout] [sector]
-#   Expects test_disk.img to contain a finished fstest run (qemu_exec_test.sh).
+# Usage: tools/qemu_verify.sh
+#   Expects test_disk.img to contain a finished sfstest run (qemu_exec_test.sh).
 set -u
 cd "$(dirname "$0")/.."
 
-LAYOUT="${1:-gpt}"
-SECTOR="${2:-512}"
 IMG=test_disk.img
 MON=/tmp/qmon_verify
 LOG=/tmp/uart_verify.log
-
-# Same device plumbing as qemu_exec_test.sh: a 4K device must be usb-bot +
-# explicit scsi-hd (usb-storage ignores logical_block_size for its child).
-if [ "$SECTOR" = "512" ]; then
-    USB_DEV="-device usb-storage,drive=usbstick"
-else
-    USB_DEV="-device usb-bot,id=msd -device scsi-hd,bus=msd.0,drive=usbstick,logical_block_size=$SECTOR,physical_block_size=$SECTOR"
-fi
 
 if [ ! -f "$IMG" ]; then
     echo "FAIL: $IMG missing - run qemu_exec_test.sh first"
@@ -31,12 +21,13 @@ rm -f "$LOG" "$MON"
 qemu-system-x86_64 \
     -chardev file,id=uart0,path=$LOG \
     -m ${QEMU_MEM:-128M} \
+    -smp ${SMP:-1} \
     -bios uefi64.bin \
     -cpu ${QEMU_CPU:-qemu64} \
     -device qemu-xhci \
     -device pci-serial,chardev=uart0 \
     -drive id=usbstick,if=none,format=raw,file="$IMG" \
-    $USB_DEV \
+    -device usb-storage,drive=usbstick \
     -display none -no-reboot -no-shutdown \
     -monitor unix:$MON,server,nowait >/dev/null 2>&1 &
 QEMU_PID=$!
@@ -76,24 +67,20 @@ wait_for "boot: root mounted" 10; result $? "root automounted again"
 # warning must appear, proving the flag round-trips.
 wait_for "volume is dirty" 5; result $? "dirty volume detected and reported"
 
-type_cmd "exec /bin/fstest verify"
-wait_for "fstest verify: " 240; result $? "fstest verify finished"
-grep -E "\[FAIL\]" "$LOG" | sed 's/^/      /'
-grep -q "fstest verify: [0-9]* passed, 0 failed" "$LOG"
+type_cmd "sfstest verify"
+wait_for "sfstest verify: " 240; result $? "sfstest verify finished"
+grep -aE "\[FAIL\]" "$LOG" | sed 's/^/      /'
+grep -aq "sfstest verify: [0-9]* passed, 0 failed" "$LOG"
 result $? "all data survived the restart"
 
 monitor "quit"
 sleep 1
 
-# Host-side FAT validation.
+# Host-side FAT validation of the partition (it starts at LBA 2048).
 PART=/tmp/verify_part.fat
-if [ "$LAYOUT" = "superfloppy" ]; then
-    cp "$IMG" "$PART"
-else
-    TOTAL=$(stat -c %s "$IMG")
-    dd if="$IMG" of="$PART" bs=512 skip=2048 count=$(( (TOTAL - 2048*512) / 512 )) status=none
-fi
-if fsck.fat -n "$PART" >/tmp/verify_fsck.log 2>&1; then
+TOTAL=$(stat -c %s "$IMG")
+dd if="$IMG" of="$PART" bs=512 skip=2048 count=$(( (TOTAL - 2048*512) / 512 )) status=none
+if bash tools/fsck_clean.sh "$PART" /tmp/verify_fsck.log; then
     echo "PASS  host fsck.fat -n is clean"
 else
     echo "FAIL  host fsck.fat -n:"
