@@ -50,7 +50,7 @@ namespace tty
         // Ctrl+C and the like are keys like any other: what they mean is up
         // to the program (in a ReadLine, Ctrl+C ends the line -
         // sfconsole.cpp). The system's own keys never get here
-        // (keyboard.cpp).
+        // (kbd.cpp).
         if (screen >= TERM_ALL_SCREENS)
             return;
         KeyRing* r = &rings[screen];

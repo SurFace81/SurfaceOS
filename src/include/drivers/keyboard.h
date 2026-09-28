@@ -12,37 +12,18 @@
 
 #define KEY_RELEASED_MASK       0x80
 
+// The scancodes this driver itself has to recognise; the rest are keys.
 #define LSHIFT_SCANCODE         0x2A
 #define RSHIFT_SCANCODE         0x36
-#define LCTRL_SCANCODE          0x1D
-#define LALT_SCANCODE           0x38
-#define CAPS_LOCK_SCANCODE      0x3A
-#define NUM_LOCK_SCANCODE       0x45
-#define SCROLL_LOCK_SCANCODE    0x46
-
 #define EXTENDED_SCANCODE       0xE0
-
-#define RCTRL_SCANCODE          0x1D    // behind 0xE0
-#define RALT_SCANCODE           0x38    // behind 0xE0 (AltGr)
 #define PAUSE_PREFIX            0xE1
 
-typedef struct {
-    uint8_t lshift_pressed;
-    uint8_t rshift_pressed;
-    uint8_t lctrl_pressed;
-    uint8_t rctrl_pressed;
-    uint8_t lalt_pressed;
-    uint8_t ralt_pressed;       // AltGr
-    uint8_t caps_lock;
-    uint8_t num_lock;
-    uint8_t scroll_lock;
-    uint8_t extended_code;      // 0xE0 seen, next byte completes the key
-    uint8_t skip_bytes;         // tail of a multi-byte sequence to swallow
-} keyboard_state_t;
-
+// PS/2 keyboard: bytes in, physical keys out to kbd (kbd.h).
 namespace keyboard {
     void  init(void);
     void  handler(void);
+    // Light the LEDs for KMOD_CAPS / KMOD_NUM / KMOD_SCROLL in `locks`.
+    void  set_leds(uint8_t locks);
 }
 
 #endif

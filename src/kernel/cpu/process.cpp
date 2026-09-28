@@ -304,7 +304,7 @@ namespace process
 
     static pid_t    next_pid  = 1;
 
-    // Ctrl+Alt+C (keyboard.cpp): the screen whose programs are to end, -1
+    // Ctrl+Alt+C (kbd.cpp): the screen whose programs are to end, -1
     // for none. Acted on at the next scheduling decision - the keyboard IRQ
     // can land anywhere.
     static volatile sint32_t end_screen = -1;

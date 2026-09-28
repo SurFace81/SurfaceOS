@@ -50,6 +50,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
+				bin/kernel/drivers/kbd.o \
 				bin/kernel/drivers/reports.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
