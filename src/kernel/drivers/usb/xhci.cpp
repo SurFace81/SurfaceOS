@@ -267,6 +267,13 @@ struct xhci_transfer_ring
     size_t max_trb_count;
     size_t enqueue_ptr;
     uint8_t cycle_bit;
+
+    // How the transfer last started on this ring ended, filled in by
+    // process_events(): `done` once its final event arrived, with that
+    // event's completion code, and the bytes a short packet left untouched.
+    volatile bool done;
+    uint8_t cc;
+    uint32_t residue;
 };
 
 // Extended capability: Supported Protocol (spec section 7.2)
@@ -338,6 +345,16 @@ struct xhci_controller
     xhci_cmd_ring cmd_ring;
     xhci_evt_ring evt_ring;
     xhci_transfer_ring ep0_rings[XHCI_MAX_SLOTS + 1];   // by slot ID
+
+    // Where a Transfer Event goes: the ring of (slot, DCI), at
+    // rings[slot * XHCI_MAX_DCI + dci]; null for endpoints not in use.
+    xhci_transfer_ring** rings;
+
+    // The command in flight (its TRB's bus address) and, once its
+    // completion event arrived, a copy of that event.
+    uint64_t cmd_pending;
+    volatile bool cmd_done;
+    xhci_cmd_completion_trb_t cmd_result;
 
     uint8_t usb3_ports[XHCI_MAX_USB3_PORTS];
     uint8_t usb3_port_count;
@@ -452,11 +469,6 @@ static void evt_ring_init(xhci_evt_ring* ring, size_t max_trbs, volatile xhci_in
     write_mmio64(&interrupter->erstba, xhci_virt_to_phys(ring->segment_table));
 }
 
-static bool evt_ring_has_events(xhci_evt_ring* ring)
-{
-    return (ring->trbs[ring->dequeue_ptr].cycle_bit == ring->cycle_bit);
-}
-
 static xhci_trb_t* evt_ring_dequeue_trb(xhci_evt_ring* ring)
 {
     if (ring->trbs[ring->dequeue_ptr].cycle_bit != ring->cycle_bit)
@@ -523,13 +535,94 @@ static void acknowledge_irq(xhci_controller* hc, uint8_t interrupter)
 }
 
 // Event processing
+//
+// process_events() is the only reader of the event ring. Every event goes
+// where it belongs - a transfer's to the ring of its slot and endpoint, a
+// command's completion to the command in flight - and whoever waits for one
+// looks there. An event for someone else can therefore arrive in the middle
+// of any wait without being lost or taken for the one waited on.
+
+static xhci_transfer_ring* ring_of(xhci_controller* hc, uint8_t slot, uint8_t dci)
+{
+    if (!hc->rings || slot == 0 || slot > hc->max_device_slots || dci == 0 || dci >= XHCI_MAX_DCI)
+        return nullptr;
+    return hc->rings[slot * XHCI_MAX_DCI + dci];
+}
+
+static void set_ring(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring)
+{
+    hc->rings[slot * XHCI_MAX_DCI + dci] = ring;
+}
+
+static void on_transfer_event(xhci_controller* hc, const xhci_transfer_event_trb_t* te)
+{
+    xhci_transfer_ring* ring = ring_of(hc, te->slot_id, te->endpoint_id);
+    if (!ring)
+    {
+        uart::printf("xhci: transfer event for slot %u dci %u, which has no ring\n",
+                     (uint32_t)te->slot_id, (uint32_t)te->endpoint_id);
+        return;
+    }
+
+    uint8_t cc = te->completion_code;
+    if (cc == XHCI_TRB_COMPLETION_SHORT_PACKET)
+        ring->residue = te->transfer_length;
+
+    // A transfer is over at its IOC TRB - or at an error, where the endpoint
+    // halts. A short packet in a control transfer's data stage is reported
+    // on its own and the status stage still follows.
+    if (cc == XHCI_TRB_COMPLETION_SUCCESS || cc == XHCI_TRB_COMPLETION_SHORT_PACKET)
+    {
+        uint64_t index = (te->trb_pointer - ring->phys_base) / sizeof(xhci_trb_t);
+        if (index >= ring->max_trb_count || !ring->trbs[index].interrupt_on_completion)
+            return;
+    }
+
+    ring->cc = cc;
+    ring->done = true;
+}
+
+static void on_command_completion(xhci_controller* hc, const xhci_cmd_completion_trb_t* cc)
+{
+    if (hc->cmd_done || cc->command_trb_pointer != hc->cmd_pending)
+    {
+        uart::printf("xhci: completion for command %llx, which nobody waits for\n",
+                     (uint64_t)cc->command_trb_pointer);
+        return;
+    }
+    hc->cmd_result = *cc;
+    hc->cmd_done = true;
+}
 
 static void process_events(xhci_controller* hc)
 {
-    while (evt_ring_has_events(&hc->evt_ring))
-        evt_ring_dequeue_trb(&hc->evt_ring);
-    evt_ring_advance_erdp(hc);
-    acknowledge_irq(hc, 0);
+    bool any = false;
+    xhci_trb_t* trb;
+    while ((trb = evt_ring_dequeue_trb(&hc->evt_ring)) != nullptr)
+    {
+        any = true;
+        switch (trb->trb_type)
+        {
+            case XHCI_TRB_TYPE_TRANSFER_EVENT:
+                on_transfer_event(hc, (xhci_transfer_event_trb_t*)trb);
+                break;
+            case XHCI_TRB_TYPE_CMD_COMPLETION_EVENT:
+                on_command_completion(hc, (xhci_cmd_completion_trb_t*)trb);
+                break;
+            case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT:
+                // Ports are looked at directly at enumeration.
+                break;
+            default:
+                uart::printf("xhci: event type %u ignored\n", (uint32_t)trb->trb_type);
+                break;
+        }
+    }
+
+    if (any)
+    {
+        evt_ring_advance_erdp(hc);
+        acknowledge_irq(hc, 0);
+    }
 }
 
 // Everything the controller tells us about its own state. Printed when a
@@ -562,31 +655,23 @@ static void dump_controller_state(xhci_controller* hc, const char* why)
                  hc->evt_ring.trbs[hc->evt_ring.dequeue_ptr].control);
 }
 
-// Send command and wait for completion
+// Send a command and wait for its completion. The result is a copy the
+// controller does not write to; it stays valid until the next command.
 static xhci_cmd_completion_trb_t* send_command(xhci_controller* hc, xhci_trb_t* cmd_trb, uint32_t timeout_ms)
 {
-    process_events(hc);
+    hc->cmd_done = false;
+    hc->cmd_pending = hc->cmd_ring.phys_base + hc->cmd_ring.enqueue_ptr * sizeof(xhci_trb_t);
     cmd_ring_enqueue(&hc->cmd_ring, cmd_trb);
     ring_command_doorbell(hc);
 
-    uint32_t elapsed = 0;
-    while (elapsed < timeout_ms)
+    for (uint32_t waited = 0;; waited++)
     {
-        if (evt_ring_has_events(&hc->evt_ring))
-        {
-            xhci_trb_t* trb = evt_ring_dequeue_trb(&hc->evt_ring);
-            if (!trb)
-                break;
-
-            if (trb->trb_type == XHCI_TRB_TYPE_CMD_COMPLETION_EVENT)
-            {
-                evt_ring_advance_erdp(hc);
-                acknowledge_irq(hc, 0);
-                return (xhci_cmd_completion_trb_t*)trb;
-            }
-        }
+        process_events(hc);
+        if (hc->cmd_done)
+            return &hc->cmd_result;
+        if (waited >= timeout_ms)
+            break;
         delay_ms(1);
-        elapsed++;
     }
 
     uart::printf("xhci: command timeout after %u ms\n", timeout_ms);
@@ -594,54 +679,32 @@ static xhci_cmd_completion_trb_t* send_command(xhci_controller* hc, xhci_trb_t* 
     return nullptr;
 }
 
-// Wait for transfer completion event
-static xhci_transfer_event_trb_t* wait_transfer_event(xhci_controller* hc, uint32_t timeout_ms)
+// Before a transfer starts on `ring`: forget how the last one ended.
+static void transfer_start(xhci_transfer_ring* ring)
 {
-    xhci_transfer_event_trb_t* last_transfer = nullptr;
-    uint32_t elapsed = 0;
+    ring->done = false;
+    ring->cc = 0;
+    ring->residue = 0;
+}
 
-    while (elapsed < timeout_ms)
+// Wait for the transfer started on `ring` to end. False on timeout;
+// otherwise ring->cc and ring->residue say how it went.
+static bool transfer_wait(xhci_controller* hc, xhci_transfer_ring* ring, uint32_t timeout_ms)
+{
+    for (uint32_t waited = 0;; waited++)
     {
-        if (evt_ring_has_events(&hc->evt_ring))
-        {
-            xhci_trb_t* trb = evt_ring_dequeue_trb(&hc->evt_ring);
-            if (!trb)
-                break;
-
-            if (trb->trb_type == XHCI_TRB_TYPE_TRANSFER_EVENT)
-            {
-                xhci_transfer_event_trb_t* te = (xhci_transfer_event_trb_t*)trb;
-                last_transfer = te;
-
-                if (te->completion_code != XHCI_TRB_COMPLETION_SUCCESS && te->completion_code != 13)
-                {
-                    evt_ring_advance_erdp(hc);
-                    acknowledge_irq(hc, 0);
-                    return te;
-                }
-
-                if (te->completion_code == XHCI_TRB_COMPLETION_SUCCESS)
-                {
-                    evt_ring_advance_erdp(hc);
-                    acknowledge_irq(hc, 0);
-                    return te;
-                }
-                // Short packet - keep polling for status stage
-            }
-        }
+        process_events(hc);
+        if (ring->done)
+            return true;
+        if (waited >= timeout_ms)
+            return false;
         delay_ms(1);
-        elapsed++;
     }
+}
 
-    if (last_transfer)
-    {
-        evt_ring_advance_erdp(hc);
-        acknowledge_irq(hc, 0);
-        return last_transfer;
-    }
-
-    uart::printf("xhci: transfer event timeout after %u ms\n", timeout_ms);
-    return nullptr;
+static bool transfer_ok(xhci_transfer_ring* ring)
+{
+    return ring->cc == XHCI_TRB_COMPLETION_SUCCESS || ring->cc == XHCI_TRB_COMPLETION_SHORT_PACKET;
 }
 
 // Control transfers
@@ -650,6 +713,7 @@ static sint32_t control_transfer_in(xhci_controller* hc, uint8_t slot_id, uint8_
                                     uint16_t data_length)
 {
     xhci_transfer_ring* ring = &hc->ep0_rings[slot_id];
+    transfer_start(ring);
 
     // Setup Stage TRB
     xhci_trb_t setup_trb;
@@ -668,7 +732,8 @@ static sint32_t control_transfer_in(xhci_controller* hc, uint8_t slot_id, uint8_
     memory::memset((uint8_t*)&data_trb, 0, sizeof(xhci_trb_t));
     data_trb.parameter = (uint64_t)buffer_phys;
     data_trb.status = data_length;
-    data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 16); // DIR=IN
+    data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 16) // DIR=IN
+                       | (1 << 2);   // ISP: a short reply is reported, with how short
     transfer_ring_enqueue(ring, &data_trb);
 
     // Status Stage TRB
@@ -679,26 +744,26 @@ static sint32_t control_transfer_in(xhci_controller* hc, uint8_t slot_id, uint8_
 
     ring_doorbell(hc, slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
 
-    xhci_transfer_event_trb_t* evt = wait_transfer_event(hc, 500);
-    if (!evt)
+    if (!transfer_wait(hc, ring, 500))
     {
         uart::printf("xhci: control IN timeout slot=%u\n", (uint32_t)slot_id);
         return -1;
     }
 
-    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS && evt->completion_code != 13)
+    if (!transfer_ok(ring))
     {
         uart::printf("xhci: control IN failed slot=%u code=%u (%s)\n", (uint32_t)slot_id,
-                     (uint32_t)evt->completion_code, completion_code_str(evt->completion_code));
+                     (uint32_t)ring->cc, completion_code_str(ring->cc));
         return -1;
     }
 
-    return (sint32_t)data_length - (sint32_t)evt->transfer_length;
+    return (sint32_t)data_length - (sint32_t)ring->residue;
 }
 
 static bool control_transfer_no_data(xhci_controller* hc, uint8_t slot_id, uint8_t* setup_packet)
 {
     xhci_transfer_ring* ring = &hc->ep0_rings[slot_id];
+    transfer_start(ring);
 
     // Setup Stage TRB, TRT=0 (no data)
     xhci_trb_t setup_trb;
@@ -720,8 +785,7 @@ static bool control_transfer_no_data(xhci_controller* hc, uint8_t slot_id, uint8
 
     ring_doorbell(hc, slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
 
-    xhci_transfer_event_trb_t* evt = wait_transfer_event(hc, 500);
-    if (!evt || evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+    if (!transfer_wait(hc, ring, 500) || ring->cc != XHCI_TRB_COMPLETION_SUCCESS)
     {
         uart::printf("xhci: control no-data failed slot=%u\n", (uint32_t)slot_id);
         return false;
@@ -736,6 +800,7 @@ static bool bulk_transfer_out(usb_mass_storage_dev* msd, void* data, uintptr_t d
     xhci_controller* hc = msd->hc;
     xhci_transfer_ring* ring = &msd->bulk_out_ring;
     uint8_t out_dci = (msd->bulk_out_ep & 0x0F) * 2;
+    transfer_start(ring);
 
     xhci_trb_t trb;
     memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
@@ -746,16 +811,15 @@ static bool bulk_transfer_out(usb_mass_storage_dev* msd, void* data, uintptr_t d
 
     ring_doorbell(hc, msd->slot_id, out_dci);
 
-    xhci_transfer_event_trb_t* evt = wait_transfer_event(hc, 2000);
-    if (!evt)
+    if (!transfer_wait(hc, ring, 2000))
     {
         uart::printf("xhci: bulk OUT timeout\n");
         return false;
     }
-    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS && evt->completion_code != 13)
+    if (!transfer_ok(ring))
     {
-        uart::printf("xhci: bulk OUT failed code=%u (%s)\n", (uint32_t)evt->completion_code,
-                     completion_code_str(evt->completion_code));
+        uart::printf("xhci: bulk OUT failed code=%u (%s)\n", (uint32_t)ring->cc,
+                     completion_code_str(ring->cc));
         return false;
     }
     return true;
@@ -829,6 +893,7 @@ static sint32_t bulk_transfer_in(usb_mass_storage_dev* msd, void* data, uintptr_
     xhci_controller* hc = msd->hc;
     xhci_transfer_ring* ring = &msd->bulk_in_ring;
     uint8_t in_dci = (msd->bulk_in_ep & 0x0F) * 2 + 1;
+    transfer_start(ring);
 
     xhci_trb_t trb;
     memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
@@ -839,24 +904,23 @@ static sint32_t bulk_transfer_in(usb_mass_storage_dev* msd, void* data, uintptr_
 
     ring_doorbell(hc, msd->slot_id, in_dci);
 
-    xhci_transfer_event_trb_t* evt = wait_transfer_event(hc, 2000);
-    if (!evt)
+    if (!transfer_wait(hc, ring, 2000))
     {
         uart::printf("xhci: bulk IN timeout\n");
         return -1;
     }
-    if (evt->completion_code == 6)
+    if (ring->cc == XHCI_TRB_COMPLETION_STALL)
     {
         recover_from_stall(msd, msd->bulk_in_ep);
         return -2;
     }
-    if (evt->completion_code != XHCI_TRB_COMPLETION_SUCCESS && evt->completion_code != 13)
+    if (!transfer_ok(ring))
     {
-        uart::printf("xhci: bulk IN failed code=%u (%s)\n", (uint32_t)evt->completion_code,
-                     completion_code_str(evt->completion_code));
+        uart::printf("xhci: bulk IN failed code=%u (%s)\n", (uint32_t)ring->cc,
+                     completion_code_str(ring->cc));
         return -1;
     }
-    return (sint32_t)length - (sint32_t)evt->transfer_length;
+    return (sint32_t)length - (sint32_t)ring->residue;
 }
 
 // BOT (Bulk-Only Transport) / SCSI layer
@@ -1324,6 +1388,11 @@ static void configure_operational_regs(xhci_controller* hc)
     hc->op_regs->dnctrl = 0xFFFF;
     hc->op_regs->config = (uint32_t)hc->max_device_slots;
     setup_dcbaa(hc);
+
+    size_t rings_size = sizeof(xhci_transfer_ring*) * (hc->max_device_slots + 1) * XHCI_MAX_DCI;
+    hc->rings = (xhci_transfer_ring**)kmalloc(rings_size);
+    memory::memset((uint8_t*)hc->rings, 0, rings_size);
+
     cmd_ring_init(&hc->cmd_ring, XHCI_COMMAND_RING_TRB_COUNT);
     write_mmio64(&hc->op_regs->crcr, hc->cmd_ring.phys_base | hc->cmd_ring.cycle_bit);
 }
@@ -1807,6 +1876,16 @@ static bool get_config_descriptor(xhci_controller* hc, uint8_t slot_id, uint8_t 
     return true;
 }
 
+// Point the event routing at a mass storage device's bulk rings, or take
+// them out of it.
+static void msd_route_rings(usb_mass_storage_dev* msd, bool on)
+{
+    uint8_t in_dci = (msd->bulk_in_ep & 0x0F) * 2 + 1;
+    uint8_t out_dci = (msd->bulk_out_ep & 0x0F) * 2;
+    set_ring(msd->hc, msd->slot_id, in_dci, on ? &msd->bulk_in_ring : nullptr);
+    set_ring(msd->hc, msd->slot_id, out_dci, on ? &msd->bulk_out_ring : nullptr);
+}
+
 static bool configure_mass_storage(usb_mass_storage_dev* msd)
 {
     xhci_controller* hc = msd->hc;
@@ -1830,6 +1909,7 @@ static bool configure_mass_storage(usb_mass_storage_dev* msd)
     uint8_t in_dci = in_ep_num * 2 + 1;
     uint8_t out_dci = out_ep_num * 2;
     uint8_t max_dci = in_dci > out_dci ? in_dci : out_dci;
+    msd_route_rings(msd, true);
 
     // Build Input Context for Configure Endpoint Command
     void* input_ctx = alloc_input_context(hc);
@@ -1902,6 +1982,7 @@ static void setup_device(xhci_controller* hc, uint8_t port_index)
     // Allocate EP0 transfer ring
     xhci_transfer_ring* ep0_ring = &hc->ep0_rings[slot_id];
     transfer_ring_init(ep0_ring, XHCI_TRANSFER_RING_TRB_COUNT);
+    set_ring(hc, slot_id, 1, ep0_ring);
 
     // Build Input Context for Address Device
     void* input_ctx = alloc_input_context(hc);
@@ -2104,16 +2185,24 @@ static bool init_controller(xhci_controller* hc)
     {
         usb_mass_storage_dev* msd = &mass_storage_devs[i];
         if (!configure_mass_storage(msd))
+        {
+            msd_route_rings(msd, false);
             continue;
+        }
 
         scsi_inquiry(msd);
         if (!scsi_test_unit_ready(msd))
+        {
+            msd_route_rings(msd, false);
             continue;
+        }
 
         if (ready_count != i)
         {
+            // Its rings move with it: events must find them at the new place.
             mass_storage_devs[ready_count] = *msd;
             memory::memset((uint8_t*)msd, 0, sizeof(*msd));
+            msd_route_rings(&mass_storage_devs[ready_count], true);
         }
         ready_count++;
     }

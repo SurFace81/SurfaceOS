@@ -445,6 +445,11 @@ struct usb_csw {
 #define XHCI_CRCR_RING_CYCLE_STATE      (1 << 0)
 #define XHCI_LINK_TRB_TC_BIT            (1 << 1)
 #define XHCI_TRB_COMPLETION_SUCCESS     1
+#define XHCI_TRB_COMPLETION_STALL       6
+#define XHCI_TRB_COMPLETION_SHORT_PACKET 13
+
+// Device Context Indexes: 1 is the control endpoint, 2..31 the others.
+#define XHCI_MAX_DCI 32
 
 // Endpoint types
 #define XHCI_EP_TYPE_BULK_OUT       2
