@@ -490,6 +490,10 @@ struct usb_csw {
 // A mobile chipset can expose a PCH xHCI and a separate USB4/Thunderbolt one.
 #define MAX_XHCI_CONTROLLERS 8
 
+// Device slots we enable per controller (CONFIG.MaxSlotsEn). Controllers in
+// the wild offer 32-64; slot IDs index per-slot tables, so they are capped.
+#define XHCI_MAX_SLOTS 64
+
 // Port bring-up timing. 20 ms is the spec's settle time after setting PP;
 // the scan window covers USB3 link training plus a USB2 device's debounce.
 #define XHCI_PORT_POWER_SETTLE_MS   20
