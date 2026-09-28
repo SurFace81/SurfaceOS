@@ -1063,7 +1063,7 @@ namespace
         {
             uart::printf("fat32: %s: volume is dirty (unclean unmount)\n",
                          dev->name);
-            screen::printf("\n\rWarning: %s was not unmounted cleanly.",
+            screen::printf("\n\rWarning: %s was not unmounted cleanly.\n\r",
                            dev->name);
         }
         fat::set_dirty_bit(sb, true);
