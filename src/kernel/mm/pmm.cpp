@@ -31,9 +31,9 @@ namespace pmm
 {
     static uint8_t* bitmap = nullptr;   // PMM_BITMAP_ADDR via the direct map
 
-    static uint64_t bitmap_frames = (PMM_BITMAP_SIZE * 8);  // frames the bitmap can track
-    static uint64_t total_frames = 0;
-    static uint64_t used_frames  = 0;
+    static uint64_t bitmap_frames = 0;  // frames the bitmap tracks (up to the end of RAM)
+    static uint64_t total_frames = 0;   // frames of real RAM, holes not counted
+    static uint64_t used_frames  = 0;   // of them, frames not free
     static uint64_t max_phys     = 0;
     static uint64_t cursor       = 0;   // next frame index to try
     static bool     initialized  = false;
@@ -85,9 +85,17 @@ namespace pmm
 
     void init(BOOT_HEADER* boot_header)
     {
+        // The bitmap covers what the direct map reaches, and no more than
+        // PMM_BITMAP_SIZE describes. The direct map limit is 2 MiB aligned,
+        // so the frame count is a whole number of bytes.
+        bitmap_frames = paging::direct_map_limit() / FRAME_SIZE;
+        if (bitmap_frames > PMM_BITMAP_SIZE * 8)
+            bitmap_frames = PMM_BITMAP_SIZE * 8;
+        uint64_t bitmap_bytes = bitmap_frames / 8;
+
         // Everything starts as used
         bitmap = (uint8_t*)phys_to_virt(PMM_BITMAP_ADDR);
-        memory::memset(bitmap, 0xFF, PMM_BITMAP_SIZE);
+        memory::memset(bitmap, 0xFF, bitmap_bytes);
         used_frames = bitmap_frames;
         total_frames = 0;
         max_phys = 0;
@@ -116,15 +124,12 @@ namespace pmm
 
         // Never manage memory the kernel cannot address through the direct
         // map, and never more than the bitmap can describe.
-        uint64_t dm_limit = paging::direct_map_limit();
-        if (max_phys > dm_limit)
-            max_phys = dm_limit;
         if (max_phys > bitmap_frames * FRAME_SIZE)
             max_phys = bitmap_frames * FRAME_SIZE;
 
         // Regions used by the boot chain that the map reports as free:
         reserve(0, PMM_LOW_RESERVE_END);                                  // boot data, kernel, page tables
-        reserve(PMM_BITMAP_ADDR, PMM_BITMAP_ADDR + PMM_BITMAP_SIZE);      // this bitmap
+        reserve(PMM_BITMAP_ADDR, PMM_BITMAP_ADDR + bitmap_bytes);         // this bitmap
         reserve(PMM_HEAP_START, PMM_HEAP_START + PMM_HEAP_SIZE);          // initial kernel heap
         reserve(boot_header->StartDataAddress,
                 boot_header->StartDataAddress + boot_header->StartDataSize);
@@ -140,22 +145,36 @@ namespace pmm
             uart::printf("pmm: WARNING kernel image ends at %llx, past the low reserve\n",
                          kernel_end);
 
-        total_frames = max_phys / FRAME_SIZE;
-
-        // Recount used frames within the managed range
-        // (the bitmap starts fully set, including frames beyond max_phys)
-        used_frames = 0;
-        for (uint64_t i = 0; i < total_frames; i++)
+        // Total is the RAM itself: the free regions of the map, cut at
+        // max_phys. The holes between them (the device window below 4 GB,
+        // firmware regions) are marked used in the bitmap but are not memory,
+        // so they count neither as total nor as used.
+        total_frames = 0;
+        for (uint64_t i = 0; i < entries; i++)
         {
-            if (bit_get(i))
-                used_frames++;
+            MEMORY_MAP_ENTRY* e = (MEMORY_MAP_ENTRY*)((uint8_t*)map + i * entry_size);
+            if (e->Type != 0 || e->Start >= max_phys)
+                continue;
+
+            uint64_t end = e->End < max_phys ? e->End : max_phys;
+            total_frames += end / FRAME_SIZE - e->Start / FRAME_SIZE;
         }
+
+        // Used = RAM minus the frames still free after the reserves above
+        uint64_t free = 0;
+        for (uint64_t i = 0; i < max_phys / FRAME_SIZE; i++)
+        {
+            if (!bit_get(i))
+                free++;
+        }
+        used_frames = total_frames - free;
 
         cursor = 0;
         initialized = true;
 
-        uart::printf("pmm: %llu MB managed, %llu frames free / %llu total\n",
-            max_phys / (1024 * 1024), total_frames - used_frames, total_frames);
+        uart::printf("pmm: %llu MB of RAM up to %llu MB, %llu frames free / %llu total\n",
+            total_frames * FRAME_SIZE / (1024 * 1024), max_phys / (1024 * 1024),
+            free, total_frames);
     }
 
     uint64_t alloc_frame()

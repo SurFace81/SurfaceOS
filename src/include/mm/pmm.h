@@ -14,14 +14,15 @@
 //   0x000000..0x800000   boot data, font, kernel image + .bss, static page
 //                        tables. Covered wholesale by PMM_LOW_RESERVE_END.
 //   0x2000000..0x2900000 initial kernel heap (see mm/memory.cpp)
-//   0x3000000..0x3100000 this bitmap
+//   0x3000000..0x3400000 this bitmap (at most; only the part up to the
+//                        end of RAM is used)
 //
 // The screen back buffer used to be a fixed region here too. It is now
 // allocated through the PMM (screen::init), because at 4K its 33 MB ran
 // straight into the kernel heap.
 #define PMM_LOW_RESERVE_END 0x800000ULL
 #define PMM_BITMAP_ADDR     0x3000000ULL
-#define PMM_BITMAP_SIZE     0x100000ULL     // 1 MB -> covers 32 GB of RAM
+#define PMM_BITMAP_SIZE     0x400000ULL     // 4 MB -> covers 128 GB of RAM
 
 namespace pmm
 {

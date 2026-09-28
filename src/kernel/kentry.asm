@@ -25,7 +25,7 @@ KERNEL_STACK_SIZE equ 64 * 1024
 ; Keep in sync with include/cpu/paging.h.
 KERNEL_VMA          equ 0xFFFFFFFF80000000
 PAGE_TABLES_PHYS    equ 0x300000
-PT_BOOT_OFFSET      equ 0x30000
+PT_BOOT_OFFSET      equ 0x90000
 DIRECT_MAP_PML4     equ 273
 KERNEL_PML4         equ 511
 KERNEL_PDPT         equ 510
