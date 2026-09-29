@@ -6,9 +6,11 @@
 // The class drivers, each in its own file. Enumeration offers each
 // interface of each device to them in this order.
 extern const usb_class_driver msc_driver;
+extern const usb_class_driver hid_kbd_driver;
 
 static const usb_class_driver* const class_drivers[] = {
     &msc_driver,
+    &hid_kbd_driver,
 };
 
 #define MAX_USB_DEVICES 32
@@ -93,6 +95,34 @@ static void hex4(uint16_t v, char* out)
     for (int i = 3; i >= 0; i--, v >>= 4)
         out[i] = digits[v & 0xF];
     out[4] = '\0';
+}
+
+// How a transfer on `ring` ended, as a status.
+static usb_status ring_status(const xhci_transfer_ring* ring)
+{
+    if (xhci::completed_ok(ring))
+        return USB_OK;
+    return ring->cc == XHCI_TRB_COMPLETION_STALL ? USB_ERR_STALL : USB_ERR_IO;
+}
+
+static void endpoint_complete(void* owner)
+{
+    usb_endpoint* ep = (usb_endpoint*)owner;
+    uint32_t residue = ep->ring.residue < ep->submitted ? ep->ring.residue : ep->submitted;
+    ep->on_complete(ep, ring_status(&ep->ring), ep->submitted - residue);
+}
+
+static void setup_packet(uint8_t* setup, uint8_t request_type, uint8_t request, uint16_t value,
+                         uint16_t index, uint16_t length)
+{
+    setup[0] = request_type;
+    setup[1] = request;
+    setup[2] = (uint8_t)value;
+    setup[3] = (uint8_t)(value >> 8);
+    setup[4] = (uint8_t)index;
+    setup[5] = (uint8_t)(index >> 8);
+    setup[6] = (uint8_t)length;
+    setup[7] = (uint8_t)(length >> 8);
 }
 
 static uint8_t endpoint_dci(uint8_t address)
@@ -409,12 +439,8 @@ namespace usb
     usb_status control(usb_device* dev, uint8_t request_type, uint8_t request, uint16_t value,
                        uint16_t index, void* data, uint16_t length, uint16_t* actual)
     {
-        uint8_t setup[8] = {
-            request_type, request,
-            (uint8_t)value, (uint8_t)(value >> 8),
-            (uint8_t)index, (uint8_t)(index >> 8),
-            (uint8_t)length, (uint8_t)(length >> 8),
-        };
+        uint8_t setup[8];
+        setup_packet(setup, request_type, request, value, index, length);
         bool in = (request_type & USB_DIR_IN) != 0;
 
         // The controller needs memory it can reach; control transfers are
@@ -438,10 +464,9 @@ namespace usb
             return USB_ERR_TIMEOUT;
         }
 
-        usb_status st = USB_OK;
-        if (!xhci::completed_ok(ring))
+        usb_status st = ring_status(ring);
+        if (st != USB_OK)
         {
-            st = ring->cc == XHCI_TRB_COMPLETION_STALL ? USB_ERR_STALL : USB_ERR_IO;
             uart::printf("usb: slot %u: control request %x failed code=%u (%s)\n",
                          (uint32_t)dev->slot, (uint32_t)request, (uint32_t)ring->cc,
                          xhci::completion_code_str(ring->cc));
@@ -497,6 +522,46 @@ namespace usb
         if (!xhci::reset_endpoint(dev->hc, dev->slot, ep->dci, &ep->ring))
             return USB_ERR_IO;
         return USB_OK;
+    }
+
+    usb_status submit_in(usb_device* dev, usb_endpoint* ep, void* dma_buf, uint32_t length)
+    {
+        if (!ep->on_complete || length > USB_MAX_XFER_BYTES)
+            return USB_ERR_INVALID_PARAM;
+        ep->submitted = length;
+        ep->ring.on_complete = endpoint_complete;
+        ep->ring.owner = ep;
+        xhci::normal_start(dev->hc, dev->slot, ep->dci, &ep->ring, xhci::phys(dma_buf), length);
+        return USB_OK;
+    }
+
+    usb_status control_start(usb_device* dev, uint8_t request_type, uint8_t request, uint16_t value,
+                             uint16_t index, void* dma_buf, uint16_t length)
+    {
+        if (control_pending(dev))
+            return USB_ERR_NOT_READY;
+        uint8_t setup[8];
+        setup_packet(setup, request_type, request, value, index, length);
+        xhci::control_start(dev->hc, dev->slot, &dev->ep0.ring, setup,
+                            length ? xhci::phys(dma_buf) : 0, length,
+                            (request_type & USB_DIR_IN) != 0);
+        return USB_OK;
+    }
+
+    bool control_pending(usb_device* dev)
+    {
+        // Every control transfer ends with done set; only one still going
+        // (or one that never came back) leaves it clear.
+        return !dev->ep0.ring.done;
+    }
+
+    void tick()
+    {
+        for (uint8_t i = 0; xhci::controller(i); i++)
+            xhci::poll(xhci::controller(i));
+        for (const usb_class_driver* drv : class_drivers)
+            if (drv->tick)
+                drv->tick();
     }
 
     void* dma_alloc(uint32_t size)

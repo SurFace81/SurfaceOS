@@ -2,6 +2,7 @@
 #include "../../include/drivers/screen.h"
 #include "../../include/drivers/term.h"
 #include "../../include/drivers/rtc.h"
+#include "../../include/drivers/usb/usb.h"
 
 static volatile uint64_t tick_count = 0;
 static uint32_t pit_freq = PIT_DEFAULT_HZ;
@@ -52,6 +53,10 @@ namespace pit
     void handler()
     {
         count_tick();
+
+        // USB has no interrupt of its own here: what the controllers report
+        // (keyboard reports among it) is picked up every tick.
+        usb::tick();
 
         // ~45 fps: rasterise whatever the terminal marked dirty (cursor
         // blink included) and push the back buffer to VRAM. Nothing else

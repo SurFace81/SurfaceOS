@@ -431,6 +431,11 @@ struct xhci_transfer_ring
     volatile bool done;
     uint8_t cc;
     uint32_t residue;
+
+    // For a ring nobody waits on (interrupt IN): called with `owner` from
+    // the event processing when a transfer on it ends.
+    void (*on_complete)(void* owner);
+    void* owner;
 };
 
 // One endpoint to configure on a device (Configure Endpoint command).
@@ -494,6 +499,18 @@ namespace xhci
     // One Normal TRB of `length` bytes on endpoint `dci`.
     bool normal(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
                 uintptr_t data_phys, uint32_t length, uint32_t timeout_ms);
+
+    // The same without waiting: ring->done turns true when the transfer
+    // ends, and ring->on_complete (if set) is called then.
+    void control_start(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
+                       uintptr_t data_phys, uint16_t length, bool in);
+    void normal_start(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                      uintptr_t data_phys, uint32_t length);
+
+    // Take in what the controller reported since last time, unless that is
+    // being done already further down this CPU's stack (a transfer being
+    // waited for when the timer interrupt came). For the timer tick.
+    void poll(xhci_controller* hc);
     bool completed_ok(const xhci_transfer_ring* ring);     // SUCCESS or SHORT_PACKET
     const char* completion_code_str(uint8_t code);
 

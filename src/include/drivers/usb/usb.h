@@ -109,6 +109,14 @@ struct usb_endpoint
     uint16_t max_packet;
     uint8_t  dci;               // the controller's index for it
     xhci_transfer_ring ring;
+
+    // For submit_in(): called when the transfer ends, from the event
+    // processing - possibly in the timer interrupt, so it must not wait
+    // for anything (no synchronous transfers); submitting the next
+    // transfer is fine. `owner` is the driver's.
+    void (*on_complete)(usb_endpoint* ep, usb_status status, uint32_t actual);
+    void* owner;
+    uint32_t submitted;         // length of the transfer in flight
 };
 
 #define USB_MAX_ENDPOINTS 8     // besides EP0
@@ -142,6 +150,9 @@ struct usb_class_driver
     const char* name;
     // Offered one interface of a device; true when the driver took it.
     bool (*probe)(usb_device* dev, const usb_interface_descriptor* iface);
+    // Every timer tick (may be null); runs in the timer interrupt, so the
+    // same rules as for on_complete apply.
+    void (*tick)();
 };
 
 // For lsusb/usbinfo.
@@ -195,6 +206,21 @@ namespace usb
 
     // Clear a halted endpoint: on the device and in the controller.
     usb_status clear_halt(usb_device* dev, usb_endpoint* ep);
+
+    // Start an IN transfer into `dma_buf` and return; ep->on_complete says
+    // how it ended. One at a time per endpoint.
+    usb_status submit_in(usb_device* dev, usb_endpoint* ep, void* dma_buf, uint32_t length);
+
+    // Start a control transfer and return, for where waiting is not
+    // allowed; `dma_buf` comes from dma_alloc(). Only one at a time per
+    // device: control_pending() says whether it is still going.
+    usb_status control_start(usb_device* dev, uint8_t request_type, uint8_t request, uint16_t value,
+                             uint16_t index, void* dma_buf, uint16_t length);
+    bool control_pending(usb_device* dev);
+
+    // From the timer tick: take in what the controllers reported, then let
+    // the class drivers do their periodic work.
+    void tick();
 
     // Buffers for bulk transfers, at most USB_MAX_XFER_BYTES; zeroed.
     void* dma_alloc(uint32_t size);

@@ -417,4 +417,4 @@ static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
     return true;
 }
 
-extern const usb_class_driver msc_driver = { "msc", msc_probe };
+extern const usb_class_driver msc_driver = { "msc", msc_probe, nullptr };

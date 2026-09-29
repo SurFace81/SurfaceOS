@@ -227,6 +227,7 @@ struct xhci_controller
 {
     PCIDevice* pci;
     bool running;                   // started and not stopped since
+    volatile bool in_events;        // process_events() is running
     uintptr_t base;
     volatile xhci_cap_regs* cap_regs;
     volatile xhci_op_regs* op_regs;
@@ -454,6 +455,8 @@ static void on_transfer_event(xhci_controller* hc, const xhci_transfer_event_trb
 
     ring->cc = cc;
     ring->done = true;
+    if (ring->on_complete)
+        ring->on_complete(ring->owner);
 }
 
 static void on_command_completion(xhci_controller* hc, const xhci_cmd_completion_trb_t* cc)
@@ -470,6 +473,7 @@ static void on_command_completion(xhci_controller* hc, const xhci_cmd_completion
 
 static void process_events(xhci_controller* hc)
 {
+    hc->in_events = true;
     bool any = false;
     xhci_trb_t* trb;
     while ((trb = evt_ring_dequeue_trb(&hc->evt_ring)) != nullptr)
@@ -497,6 +501,7 @@ static void process_events(xhci_controller* hc)
         evt_ring_advance_erdp(hc);
         acknowledge_irq(hc, 0);
     }
+    hc->in_events = false;
 }
 
 // Everything the controller tells us about its own state. Printed when a
@@ -1134,8 +1139,8 @@ static uint64_t setup_as_parameter(const uint8_t* setup)
     return v;
 }
 
-static bool control_transfer(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ring, const uint8_t* setup,
-                             uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms)
+static void control_start(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ring, const uint8_t* setup,
+                          uintptr_t data_phys, uint16_t length, bool in)
 {
     transfer_start(ring);
 
@@ -1169,11 +1174,10 @@ static bool control_transfer(xhci_controller* hc, uint8_t slot, xhci_transfer_ri
     transfer_ring_enqueue(ring, &status_trb);
 
     ring_doorbell(hc, slot, XHCI_DOORBELL_TARGET_CONTROL_EP);
-    return transfer_wait(hc, ring, timeout_ms);
 }
 
-static bool normal_transfer(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
-                            uintptr_t data_phys, uint32_t length, uint32_t timeout_ms)
+static void normal_start(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                         uintptr_t data_phys, uint32_t length)
 {
     transfer_start(ring);
 
@@ -1186,7 +1190,6 @@ static bool normal_transfer(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci
     transfer_ring_enqueue(ring, &trb);
 
     ring_doorbell(hc, slot, dci);
-    return transfer_wait(hc, ring, timeout_ms);
 }
 
 // Device slots
@@ -1481,13 +1484,33 @@ namespace xhci
     bool control(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
                  uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms)
     {
-        return control_transfer(hc, slot, ep0, setup, data_phys, length, in, timeout_ms);
+        ::control_start(hc, slot, ep0, setup, data_phys, length, in);
+        return transfer_wait(hc, ep0, timeout_ms);
     }
 
     bool normal(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
                 uintptr_t data_phys, uint32_t length, uint32_t timeout_ms)
     {
-        return normal_transfer(hc, slot, dci, ring, data_phys, length, timeout_ms);
+        ::normal_start(hc, slot, dci, ring, data_phys, length);
+        return transfer_wait(hc, ring, timeout_ms);
+    }
+
+    void control_start(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
+                       uintptr_t data_phys, uint16_t length, bool in)
+    {
+        ::control_start(hc, slot, ep0, setup, data_phys, length, in);
+    }
+
+    void normal_start(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                      uintptr_t data_phys, uint32_t length)
+    {
+        ::normal_start(hc, slot, dci, ring, data_phys, length);
+    }
+
+    void poll(xhci_controller* hc)
+    {
+        if (hc->running && !hc->in_events)
+            process_events(hc);
     }
 
     bool completed_ok(const xhci_transfer_ring* ring)
