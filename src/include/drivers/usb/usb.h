@@ -125,6 +125,8 @@ struct usb_class_driver;
 
 struct usb_device
 {
+    bool in_use;                // a live device; otherwise a free entry
+    volatile bool gone;         // unplugged: every request fails with NO_DEVICE
     xhci_controller* hc;
     uint8_t slot;
     uint8_t port;               // root port, 0-based
@@ -150,6 +152,10 @@ struct usb_class_driver
     const char* name;
     // Offered one interface of a device; true when the driver took it.
     bool (*probe)(usb_device* dev, const usb_interface_descriptor* iface);
+    // A device is gone (every driver is told; it lets go of the device if
+    // it had it). The controller no longer touches the device's memory,
+    // and nothing may be sent to it.
+    void (*disconnect)(usb_device* dev);
     // Every timer tick (may be null); runs in the timer interrupt, so the
     // same rules as for on_complete apply.
     void (*tick)();
@@ -177,6 +183,10 @@ namespace usb
     // Bring up every controller and enumerate what is attached. False
     // when no device ended up with a driver.
     bool init();
+
+    // Start the usb kernel process, which handles devices plugged in or
+    // pulled out from now on. Once processes exist.
+    void start_hotplug();
 
     // --- For class drivers --------------------------------------------------
 

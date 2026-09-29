@@ -352,11 +352,12 @@ struct xhci_transfer_event_trb_t {
 // TRB types - commands
 #define XHCI_TRB_TYPE_LINK                      6
 #define XHCI_TRB_TYPE_ENABLE_SLOT_CMD           9
-#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD    10
+#define XHCI_TRB_TYPE_DISABLE_SLOT_CMD          10
 #define XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD        11
 #define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD    12
 #define XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD      13
 #define XHCI_TRB_TYPE_RESET_ENDPOINT_CMD        14
+#define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD    16
 #define XHCI_TRB_TYPE_NOOP_CMD                  23
 
 // TRB types - transfers
@@ -472,6 +473,13 @@ namespace xhci
     // Reset a connected port; true when it came out enabled.
     bool reset_port(xhci_controller* hc, uint8_t port);
     uint8_t port_speed(xhci_controller* hc, uint8_t port);        // XHCI speed ID
+    // Ports whose state changed (Port Status Change events). take_ picks
+    // one and forgets it; false when there is none.
+    bool ports_changed(xhci_controller* hc);
+    bool take_port_change(xhci_controller* hc, uint8_t* port);
+    // Acknowledge what changed on a port (its change bits); returns the
+    // PORTSC it had, change bits included.
+    uint32_t port_ack(xhci_controller* hc, uint8_t port);
     uint32_t context_entry_size(xhci_controller* hc);
 
     // Device slots. enable_slot() returns the slot ID, 0 on failure.
@@ -487,6 +495,11 @@ namespace xhci
     // After a halt: reset the endpoint and move its dequeue pointer past
     // whatever was left on the ring.
     bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring);
+    // A device that is gone: no more events reach its rings, and the slot
+    // and its context are given back.
+    void disable_slot(xhci_controller* hc, uint8_t slot);
+    // Free a ring's TRBs, once the controller no longer reads it.
+    void free_ring(xhci_transfer_ring* ring);
 
     // Transfers. False on timeout; otherwise ring->cc and ring->residue
     // say how it went.

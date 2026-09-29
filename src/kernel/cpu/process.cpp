@@ -1788,7 +1788,7 @@ namespace process
                            uint32_t flags = 0);
 
     // A kernel process: no user address space, runs `entry` on its task.
-    static Process* start_kernel_process(const char* name, void (*entry)(void*))
+    Process* start_kernel_process(const char* name, void (*entry)(void*))
     {
         Process* p = alloc_process();
         if (!p)

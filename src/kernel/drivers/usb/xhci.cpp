@@ -228,6 +228,8 @@ struct xhci_controller
     PCIDevice* pci;
     bool running;                   // started and not stopped since
     volatile bool in_events;        // process_events() is running
+    // Ports with a Port Status Change event not yet taken, a bit each.
+    volatile uint32_t port_changed[8];
     uintptr_t base;
     volatile xhci_cap_regs* cap_regs;
     volatile xhci_op_regs* op_regs;
@@ -488,8 +490,13 @@ static void process_events(xhci_controller* hc)
                 on_command_completion(hc, (xhci_cmd_completion_trb_t*)trb);
                 break;
             case XHCI_TRB_TYPE_PORT_STATUS_CHANGE_EVENT:
-                // Ports are looked at directly at enumeration.
+            {
+                uint8_t port_id = (uint8_t)(trb->parameter >> 24);     // 1-based
+                if (port_id >= 1)
+                    __atomic_or_fetch(&hc->port_changed[(port_id - 1) / 32],
+                                      1u << ((port_id - 1) % 32), __ATOMIC_RELAXED);
                 break;
+            }
             default:
                 uart::printf("xhci: event type %u ignored\n", (uint32_t)trb->trb_type);
                 break;
@@ -1450,6 +1457,45 @@ namespace xhci
         return read_portsc(hc, port).port_speed;
     }
 
+    bool ports_changed(xhci_controller* hc)
+    {
+        if (!hc->running)
+            return false;
+        for (uint32_t i = 0; i < 8; i++)
+            if (hc->port_changed[i])
+                return true;
+        return false;
+    }
+
+    bool take_port_change(xhci_controller* hc, uint8_t* port)
+    {
+        for (uint32_t i = 0; i < 8; i++)
+        {
+            uint32_t bits = hc->port_changed[i];
+            if (!bits)
+                continue;
+            uint32_t bit = __builtin_ctz(bits);
+            __atomic_and_fetch(&hc->port_changed[i], ~(1u << bit), __ATOMIC_RELAXED);
+            *port = (uint8_t)(i * 32 + bit);
+            return *port < hc->max_ports;
+        }
+        return false;
+    }
+
+    uint32_t port_ack(xhci_controller* hc, uint8_t port)
+    {
+        // Writing back the change bits as read clears exactly those (they
+        // are write-1-to-clear); PED, PR, WPR and LWS would act on a 1.
+        xhci_portsc sc = read_portsc(hc, port);
+        xhci_portsc w = sc;
+        w.ped = 0;
+        w.pr = 0;
+        w.wpr = 0;
+        w.lws = 0;
+        write_portsc(hc, w, port);
+        return sc.raw;
+    }
+
     uint32_t context_entry_size(xhci_controller* hc)
     {
         return hc->ctx_entry_size;
@@ -1479,6 +1525,36 @@ namespace xhci
     bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring)
     {
         return ::reset_endpoint(hc, slot, dci, ring);
+    }
+
+    void disable_slot(xhci_controller* hc, uint8_t slot)
+    {
+        // Events for it from here on have nowhere to go.
+        for (uint8_t dci = 1; dci < XHCI_MAX_DCI; dci++)
+            set_ring(hc, slot, dci, nullptr);
+
+        xhci_trb_t cmd;
+        memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+        cmd.control = (XHCI_TRB_TYPE_DISABLE_SLOT_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot << 24);
+        xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 500);
+        if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+        {
+            // The controller may still use the context: it is not freed.
+            uart::printf("xhci: disable slot %u failed code=%u\n", (uint32_t)slot,
+                         cc ? (uint32_t)cc->completion_code : 0);
+            return;
+        }
+
+        free_xhci_memory((void*)hc->dcbaa_virt[slot]);
+        hc->dcbaa[slot] = 0;
+        hc->dcbaa_virt[slot] = 0;
+    }
+
+    void free_ring(xhci_transfer_ring* ring)
+    {
+        if (ring->trbs)
+            free_xhci_memory(ring->trbs);
+        memory::memset((uint8_t*)ring, 0, sizeof(*ring));
     }
 
     bool control(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,

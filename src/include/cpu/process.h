@@ -103,6 +103,12 @@ namespace process
     // ends - a crash or Ctrl+Alt+C - while the programs it started run on.
     void start_cmdkeeper();
 
+    // A kernel process (no user address space) running entry(nullptr): a
+    // driver's work that has to wait, off the interrupt path. It sleeps on
+    // wait queues (wait.h) like any thread.
+    struct Process;
+    Process* start_kernel_process(const char* name, void (*entry)(void*));
+
     // The rest of the boot task's life: run whatever can run, halt when
     // nothing can. Never returns.
     __attribute__((noreturn)) void idle();

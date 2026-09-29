@@ -65,7 +65,7 @@ static const uint8_t modifier_keys[8] = {
 
 struct hid_kbd
 {
-    usb_device* dev;
+    usb_device* dev;            // null: a free entry
     usb_endpoint* ep;
     uint8_t interface;
     uint8_t* report;            // DMA: the report being received
@@ -79,7 +79,6 @@ struct hid_kbd
 
 #define MAX_KEYBOARDS 4
 static hid_kbd keyboards[MAX_KEYBOARDS];
-static volatile uint8_t keyboard_count = 0;
 
 static uint8_t key_of(uint8_t usage)
 {
@@ -145,6 +144,8 @@ static void take_report(hid_kbd* kb, const uint8_t* r)
 static void report_done(usb_endpoint* ep, usb_status status, uint32_t actual)
 {
     hid_kbd* kb = (hid_kbd*)ep->owner;
+    if (!kb->dev)
+        return;         // unplugged meanwhile
     if (status != USB_OK)
     {
         // Recovering needs synchronous requests, which cannot be made from
@@ -170,10 +171,10 @@ static void hid_kbd_tick()
     uint64_t now = pit::uptime_ms();
     uint8_t locks = kbd::locks();
 
-    for (uint8_t i = 0; i < keyboard_count; i++)
+    for (uint8_t i = 0; i < MAX_KEYBOARDS; i++)
     {
         hid_kbd* kb = &keyboards[i];
-        if (kb->failed)
+        if (!kb->dev || kb->failed)
             continue;
 
         if (kb->repeat_key && now >= kb->repeat_at)
@@ -203,7 +204,11 @@ static bool hid_kbd_probe(usb_device* dev, const usb_interface_descriptor* iface
     if (iface->bInterfaceClass != USB_CLASS_HID || iface->bInterfaceSubClass != HID_SUBCLASS_BOOT ||
         iface->bInterfaceProtocol != HID_PROTOCOL_KEYBOARD)
         return false;
-    if (keyboard_count >= MAX_KEYBOARDS)
+    hid_kbd* kb = nullptr;
+    for (uint8_t i = 0; i < MAX_KEYBOARDS && !kb; i++)
+        if (!keyboards[i].dev)
+            kb = &keyboards[i];
+    if (!kb)
     {
         uart::printf("hid: too many keyboards\n");
         return false;
@@ -240,23 +245,25 @@ static bool hid_kbd_probe(usb_device* dev, const usb_interface_descriptor* iface
     if (usb::open_endpoints(dev, &int_in, 1, &ep) != USB_OK)
         return false;
 
-    hid_kbd* kb = &keyboards[keyboard_count];
     memory::memset((uint8_t*)kb, 0, sizeof(*kb));
-    kb->dev = dev;
     kb->ep = ep;
     kb->interface = iface->bInterfaceNumber;
     kb->report = (uint8_t*)usb::dma_alloc(REPORT_LEN);
     kb->led_buf = (uint8_t*)usb::dma_alloc(1);
     kb->leds = 0xFF;
     if (!kb->report || !kb->led_buf)
+    {
+        usb::dma_free(kb->report);
+        usb::dma_free(kb->led_buf);
         return false;
+    }
 
     ep->on_complete = report_done;
     ep->owner = kb;
 
-    // Counted before the first report can come: the tick walks only the
-    // keyboards counted, and this one is complete by now.
-    keyboard_count++;
+    // Live from here on - for the tick too, which may come at any moment -
+    // and complete by now.
+    kb->dev = dev;
     usb::submit_in(dev, ep, kb->report, REPORT_LEN);
 
     uart::printf("hid: keyboard on slot %u, interface %u\n", (uint32_t)dev->slot,
@@ -264,4 +271,27 @@ static bool hid_kbd_probe(usb_device* dev, const usb_interface_descriptor* iface
     return true;
 }
 
-extern const usb_class_driver hid_kbd_driver = { "hid-kbd", hid_kbd_probe, hid_kbd_tick };
+static void hid_kbd_disconnect(usb_device* dev)
+{
+    for (uint8_t i = 0; i < MAX_KEYBOARDS; i++)
+    {
+        hid_kbd* kb = &keyboards[i];
+        if (kb->dev != dev)
+            continue;
+
+        // Off the tick's list first; then the keys it held down go up, so
+        // no Shift or Ctrl stays pressed for the other keyboards.
+        kb->dev = nullptr;
+        kb->repeat_key = 0;
+        uint8_t none[REPORT_LEN] = {};
+        take_report(kb, none);
+
+        usb::dma_free(kb->report);
+        usb::dma_free(kb->led_buf);
+        uart::printf("hid: keyboard on slot %u gone\n", (uint32_t)dev->slot);
+    }
+}
+
+extern const usb_class_driver hid_kbd_driver = {
+    "hid-kbd", hid_kbd_probe, hid_kbd_disconnect, hid_kbd_tick
+};

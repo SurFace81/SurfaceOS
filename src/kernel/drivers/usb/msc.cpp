@@ -67,6 +67,8 @@ struct msc_dev
     // SYNCHRONIZE CACHE was rejected as an unknown command: the device has
     // no cache it lets us flush, so flushes are skipped from then on.
     bool no_sync_cache;
+    // Unplugged: its disk stays registered, but every request fails.
+    bool gone;
 };
 
 #define MAX_MSC_DEVS 8
@@ -293,6 +295,8 @@ static bool request_fits(msc_dev* m, uint64_t lba, uint32_t count)
 static sint64_t msc_read(blkdev* bdev, uint64_t lba, uint32_t count, void* buf)
 {
     msc_dev* m = (msc_dev*)bdev->priv;
+    if (m->gone)
+        return -EIO;
     if (!request_fits(m, lba, count))
         return -EINVAL;
     if (!scsi_read_write_10(m, SCSI_READ_10, (uint32_t)lba, (uint16_t)count))
@@ -304,6 +308,8 @@ static sint64_t msc_read(blkdev* bdev, uint64_t lba, uint32_t count, void* buf)
 static sint64_t msc_write(blkdev* bdev, uint64_t lba, uint32_t count, const void* buf)
 {
     msc_dev* m = (msc_dev*)bdev->priv;
+    if (m->gone)
+        return -EIO;
     if (!request_fits(m, lba, count))
         return -EINVAL;
     memory::memcpy(m->dma_buf, (const uint8_t*)buf, count * m->block_size);
@@ -312,7 +318,10 @@ static sint64_t msc_write(blkdev* bdev, uint64_t lba, uint32_t count, const void
 
 static sint64_t msc_flush(blkdev* bdev)
 {
-    return scsi_synchronize_cache((msc_dev*)bdev->priv) ? 0 : -EIO;
+    msc_dev* m = (msc_dev*)bdev->priv;
+    if (m->gone)
+        return -EIO;
+    return scsi_synchronize_cache(m) ? 0 : -EIO;
 }
 
 static blkdev_ops msc_ops = { msc_read, msc_write, msc_flush };
@@ -417,4 +426,19 @@ static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
     return true;
 }
 
-extern const usb_class_driver msc_driver = { "msc", msc_probe, nullptr };
+static void msc_disconnect(usb_device* dev)
+{
+    for (uint8_t i = 0; i < msc_count; i++)
+    {
+        msc_dev* m = &msc_devs[i];
+        if (m->gone || m->dev != dev)
+            continue;
+        uart::printf("msc: usb%u: device gone, its disk fails from now on\n", (uint32_t)i);
+        m->gone = true;
+        m->dev = nullptr;
+        usb::dma_free(m->dma_buf);
+        m->dma_buf = nullptr;
+    }
+}
+
+extern const usb_class_driver msc_driver = { "msc", msc_probe, msc_disconnect, nullptr };

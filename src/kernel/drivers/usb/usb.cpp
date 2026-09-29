@@ -2,6 +2,9 @@
 // device says about itself, and which class driver takes it.
 
 #include "../../../include/drivers/usb/usb.h"
+#include "../../../include/drivers/pit.h"
+#include "../../../include/cpu/process.h"
+#include "../../../include/cpu/wait.h"
 
 // The class drivers, each in its own file. Enumeration offers each
 // interface of each device to them in this order.
@@ -14,8 +17,11 @@ static const usb_class_driver* const class_drivers[] = {
 };
 
 #define MAX_USB_DEVICES 32
+// Entries are reused once their device is gone; in_use marks the live ones.
 static usb_device devices[MAX_USB_DEVICES];
-static uint8_t device_count = 0;
+
+// The usb kernel process sleeps here until a port changes (hotplug below).
+static wait_queue hotplug_wq;
 
 // Longest configuration descriptor we read; the rest is cut off.
 static const uint16_t MAX_CONFIG_LEN = 1024;
@@ -81,11 +87,10 @@ static uint16_t max_packet_size_for_speed(uint8_t speed)
 // takes its devices with it.
 static void reset_devices()
 {
-    for (uint8_t i = 0; i < device_count; i++)
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
         if (devices[i].config)
             kfree(devices[i].config);
     memory::memset((uint8_t*)devices, 0, sizeof(devices));
-    device_count = 0;
 }
 
 // "046f" for 0x046F: four hex digits and a terminator.
@@ -249,13 +254,16 @@ static void enumerate_port(xhci_controller* hc, uint8_t port)
         uart::printf("usb: port %u: reset failed\n", (uint32_t)port);
         return;
     }
-    if (device_count >= MAX_USB_DEVICES)
+    usb_device* dev = nullptr;
+    for (uint8_t i = 0; i < MAX_USB_DEVICES && !dev; i++)
+        if (!devices[i].in_use)
+            dev = &devices[i];
+    if (!dev)
     {
         uart::printf("usb: port %u: too many devices\n", (uint32_t)port);
         return;
     }
 
-    usb_device* dev = &devices[device_count];
     memory::memset((uint8_t*)dev, 0, sizeof(*dev));
     dev->hc = hc;
     dev->port = port;
@@ -272,11 +280,15 @@ static void enumerate_port(xhci_controller* hc, uint8_t port)
     dev->ep0.dci = 1;
     dev->ep0.max_packet = max_packet_size_for_speed(dev->speed);
     if (!xhci::address_device(hc, dev->slot, port, dev->speed, dev->ep0.max_packet, &dev->ep0.ring))
+    {
+        xhci::disable_slot(hc, dev->slot);
+        xhci::free_ring(&dev->ep0.ring);
         return;
+    }
 
     // From here on the controller knows the device, and its EP0 ring lives
     // in this entry: keep it, even if the descriptors cannot be read.
-    device_count++;
+    dev->in_use = true;
 
     if (!read_descriptors(dev))
         return;
@@ -291,6 +303,97 @@ static void enumerate_port(xhci_controller* hc, uint8_t port)
     attach_drivers(dev);
 }
 
+// The device on a port that is gone: the drivers let go of it, the
+// controller forgets it, and its entry is free again.
+static void detach(usb_device* dev)
+{
+    uart::printf("usb: port %u slot %u: disconnected\n", (uint32_t)dev->port, (uint32_t)dev->slot);
+
+    // No request reaches it from here on, and after disable_slot no event
+    // reaches its rings - so the drivers can free what the controller wrote
+    // into.
+    dev->gone = true;
+    xhci::disable_slot(dev->hc, dev->slot);
+    for (const usb_class_driver* drv : class_drivers)
+        if (drv->disconnect)
+            drv->disconnect(dev);
+
+    xhci::free_ring(&dev->ep0.ring);
+    for (uint8_t i = 0; i < dev->ep_count; i++)
+        xhci::free_ring(&dev->eps[i].ring);
+    if (dev->config)
+        kfree(dev->config);
+    memory::memset((uint8_t*)dev, 0, sizeof(*dev));
+}
+
+static usb_device* device_on(xhci_controller* hc, uint8_t port)
+{
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+        if (devices[i].in_use && devices[i].hc == hc && devices[i].port == port)
+            return &devices[i];
+    return nullptr;
+}
+
+static uint8_t devices_on(xhci_controller* hc)
+{
+    uint8_t n = 0;
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+        if (devices[i].in_use && devices[i].hc == hc)
+            n++;
+    return n;
+}
+
+// Hotplug: a port whose state changed. Its device, if it had one, is gone
+// when the port is empty or saw a new connection (a quick unplug and plug
+// in); a connected port with no device gets one. Everything else - the
+// changes a port reset leaves behind - needs nothing.
+static void port_changed(xhci_controller* hc, uint8_t port)
+{
+    uint32_t sc = xhci::port_ack(hc, port);
+    bool connected = sc & (1u << 0);            // CCS
+    bool new_connection = sc & (1u << 17);      // CSC
+
+    usb_device* dev = device_on(hc, port);
+    if (dev && (!connected || new_connection))
+    {
+        detach(dev);
+        dev = nullptr;
+    }
+    if (!connected || dev)
+        return;
+
+    // Contacts bounce as a plug goes in; the device is looked at once the
+    // port has stayed connected for a while.
+    wait::sleep_until(pit::deadline_ms(XHCI_PORT_DEBOUNCE_MS));
+    if (xhci::port_connected(hc, port) && !device_on(hc, port))
+        enumerate_port(hc, port);
+}
+
+static bool any_port_changed(void*)
+{
+    for (uint8_t i = 0; xhci::controller(i); i++)
+        if (xhci::ports_changed(xhci::controller(i)))
+            return true;
+    return false;
+}
+
+// The usb kernel process: plugging in and pulling out, handled where
+// waiting is allowed. The timer tick wakes it.
+static void hotplug_main(void*)
+{
+    for (;;)
+    {
+        wait::wait_event(&hotplug_wq, any_port_changed, nullptr, 0);
+        for (uint8_t i = 0; xhci::controller(i); i++)
+        {
+            xhci_controller* hc = xhci::controller(i);
+            uint8_t port;
+            while (xhci::take_port_change(hc, &port))
+                port_changed(hc, port);
+        }
+    }
+}
+
 static void enumerate_controller(xhci_controller* hc)
 {
     for (uint8_t port = 0; port < xhci::port_count(hc); port++)
@@ -301,8 +404,8 @@ static void enumerate_controller(xhci_controller* hc)
 static uint8_t devices_with_driver()
 {
     uint8_t n = 0;
-    for (uint8_t i = 0; i < device_count; i++)
-        if (devices[i].driver)
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+        if (devices[i].in_use && devices[i].driver)
             n++;
     return n;
 }
@@ -336,7 +439,6 @@ namespace usb
         {
             xhci_controller* hc = xhci::controller(i);
             PCIDevice* pci = xhci::pci_device(hc);
-            uint8_t before = device_count;
 
             if (!xhci::start(hc))
             {
@@ -346,10 +448,15 @@ namespace usb
             enumerate_controller(hc);
             uart::printf("xhci: controller %u:%u.%u: %u device(s)\n",
                          (uint32_t)pci->bus, (uint32_t)pci->device, (uint32_t)pci->function,
-                         (uint32_t)(device_count - before));
+                         (uint32_t)devices_on(hc));
         }
 
         return devices_with_driver() > 0;
+    }
+
+    void start_hotplug()
+    {
+        process::start_kernel_process("usb", hotplug_main);
     }
 
     const usb_endpoint_descriptor* interface_endpoint(usb_device* dev,
@@ -439,6 +546,9 @@ namespace usb
     usb_status control(usb_device* dev, uint8_t request_type, uint8_t request, uint16_t value,
                        uint16_t index, void* data, uint16_t length, uint16_t* actual)
     {
+        if (dev->gone)
+            return USB_ERR_NO_DEVICE;
+
         uint8_t setup[8];
         setup_packet(setup, request_type, request, value, index, length);
         bool in = (request_type & USB_DIR_IN) != 0;
@@ -486,6 +596,8 @@ namespace usb
     usb_status bulk(usb_device* dev, usb_endpoint* ep, void* dma_buf, uint32_t length,
                     uint32_t* actual, uint32_t timeout_ms)
     {
+        if (dev->gone)
+            return USB_ERR_NO_DEVICE;
         if (length > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
 
@@ -526,6 +638,8 @@ namespace usb
 
     usb_status submit_in(usb_device* dev, usb_endpoint* ep, void* dma_buf, uint32_t length)
     {
+        if (dev->gone)
+            return USB_ERR_NO_DEVICE;
         if (!ep->on_complete || length > USB_MAX_XFER_BYTES)
             return USB_ERR_INVALID_PARAM;
         ep->submitted = length;
@@ -538,6 +652,8 @@ namespace usb
     usb_status control_start(usb_device* dev, uint8_t request_type, uint8_t request, uint16_t value,
                              uint16_t index, void* dma_buf, uint16_t length)
     {
+        if (dev->gone)
+            return USB_ERR_NO_DEVICE;
         if (control_pending(dev))
             return USB_ERR_NOT_READY;
         uint8_t setup[8];
@@ -559,6 +675,8 @@ namespace usb
     {
         for (uint8_t i = 0; xhci::controller(i); i++)
             xhci::poll(xhci::controller(i));
+        if (any_port_changed(nullptr))
+            wait::wake_up(&hotplug_wq);
         for (const usb_class_driver* drv : class_drivers)
             if (drv->tick)
                 drv->tick();
@@ -635,17 +753,25 @@ namespace usb
 
     uint8_t get_device_count()
     {
-        return device_count;
+        uint8_t n = 0;
+        for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+            if (devices[i].in_use)
+                n++;
+        return n;
     }
 
     usb_status get_device_info(uint8_t index, usb_device_info* out)
     {
-        if (index >= device_count)
-            return USB_ERR_NOT_FOUND;
         if (!out)
             return USB_ERR_INVALID_PARAM;
 
-        const usb_device* dev = &devices[index];
+        // The index-th live device.
+        const usb_device* dev = nullptr;
+        for (uint8_t i = 0; i < MAX_USB_DEVICES && !dev; i++)
+            if (devices[i].in_use && index-- == 0)
+                dev = &devices[i];
+        if (!dev)
+            return USB_ERR_NOT_FOUND;
         memory::memset((uint8_t*)out, 0, sizeof(*out));
         out->controller = controller_index(dev->hc);
         out->slot_id = dev->slot;
