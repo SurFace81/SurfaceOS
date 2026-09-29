@@ -15,10 +15,6 @@ static const usb_class_driver* const class_drivers[] = {
 static usb_device devices[MAX_USB_DEVICES];
 static uint8_t device_count = 0;
 
-// The controller we drive; lsusb/boot diagnostics report it on machines
-// with no serial port.
-static xhci_controller* active = nullptr;
-
 // Longest configuration descriptor we read; the rest is cut off.
 static const uint16_t MAX_CONFIG_LEN = 1024;
 
@@ -281,11 +277,18 @@ static uint8_t devices_with_driver()
     return n;
 }
 
+static uint8_t controller_index(xhci_controller* hc)
+{
+    uint8_t i = 0;
+    while (xhci::controller(i) && xhci::controller(i) != hc)
+        i++;
+    return i;
+}
+
 namespace usb
 {
     bool init()
     {
-        active = nullptr;
         reset_devices();
 
         uint8_t count = xhci::find_controllers();
@@ -296,62 +299,27 @@ namespace usb
         }
         uart::printf("xhci: %u controller(s) found\n", (uint32_t)count);
 
-        // Try them in turn and keep the first that has a device a driver
-        // took. One that has none is halted again before the next attempt,
-        // so an abandoned controller cannot keep DMAing into memory its
-        // successor is about to allocate.
-        uint8_t best = 0;
-        uint8_t best_devices = 0;
-        bool have_best = false;
-
+        // All of them stay running, the empty ones too: a device can be on
+        // any, and a laptop's user-facing ports may well sit on the second
+        // controller.
         for (uint8_t i = 0; i < count; i++)
         {
             xhci_controller* hc = xhci::controller(i);
             PCIDevice* pci = xhci::pci_device(hc);
-            reset_devices();
-            if (xhci::start(hc))
-                enumerate_controller(hc);
+            uint8_t before = device_count;
 
-            if (devices_with_driver() > 0)
+            if (!xhci::start(hc))
             {
-                active = hc;
-                uart::printf("xhci: using controller %u:%u.%u (%u device(s) with a driver)\n",
-                             (uint32_t)pci->bus, (uint32_t)pci->device, (uint32_t)pci->function,
-                             (uint32_t)devices_with_driver());
-                return true;
-            }
-
-            if (!have_best || device_count > best_devices)
-            {
-                best = i;
-                best_devices = device_count;
-                have_best = true;
-            }
-
-            uart::printf("xhci: controller %u:%u.%u: %u device(s), none with a driver\n",
-                         (uint32_t)pci->bus, (uint32_t)pci->device, (uint32_t)pci->function,
-                         (uint32_t)device_count);
-
-            if (i + 1 < count)
                 xhci::stop(hc);
+                continue;
+            }
+            enumerate_controller(hc);
+            uart::printf("xhci: controller %u:%u.%u: %u device(s)\n",
+                         (uint32_t)pci->bus, (uint32_t)pci->device, (uint32_t)pci->function,
+                         (uint32_t)(device_count - before));
         }
 
-        // Nothing usable anywhere. Leave the controller that at least saw
-        // devices running, so lsusb/usbinfo still have something to report.
-        // The last one tried is still running; it stops before the best one
-        // restarts.
-        if (best_devices > 0 && best != count - 1)
-        {
-            xhci::stop(xhci::controller(count - 1));
-            reset_devices();
-            active = xhci::controller(best);
-            if (xhci::start(active))
-                enumerate_controller(active);
-        }
-        else
-            active = xhci::controller(count - 1);
-
-        return false;
+        return devices_with_driver() > 0;
     }
 
     const usb_endpoint_descriptor* interface_endpoint(usb_device* dev,
@@ -557,28 +525,6 @@ namespace usb
         return usb_speed_str(speed);
     }
 
-    uint32_t get_context_entry_size()
-    {
-        return active ? xhci::context_entry_size(active) : 32;
-    }
-
-    uint8_t get_port_count()
-    {
-        return active ? xhci::port_count(active) : 0;
-    }
-
-    // Raw PORTSC of one root port, for `usbports`. Zero when no controller
-    // came up, which the caller reports as such.
-    uint32_t get_port_status(uint8_t port)
-    {
-        return active ? xhci::port_status(active, port) : 0;
-    }
-
-    bool port_is_usb3(uint8_t port)
-    {
-        return active && xhci::port_is_usb3(active, port);
-    }
-
     uint8_t get_controller_count()
     {
         uint8_t n = 0;
@@ -587,14 +533,39 @@ namespace usb
         return n;
     }
 
-    // Bus/device/function of the controller we are driving, or 0:0.0 when
-    // none came up.
-    void get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn)
+    void get_controller_location(uint8_t ctrl, uint8_t* bus, uint8_t* dev, uint8_t* fn)
     {
-        PCIDevice* pci = active ? xhci::pci_device(active) : nullptr;
+        xhci_controller* hc = xhci::controller(ctrl);
+        PCIDevice* pci = hc ? xhci::pci_device(hc) : nullptr;
         *bus = pci ? pci->bus : 0;
         *dev = pci ? pci->device : 0;
         *fn  = pci ? pci->function : 0;
+    }
+
+    uint32_t get_context_entry_size(uint8_t ctrl)
+    {
+        xhci_controller* hc = xhci::controller(ctrl);
+        return hc ? xhci::context_entry_size(hc) : 32;
+    }
+
+    uint8_t get_port_count(uint8_t ctrl)
+    {
+        xhci_controller* hc = xhci::controller(ctrl);
+        return hc ? xhci::port_count(hc) : 0;
+    }
+
+    // Raw PORTSC of one root port, for `usbports`. Zero when the controller
+    // did not come up, which the caller reports as such.
+    uint32_t get_port_status(uint8_t ctrl, uint8_t port)
+    {
+        xhci_controller* hc = xhci::controller(ctrl);
+        return hc ? xhci::port_status(hc, port) : 0;
+    }
+
+    bool port_is_usb3(uint8_t ctrl, uint8_t port)
+    {
+        xhci_controller* hc = xhci::controller(ctrl);
+        return hc && xhci::port_is_usb3(hc, port);
     }
 
     uint8_t get_device_count()
@@ -611,6 +582,7 @@ namespace usb
 
         const usb_device* dev = &devices[index];
         memory::memset((uint8_t*)out, 0, sizeof(*out));
+        out->controller = controller_index(dev->hc);
         out->slot_id = dev->slot;
         out->port_index = dev->port;
         out->port_speed = dev->speed;

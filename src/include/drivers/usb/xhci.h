@@ -453,7 +453,8 @@ namespace xhci
     PCIDevice* pci_device(xhci_controller* hc);
 
     // Reset and start a controller, power its ports and wait for what is
-    // attached to show up. False when it cannot be brought up.
+    // attached to show up. False when it cannot be brought up; its ports
+    // then read as none.
     bool start(xhci_controller* hc);
     // Halt it: it stops reading our rings.
     void stop(xhci_controller* hc);

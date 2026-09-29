@@ -226,6 +226,7 @@ struct xhci_supported_protocol
 struct xhci_controller
 {
     PCIDevice* pci;
+    bool running;                   // started and not stopped since
     uintptr_t base;
     volatile xhci_cap_regs* cap_regs;
     volatile xhci_op_regs* op_regs;
@@ -1404,22 +1405,24 @@ namespace xhci
 
     bool start(xhci_controller* hc)
     {
-        return ::start(hc);
+        hc->running = ::start(hc);
+        return hc->running;
     }
 
     void stop(xhci_controller* hc)
     {
         stop_controller(hc);
+        hc->running = false;
     }
 
     uint8_t port_count(xhci_controller* hc)
     {
-        return hc->op_regs ? hc->max_ports : 0;
+        return hc->running ? hc->max_ports : 0;
     }
 
     uint32_t port_status(xhci_controller* hc, uint8_t port)
     {
-        if (!hc->op_regs || port >= hc->max_ports)
+        if (!hc->running || port >= hc->max_ports)
             return 0;
         return read_portsc(hc, port).raw;
     }

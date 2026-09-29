@@ -146,6 +146,7 @@ struct usb_class_driver
 
 // For lsusb/usbinfo.
 struct usb_device_info {
+    uint8_t  controller;        // index, as get_controller_location() takes
     uint8_t  slot_id;
     uint8_t  port_index;
     uint8_t  port_speed;
@@ -162,8 +163,8 @@ struct usb_device_info {
 
 namespace usb
 {
-    // Bring up the controllers and enumerate what is attached. False when
-    // no device ended up with a driver.
+    // Bring up every controller and enumerate what is attached. False
+    // when no device ended up with a driver.
     bool init();
 
     // --- For class drivers --------------------------------------------------
@@ -201,12 +202,14 @@ namespace usb
 
     // --- For reports ---------------------------------------------------------
 
-    uint32_t   get_context_entry_size();
-    uint8_t    get_port_count();
-    uint32_t   get_port_status(uint8_t port);
-    bool       port_is_usb3(uint8_t port);
+    // Controllers by index, 0 .. get_controller_count() - 1. One that did
+    // not come up has no ports.
     uint8_t    get_controller_count();
-    void       get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn);
+    void       get_controller_location(uint8_t ctrl, uint8_t* bus, uint8_t* dev, uint8_t* fn);
+    uint32_t   get_context_entry_size(uint8_t ctrl);
+    uint8_t    get_port_count(uint8_t ctrl);
+    uint32_t   get_port_status(uint8_t ctrl, uint8_t port);
+    bool       port_is_usb3(uint8_t ctrl, uint8_t port);
     uint8_t    get_device_count();
     usb_status get_device_info(uint8_t index, usb_device_info* out);
 

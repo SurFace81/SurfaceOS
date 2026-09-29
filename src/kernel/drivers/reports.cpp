@@ -118,35 +118,44 @@ static void cmd_dmesg(int argc, const char** argv)
     }
 }
 
-// usbports: the raw root-port state of the active controller. The one thing
+// usbports: the raw root-port state of every controller. The one thing
 // worth photographing when a machine enumerates nothing: it separates "no
 // controller", "port unpowered", "nothing plugged in" and "device present but
 // enumeration failed".
 static void cmd_usbports(int argc, const char** argv)
 {
-    uint8_t ports = usb::get_port_count();
+    uint8_t controllers = usb::get_controller_count();
     screen::printf("\n\r");
-    screen::printf("\n\r Root ports: %u   context entry: %u bytes",
-                   (uint32_t)ports, usb::get_context_entry_size());
-
-    if (ports == 0)
+    if (controllers == 0)
     {
-        screen::printf("\n\r No controller running");
+        screen::printf("\n\r No controller found");
         return;
     }
 
-    for (uint8_t i = 0; i < ports; i++)
+    for (uint8_t c = 0; c < controllers; c++)
     {
-        uint32_t raw = usb::get_port_status(i);
-        char hex[9];
-        hex_to_str(raw, hex, 8);
+        uint8_t bus, dev, fn;
+        usb::get_controller_location(c, &bus, &dev, &fn);
+        uint8_t ports = usb::get_port_count(c);
+        screen::printf("\n\r Controller %u (%u:%u.%u): %u root ports, context entry %u bytes",
+                       (uint32_t)c, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn,
+                       (uint32_t)ports, usb::get_context_entry_size(c));
+        if (ports == 0)
+            screen::printf("\n\r  not running");
 
-        screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
-            (uint32_t)i,
-            usb::port_is_usb3(i) ? "usb3" : "usb2",
-            hex,
-            raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
-            (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+        for (uint8_t i = 0; i < ports; i++)
+        {
+            uint32_t raw = usb::get_port_status(c, i);
+            char hex[9];
+            hex_to_str(raw, hex, 8);
+
+            screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
+                (uint32_t)i,
+                usb::port_is_usb3(c, i) ? "usb3" : "usb2",
+                hex,
+                raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
+                (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+        }
     }
 }
 
@@ -173,8 +182,9 @@ static void cmd_lsusb(int argc, const char** argv)
         hex_to_str(info.vendor_id, vid, 4);
         hex_to_str(info.product_id, pid, 4);
 
-        screen::printf("\n\r  [%u] %s:%s  slot=%u port=%u  %s",
+        screen::printf("\n\r  [%u] %s:%s  ctrl=%u slot=%u port=%u  %s",
             (uint32_t)i, vid, pid,
+            (uint32_t)info.controller,
             (uint32_t)info.slot_id, 
             (uint32_t)info.port_index, 
             usb::get_usb_speed_str(info.port_speed));
@@ -223,6 +233,10 @@ static void cmd_usbinfo(int argc, const char** argv)
     screen::printf("\n\r  Product ID:    0x%s", pid);
     screen::printf("\n\r  USB Version:   %c.%c%c", bcd[1], bcd[2], bcd[3]);
     screen::printf("\n\r  Speed:         %s", usb::get_usb_speed_str(info.port_speed));
+    uint8_t bus, dev, fn;
+    usb::get_controller_location(info.controller, &bus, &dev, &fn);
+    screen::printf("\n\r  Controller:    %u (%u:%u.%u)", (uint32_t)info.controller,
+                   (uint32_t)bus, (uint32_t)dev, (uint32_t)fn);
     screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
     screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
     screen::printf("\n\r  Class:         %s (%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
