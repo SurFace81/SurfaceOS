@@ -5,10 +5,10 @@
 
 // Unified block device interface (stage 3.2).
 //
-// Drivers (today: USB MSD in xhci.cpp) register whole disks; part.cpp
-// registers partitions as children of a disk with an lba_offset. Everything
-// above (bcache, FAT32, ...) talks only to this interface and never to a
-// specific bus.
+// Drivers (today: USB MSD in drivers/usb/msc.cpp) register whole disks;
+// part.cpp registers partitions as children of a disk with an lba_offset.
+// Everything above (bcache, FAT32, ...) talks only to this interface and
+// never to a specific bus.
 //
 // All calls return 0 on success or a negative errno. Sizes and LBAs are
 // 64-bit; the driver enforces its own per-request limit via
@@ -33,7 +33,7 @@ struct blkdev
     uint64_t    sector_count;
     uint32_t    max_sectors_per_io; // driver limit; blkdev splits above it
     blkdev_ops* ops;
-    void*       priv;               // driver-private (e.g. usb device index)
+    void*       priv;               // driver-private (e.g. its device state)
 
     // Partitions: parent != nullptr, and lba_offset is the partition start
     // on the parent. Whole disks leave both zero/null.
@@ -43,12 +43,8 @@ struct blkdev
 
 namespace block
 {
-    // Register whole disks behind every USB mass-storage device: usb0..usbN.
-    // Devices READ CAPACITY reports as >= 2 TiB (LBA32 overflow marker) are
-    // rejected with an explicit message - READ(16) does not exist yet.
-    void enumerate_usb();
-
-    // Register an externally built device (partitions). 0 or -errno.
+    // Register a device a driver built (whole disks; partitions come from
+    // alloc_partition). The registry keeps a copy. 0 or -errno.
     sint64_t register_dev(blkdev* dev);
 
     // Allocate a zeroed blkdev for a partition of `parent` from the static

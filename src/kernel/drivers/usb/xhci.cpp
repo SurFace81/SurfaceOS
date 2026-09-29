@@ -1,3 +1,7 @@
+// xHCI host controller: registers, rings, commands, events, ports and
+// device contexts. What goes over the wire - descriptors, classes - is the
+// USB core's (usb.cpp); this file only moves TRBs.
+
 #include "../../../include/drivers/usb/xhci.h"
 #include "../../../include/drivers/pit.h"
 
@@ -180,64 +184,6 @@ static const char* completion_code_str(uint8_t code)
             return "UNKNOWN";
     }
 }
-
-static const char* usb_speed_str(uint8_t speed)
-{
-    switch (speed)
-    {
-        case 1: return "Full (12 Mb/s)";
-        case 2: return "Low (1.5 Mb/s)";
-        case 3: return "High (480 Mb/s)";
-        case 4: return "SS (5 Gb/s)";
-        case 5: return "SS+ (10 Gb/s)";
-        default: return "Unknown";
-    }
-}
-
-static const char* usb_class_name(uint8_t cls)
-{
-    switch (cls)
-    {
-        case 0x00: return "Composite";
-        case 0x01: return "Audio";
-        case 0x02: return "CDC";
-        case 0x03: return "HID";
-        case 0x05: return "Physical";
-        case 0x06: return "Image";
-        case 0x07: return "Printer";
-        case 0x08: return "Mass Storage";
-        case 0x09: return "Hub";
-        case 0x0A: return "CDC-Data";
-        case 0x0B: return "Smart Card";
-        case 0x0E: return "Video";
-        case 0x0F: return "Healthcare";
-        case 0xE0: return "Wireless";
-        case 0xEF: return "Misc";
-        case 0xFE: return "App Specific";
-        case 0xFF: return "Vendor Specific";
-        default:   return "Unknown";
-    }
-}
-
-static uint16_t max_packet_size_for_speed(uint8_t speed)
-{
-    switch (speed)
-    {
-        case 1:
-            return 64;
-        case 2:
-            return 8;
-        case 3:
-            return 64;
-        case 4:
-            return 512;
-        case 5:
-            return 512;
-        default:
-            return 64;
-    }
-}
-
 // Internal ring structures
 
 struct xhci_cmd_ring
@@ -260,22 +206,6 @@ struct xhci_evt_ring
     uint8_t cycle_bit;
 };
 
-struct xhci_transfer_ring
-{
-    xhci_trb_t* trbs;
-    uintptr_t phys_base;
-    size_t max_trb_count;
-    size_t enqueue_ptr;
-    uint8_t cycle_bit;
-
-    // How the transfer last started on this ring ended, filled in by
-    // process_events(): `done` once its final event arrived, with that
-    // event's completion code, and the bytes a short packet left untouched.
-    volatile bool done;
-    uint8_t cc;
-    uint32_t residue;
-};
-
 // Extended capability: Supported Protocol (spec section 7.2)
 struct xhci_supported_protocol
 {
@@ -289,30 +219,6 @@ struct xhci_supported_protocol
     uint8_t protocol_defined;
     uint8_t psic;
     uint32_t dword3;
-};
-
-// Internal per-device mass storage state
-struct xhci_controller;
-
-struct usb_mass_storage_dev
-{
-    xhci_controller* hc;
-    uint8_t slot_id;
-    uint8_t port_index;
-    uint8_t port_speed;
-    uint8_t config_value;
-    uint8_t interface_number;
-    uint8_t bulk_in_ep;
-    uint8_t bulk_out_ep;
-    uint16_t bulk_in_max_packet;
-    uint16_t bulk_out_max_packet;
-    xhci_transfer_ring bulk_in_ring;
-    xhci_transfer_ring bulk_out_ring;
-    bool configured;
-    bool found;
-    // SYNCHRONIZE CACHE was rejected as an unknown command: the device has
-    // no cache it lets us flush, so flushes are skipped from then on.
-    bool no_sync_cache;
 };
 
 // One xHCI controller: its registers, what its capability registers say,
@@ -344,7 +250,6 @@ struct xhci_controller
 
     xhci_cmd_ring cmd_ring;
     xhci_evt_ring evt_ring;
-    xhci_transfer_ring ep0_rings[XHCI_MAX_SLOTS + 1];   // by slot ID
 
     // Where a Transfer Event goes: the ring of (slot, DCI), at
     // rings[slot * XHCI_MAX_DCI + dci]; null for endpoints not in use.
@@ -362,38 +267,6 @@ struct xhci_controller
 
 static xhci_controller controllers[MAX_XHCI_CONTROLLERS];
 static uint8_t controller_count = 0;
-// The controller we drive; lsusb/boot diagnostics report it on machines
-// with no serial port.
-static xhci_controller* active = nullptr;
-
-#define MAX_MASS_STORAGE_DEVS 8
-static usb_mass_storage_dev mass_storage_devs[MAX_MASS_STORAGE_DEVS];
-static uint8_t mass_storage_count = 0;
-
-// Cached capacity per mass storage device
-static uint32_t msd_block_size[MAX_MASS_STORAGE_DEVS];
-static uint32_t msd_last_lba[MAX_MASS_STORAGE_DEVS];
-static bool msd_capacity_cached[MAX_MASS_STORAGE_DEVS];
-
-// One reusable DMA bounce buffer per device, USB_MAX_XFER_BYTES long.
-// Allocating per request made every FAT sector read a kmalloc + a
-// DMA-capable carve-out; on real USB sticks that dominated small-transfer
-// latency.
-static uint8_t* msd_dma_buf[MAX_MASS_STORAGE_DEVS];
-static uintptr_t msd_dma_phys[MAX_MASS_STORAGE_DEVS];
-static uint32_t msd_dma_size[MAX_MASS_STORAGE_DEVS];
-
-// BOT shared buffers
-static usb_cbw* shared_cbw = nullptr;
-static usb_csw* shared_csw = nullptr;
-static uintptr_t shared_cbw_phys = 0;
-static uintptr_t shared_csw_phys = 0;
-static uint32_t bot_tag = 1;
-
-// Public API device registry
-#define MAX_USB_DEVICES 64
-static usb_device_info device_infos[MAX_USB_DEVICES];
-static uint8_t device_count = 0;
 
 // Doorbell helpers
 
@@ -702,144 +575,10 @@ static bool transfer_wait(xhci_controller* hc, xhci_transfer_ring* ring, uint32_
     }
 }
 
-static bool transfer_ok(xhci_transfer_ring* ring)
+static bool transfer_ok(const xhci_transfer_ring* ring)
 {
     return ring->cc == XHCI_TRB_COMPLETION_SUCCESS || ring->cc == XHCI_TRB_COMPLETION_SHORT_PACKET;
 }
-
-// Control transfers
-
-static sint32_t control_transfer_in(xhci_controller* hc, uint8_t slot_id, uint8_t* setup_packet, void* buffer, uintptr_t buffer_phys,
-                                    uint16_t data_length)
-{
-    xhci_transfer_ring* ring = &hc->ep0_rings[slot_id];
-    transfer_start(ring);
-
-    // Setup Stage TRB
-    xhci_trb_t setup_trb;
-    memory::memset((uint8_t*)&setup_trb, 0, sizeof(xhci_trb_t));
-    setup_trb.parameter = (uint64_t)setup_packet[0] | ((uint64_t)setup_packet[1] << 8) |
-                          ((uint64_t)setup_packet[2] << 16) | ((uint64_t)setup_packet[3] << 24) |
-                          ((uint64_t)setup_packet[4] << 32) | ((uint64_t)setup_packet[5] << 40) |
-                          ((uint64_t)setup_packet[6] << 48) | ((uint64_t)setup_packet[7] << 56);
-    setup_trb.status = 8;
-    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 6) // IDT
-                        | (3 << 16);                                                  // TRT=3 (IN data stage)
-    transfer_ring_enqueue(ring, &setup_trb);
-
-    // Data Stage TRB
-    xhci_trb_t data_trb;
-    memory::memset((uint8_t*)&data_trb, 0, sizeof(xhci_trb_t));
-    data_trb.parameter = (uint64_t)buffer_phys;
-    data_trb.status = data_length;
-    data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 16) // DIR=IN
-                       | (1 << 2);   // ISP: a short reply is reported, with how short
-    transfer_ring_enqueue(ring, &data_trb);
-
-    // Status Stage TRB
-    xhci_trb_t status_trb;
-    memory::memset((uint8_t*)&status_trb, 0, sizeof(xhci_trb_t));
-    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 5); // IOC
-    transfer_ring_enqueue(ring, &status_trb);
-
-    ring_doorbell(hc, slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
-
-    if (!transfer_wait(hc, ring, 500))
-    {
-        uart::printf("xhci: control IN timeout slot=%u\n", (uint32_t)slot_id);
-        return -1;
-    }
-
-    if (!transfer_ok(ring))
-    {
-        uart::printf("xhci: control IN failed slot=%u code=%u (%s)\n", (uint32_t)slot_id,
-                     (uint32_t)ring->cc, completion_code_str(ring->cc));
-        return -1;
-    }
-
-    return (sint32_t)data_length - (sint32_t)ring->residue;
-}
-
-static bool control_transfer_no_data(xhci_controller* hc, uint8_t slot_id, uint8_t* setup_packet)
-{
-    xhci_transfer_ring* ring = &hc->ep0_rings[slot_id];
-    transfer_start(ring);
-
-    // Setup Stage TRB, TRT=0 (no data)
-    xhci_trb_t setup_trb;
-    memory::memset((uint8_t*)&setup_trb, 0, sizeof(xhci_trb_t));
-    setup_trb.parameter = (uint64_t)setup_packet[0] | ((uint64_t)setup_packet[1] << 8) |
-                          ((uint64_t)setup_packet[2] << 16) | ((uint64_t)setup_packet[3] << 24) |
-                          ((uint64_t)setup_packet[4] << 32) | ((uint64_t)setup_packet[5] << 40) |
-                          ((uint64_t)setup_packet[6] << 48) | ((uint64_t)setup_packet[7] << 56);
-    setup_trb.status = 8;
-    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 6); // IDT, TRT=0
-    transfer_ring_enqueue(ring, &setup_trb);
-
-    // Status Stage TRB, DIR=IN since no data stage
-    xhci_trb_t status_trb;
-    memory::memset((uint8_t*)&status_trb, 0, sizeof(xhci_trb_t));
-    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 5) // IOC
-                         | (1 << 16);                                                   // DIR=IN
-    transfer_ring_enqueue(ring, &status_trb);
-
-    ring_doorbell(hc, slot_id, XHCI_DOORBELL_TARGET_CONTROL_EP);
-
-    if (!transfer_wait(hc, ring, 500) || ring->cc != XHCI_TRB_COMPLETION_SUCCESS)
-    {
-        uart::printf("xhci: control no-data failed slot=%u\n", (uint32_t)slot_id);
-        return false;
-    }
-    return true;
-}
-
-// Bulk transfers
-
-static bool bulk_transfer_out(usb_mass_storage_dev* msd, void* data, uintptr_t data_phys, uint32_t length)
-{
-    xhci_controller* hc = msd->hc;
-    xhci_transfer_ring* ring = &msd->bulk_out_ring;
-    uint8_t out_dci = (msd->bulk_out_ep & 0x0F) * 2;
-    transfer_start(ring);
-
-    xhci_trb_t trb;
-    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
-    trb.parameter = (uint64_t)data_phys;
-    trb.status = length;
-    trb.control = (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT) | (1 << 5);
-    transfer_ring_enqueue(ring, &trb);
-
-    ring_doorbell(hc, msd->slot_id, out_dci);
-
-    if (!transfer_wait(hc, ring, 2000))
-    {
-        uart::printf("xhci: bulk OUT timeout\n");
-        return false;
-    }
-    if (!transfer_ok(ring))
-    {
-        uart::printf("xhci: bulk OUT failed code=%u (%s)\n", (uint32_t)ring->cc,
-                     completion_code_str(ring->cc));
-        return false;
-    }
-    return true;
-}
-
-// Clear STALL on an endpoint
-static bool clear_endpoint_halt(xhci_controller* hc, uint8_t slot_id, uint8_t endpoint_address)
-{
-    uint8_t setup[8];
-    setup[0] = 0x02;
-    setup[1] = 0x01;
-    setup[2] = 0x00;
-    setup[3] = 0x00;
-    setup[4] = endpoint_address;
-    setup[5] = 0x00;
-    setup[6] = 0x00;
-    setup[7] = 0x00;
-    return control_transfer_no_data(hc, slot_id, setup);
-}
-
 // Reset endpoint and set new dequeue pointer
 static bool reset_endpoint(xhci_controller* hc, uint8_t slot_id, uint8_t dci, xhci_transfer_ring* ring)
 {
@@ -868,330 +607,6 @@ static bool reset_endpoint(xhci_controller* hc, uint8_t slot_id, uint8_t dci, xh
         uart::printf("xhci: set TR dequeue ptr failed dci=%u\n", (uint32_t)dci);
         return false;
     }
-    return true;
-}
-
-static bool recover_from_stall(usb_mass_storage_dev* msd, uint8_t endpoint_address)
-{
-    xhci_controller* hc = msd->hc;
-    uint8_t ep_num = endpoint_address & 0x0F;
-    bool is_in = (endpoint_address & 0x80) != 0;
-    uint8_t dci = ep_num * 2 + (is_in ? 1 : 0);
-    xhci_transfer_ring* ring = is_in ? &msd->bulk_in_ring : &msd->bulk_out_ring;
-
-    uart::printf("xhci: recovering from STALL on ep=0x%x\n", (uint32_t)endpoint_address);
-
-    if (!clear_endpoint_halt(hc, msd->slot_id, endpoint_address))
-        return false;
-    if (!reset_endpoint(hc, msd->slot_id, dci, ring))
-        return false;
-    return true;
-}
-
-static sint32_t bulk_transfer_in(usb_mass_storage_dev* msd, void* data, uintptr_t data_phys, uint32_t length)
-{
-    xhci_controller* hc = msd->hc;
-    xhci_transfer_ring* ring = &msd->bulk_in_ring;
-    uint8_t in_dci = (msd->bulk_in_ep & 0x0F) * 2 + 1;
-    transfer_start(ring);
-
-    xhci_trb_t trb;
-    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
-    trb.parameter = (uint64_t)data_phys;
-    trb.status = length;
-    trb.control = (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT) | (1 << 5);
-    transfer_ring_enqueue(ring, &trb);
-
-    ring_doorbell(hc, msd->slot_id, in_dci);
-
-    if (!transfer_wait(hc, ring, 2000))
-    {
-        uart::printf("xhci: bulk IN timeout\n");
-        return -1;
-    }
-    if (ring->cc == XHCI_TRB_COMPLETION_STALL)
-    {
-        recover_from_stall(msd, msd->bulk_in_ep);
-        return -2;
-    }
-    if (!transfer_ok(ring))
-    {
-        uart::printf("xhci: bulk IN failed code=%u (%s)\n", (uint32_t)ring->cc,
-                     completion_code_str(ring->cc));
-        return -1;
-    }
-    return (sint32_t)length - (sint32_t)ring->residue;
-}
-
-// BOT (Bulk-Only Transport) / SCSI layer
-
-static void bot_init_buffers()
-{
-    if (!shared_cbw)
-    {
-        shared_cbw = (usb_cbw*)alloc_xhci_memory(sizeof(usb_cbw), 64, 4096);
-        shared_cbw_phys = xhci_virt_to_phys(shared_cbw);
-        shared_csw = (usb_csw*)alloc_xhci_memory(sizeof(usb_csw), 64, 4096);
-        shared_csw_phys = xhci_virt_to_phys(shared_csw);
-    }
-}
-
-static sint32_t bot_scsi_command(usb_mass_storage_dev* msd, uint8_t* scsi_cmd, uint8_t scsi_cmd_len, void* data_buf,
-                                 uintptr_t data_phys, uint32_t data_length, uint8_t direction)
-{
-    bot_init_buffers();
-
-    // Build CBW
-    memory::memset((uint8_t*)shared_cbw, 0, sizeof(usb_cbw));
-    shared_cbw->dCBWSignature = USB_CBW_SIGNATURE;
-    shared_cbw->dCBWTag = bot_tag++;
-    shared_cbw->dCBWDataTransferLength = data_length;
-    shared_cbw->bmCBWFlags = direction;
-    shared_cbw->bCBWLUN = 0;
-    shared_cbw->bCBWCBLength = scsi_cmd_len;
-    memory::memcpy(shared_cbw->CBWCB, scsi_cmd, scsi_cmd_len);
-
-    // Command phase
-    if (!bulk_transfer_out(msd, shared_cbw, shared_cbw_phys, 31))
-    {
-        uart::printf("bot: CBW send failed\n");
-        return -1;
-    }
-
-    // Data phase
-    if (data_length > 0 && data_buf)
-    {
-        if (direction == USB_CBW_FLAG_IN)
-        {
-            sint32_t got = bulk_transfer_in(msd, data_buf, data_phys, data_length);
-            if (got == -2)
-                goto read_csw;
-            if (got < 0)
-                return -1;
-        }
-        else
-        {
-            if (!bulk_transfer_out(msd, data_buf, data_phys, data_length))
-                return -1;
-        }
-    }
-
-read_csw:
-    // Status phase
-    memory::memset((uint8_t*)shared_csw, 0, sizeof(usb_csw));
-    sint32_t csw_got = bulk_transfer_in(msd, shared_csw, shared_csw_phys, 13);
-    if (csw_got < 13)
-    {
-        uart::printf("bot: CSW receive failed\n");
-        return -1;
-    }
-
-    if (shared_csw->dCSWSignature != USB_CSW_SIGNATURE)
-    {
-        uart::printf("bot: invalid CSW signature 0x%x\n", shared_csw->dCSWSignature);
-        return -1;
-    }
-
-    if (shared_csw->bCSWStatus != 0)
-    {
-        uart::printf("bot: command 0x%x failed status=%u\n", (uint32_t)scsi_cmd[0],
-                     (uint32_t)shared_csw->bCSWStatus);
-        return (sint32_t)shared_csw->bCSWStatus;
-    }
-
-    return 0;
-}
-
-// SCSI commands
-
-static bool scsi_inquiry(usb_mass_storage_dev* msd)
-{
-    uint8_t* data = (uint8_t*)alloc_xhci_memory(36, 64, 4096);
-    uintptr_t data_phys = xhci_virt_to_phys(data);
-
-    uint8_t cmd[6];
-    memory::memset(cmd, 0, 6);
-    cmd[0] = SCSI_INQUIRY;
-    cmd[4] = 36;
-
-    sint32_t result = bot_scsi_command(msd, cmd, 6, data, data_phys, 36, USB_CBW_FLAG_IN);
-    if (result != 0)
-    {
-        uart::printf("scsi: INQUIRY failed\n");
-        free_xhci_memory(data);
-        return false;
-    }
-
-    // Save vendor/product strings into device registry
-    for (uint8_t d = 0; d < device_count; d++)
-    {
-        if (device_infos[d].slot_id == msd->slot_id)
-        {
-            memory::memcpy((uint8_t*)device_infos[d].vendor_str, data + 8, 8);
-            device_infos[d].vendor_str[8] = '\0';
-            memory::memcpy((uint8_t*)device_infos[d].product_str, data + 16, 16);
-            device_infos[d].product_str[16] = '\0';
-            break;
-        }
-    }
-
-    free_xhci_memory(data);
-    return true;
-}
-
-// Wait for the device to accept commands. Real sticks need noticeably longer
-// after reset than QEMU's emulated one, so the deadline is wall-clock (PIT),
-// not a fixed retry count: poll TEST UNIT READY for up to 5 s.
-static bool scsi_test_unit_ready(usb_mass_storage_dev* msd)
-{
-    uint8_t cmd[6];
-    memory::memset(cmd, 0, 6);
-    cmd[0] = SCSI_TEST_UNIT_READY;
-
-    const uint32_t TIMEOUT_MS = 5000;
-    const uint32_t POLL_MS    = 100;
-
-    for (uint32_t waited = 0; waited <= TIMEOUT_MS; waited += POLL_MS)
-    {
-        sint32_t result = bot_scsi_command(msd, cmd, 6, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-        if (result == 0)
-            return true;
-        if (waited == TIMEOUT_MS)
-            break;
-        delay_ms(POLL_MS);
-    }
-    uart::printf("scsi: TEST UNIT READY timed out\n");
-    return false;
-}
-
-static bool scsi_read_capacity(usb_mass_storage_dev* msd, uint32_t* out_last_lba, uint32_t* out_block_size)
-{
-    uint8_t* data = (uint8_t*)alloc_xhci_memory(8, 64, 4096);
-    uintptr_t data_phys = xhci_virt_to_phys(data);
-
-    uint8_t cmd[10];
-    memory::memset(cmd, 0, 10);
-    cmd[0] = SCSI_READ_CAPACITY_10;
-
-    sint32_t result = bot_scsi_command(msd, cmd, 10, data, data_phys, 8, USB_CBW_FLAG_IN);
-    if (result != 0)
-    {
-        uart::printf("scsi: READ CAPACITY failed\n");
-        free_xhci_memory(data);
-        return false;
-    }
-
-    *out_last_lba =
-        ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | (uint32_t)data[3];
-    *out_block_size =
-        ((uint32_t)data[4] << 24) | ((uint32_t)data[5] << 16) | ((uint32_t)data[6] << 8) | (uint32_t)data[7];
-
-    free_xhci_memory(data);
-    return true;
-}
-
-static bool scsi_read_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                         uintptr_t buffer_phys, uint32_t block_size)
-{
-    uint8_t cmd[10];
-    memory::memset(cmd, 0, 10);
-    cmd[0] = SCSI_READ_10;
-    cmd[2] = (uint8_t)(lba >> 24);
-    cmd[3] = (uint8_t)(lba >> 16);
-    cmd[4] = (uint8_t)(lba >> 8);
-    cmd[5] = (uint8_t)(lba);
-    cmd[7] = (uint8_t)(sector_count >> 8);
-    cmd[8] = (uint8_t)(sector_count);
-
-    // The transfer length the CDB/CBW advertise must match the real sector
-    // size: it used to be hardcoded *512, which silently transferred 1/8 of
-    // the data on a 4096-byte-sector device.
-    uint32_t byte_count = (uint32_t)sector_count * block_size;
-    sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_IN);
-    return result == 0;
-}
-
-static bool scsi_write_10(usb_mass_storage_dev* msd, uint32_t lba, uint16_t sector_count, void* buffer,
-                          uintptr_t buffer_phys, uint32_t block_size)
-{
-    uint8_t cmd[10];
-    memory::memset(cmd, 0, 10);
-    cmd[0] = SCSI_WRITE_10;
-    cmd[2] = (uint8_t)(lba >> 24);
-    cmd[3] = (uint8_t)(lba >> 16);
-    cmd[4] = (uint8_t)(lba >> 8);
-    cmd[5] = (uint8_t)(lba);
-    cmd[7] = (uint8_t)(sector_count >> 8);
-    cmd[8] = (uint8_t)(sector_count);
-
-    uint32_t byte_count = (uint32_t)sector_count * block_size;
-    sint32_t result = bot_scsi_command(msd, cmd, 10, buffer, buffer_phys, byte_count, USB_CBW_FLAG_OUT);
-    return result == 0;
-}
-
-// Fetch the sense data of the command that just failed. Returns the sense
-// key, or -1 when even that did not work.
-static sint32_t scsi_request_sense(usb_mass_storage_dev* msd)
-{
-    const uint32_t len = 18;            // fixed-format sense data
-    uint8_t* data = (uint8_t*)alloc_xhci_memory(len, 64, 4096);
-    if (!data)
-        return -1;
-    memory::memset(data, 0, len);
-
-    uint8_t cmd[6];
-    memory::memset(cmd, 0, 6);
-    cmd[0] = SCSI_REQUEST_SENSE;
-    cmd[4] = (uint8_t)len;
-
-    sint32_t result = bot_scsi_command(msd, cmd, 6, data, xhci_virt_to_phys(data),
-                                       len, USB_CBW_FLAG_IN);
-    sint32_t key = result == 0 ? (sint32_t)(data[2] & 0x0F) : -1;
-    free_xhci_memory(data);
-    return key;
-}
-
-static bool scsi_synchronize_cache(usb_mass_storage_dev* msd)
-{
-    if (msd->no_sync_cache)
-        return true;
-
-    uint8_t cmd[10];
-    memory::memset(cmd, 0, 10);
-    cmd[0] = SCSI_SYNCHRONIZE_CACHE;    // whole LBA range, no data phase
-    sint32_t result = bot_scsi_command(msd, cmd, 10, nullptr, 0, 0, USB_CBW_FLAG_OUT);
-    if (result == 0)
-        return true;
-
-    // Plenty of USB sticks do not implement SYNCHRONIZE CACHE and answer
-    // with ILLEGAL REQUEST. They write through (or manage their cache on
-    // their own), so there is nothing to flush. Anything else is a real
-    // failure.
-    if (result == 1 && scsi_request_sense(msd) == SCSI_SENSE_ILLEGAL_REQUEST)
-    {
-        uart::printf("scsi: SYNCHRONIZE CACHE not supported, flushes skipped\n");
-        msd->no_sync_cache = true;
-        return true;
-    }
-    return false;
-}
-
-// Allocate (once) the reusable per-device DMA bounce buffer.
-static bool ensure_dma_buffer(uint8_t dev_index)
-{
-    if (msd_dma_buf[dev_index])
-        return true;
-
-    // One Normal TRB carries it, and a TRB's buffer may not cross a 64 KiB
-    // boundary.
-    uint32_t size = USB_MAX_XFER_BYTES;
-    uint8_t* buf = (uint8_t*)alloc_xhci_memory(size, 64, 65536);
-    if (!buf)
-        return false;
-
-    msd_dma_buf[dev_index]  = buf;
-    msd_dma_phys[dev_index] = xhci_virt_to_phys(buf);
-    msd_dma_size[dev_index] = size;
     return true;
 }
 
@@ -1688,369 +1103,6 @@ static bool evaluate_context(xhci_controller* hc, uint8_t slot_id, uint16_t new_
     return true;
 }
 
-static bool get_device_descriptor(xhci_controller* hc, uint8_t slot_id, uint8_t port_speed, uint8_t port_index)
-{
-    usb_device_descriptor* desc = (usb_device_descriptor*)alloc_xhci_memory(sizeof(usb_device_descriptor), 64, 4096);
-    uintptr_t desc_phys = xhci_virt_to_phys(desc);
-
-    // Read first 8 bytes to get bMaxPacketSize0
-    uint8_t setup[8] = {0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 8, 0};
-    sint32_t got = control_transfer_in(hc, slot_id, setup, desc, desc_phys, 8);
-    if (got < 8)
-    {
-        uart::printf("xhci: get device desc (8B) failed\n");
-        free_xhci_memory(desc);
-        return false;
-    }
-
-    // Update max packet size if needed
-    uint16_t current_max_pkt = max_packet_size_for_speed(port_speed);
-    uint16_t actual_max_pkt = desc->bMaxPacketSize0;
-    if (port_speed >= 4 && actual_max_pkt <= 16)
-        actual_max_pkt = (uint16_t)(1 << actual_max_pkt);
-
-    if (actual_max_pkt != current_max_pkt)
-    {
-        if (!evaluate_context(hc, slot_id, actual_max_pkt))
-        {
-            free_xhci_memory(desc);
-            return false;
-        }
-    }
-
-    // Read full 18-byte descriptor
-    memory::memset((uint8_t*)desc, 0, sizeof(usb_device_descriptor));
-    setup[6] = 18;
-    got = control_transfer_in(hc, slot_id, setup, desc, desc_phys, 18);
-    if (got < 18)
-    {
-        uart::printf("xhci: get device desc (18B) failed\n");
-        free_xhci_memory(desc);
-        return false;
-    }
-
-    // Register in device info array (avoid duplicates)
-    bool found = false;
-    for (uint8_t d = 0; d < device_count; d++)
-    {
-        if (device_infos[d].slot_id == slot_id)
-        {
-            found = true;
-            break;
-        }
-    }
-
-    if (!found && device_count < MAX_USB_DEVICES)
-    {
-        usb_device_info* info = &device_infos[device_count++];
-        info->slot_id = slot_id;
-        info->port_index = port_index;
-        info->port_speed = port_speed;
-        info->vendor_id = desc->idVendor;
-        info->product_id = desc->idProduct;
-        info->bcd_usb = desc->bcdUSB;
-        info->device_class = desc->bDeviceClass;
-        info->device_subclass = desc->bDeviceSubClass;
-        info->device_protocol = desc->bDeviceProtocol;
-        info->is_mass_storage = false;
-        info->connected = true;
-        info->vendor_str[0] = '\0';
-        info->product_str[0] = '\0';
-    }
-
-    free_xhci_memory(desc);
-    return true;
-}
-
-static bool get_config_descriptor(xhci_controller* hc, uint8_t slot_id, uint8_t port_speed, uint8_t port_index)
-{
-    uint8_t* buf = (uint8_t*)alloc_xhci_memory(512, 64, 4096);
-    uintptr_t buf_phys = xhci_virt_to_phys(buf);
-
-    // Read 9-byte header first
-    uint8_t setup[8] = {0x80, 0x06, 0x00, 0x02, 0x00, 0x00, 9, 0};
-    sint32_t got = control_transfer_in(hc, slot_id, setup, buf, buf_phys, 9);
-    if (got < 9)
-    {
-        uart::printf("xhci: get config desc header failed\n");
-        free_xhci_memory(buf);
-        return false;
-    }
-
-    usb_config_descriptor* cfg = (usb_config_descriptor*)buf;
-    uint16_t total_len = cfg->wTotalLength;
-    uint8_t config_value = cfg->bConfigurationValue;
-    if (total_len > 512)
-        total_len = 512;
-
-    // Read full config descriptor
-    memory::memset(buf, 0, 512);
-    setup[6] = (uint8_t)(total_len & 0xFF);
-    setup[7] = (uint8_t)(total_len >> 8);
-    got = control_transfer_in(hc, slot_id, setup, buf, buf_phys, total_len);
-    if (got < (sint32_t)total_len)
-    {
-        uart::printf("xhci: get config desc full failed\n");
-        free_xhci_memory(buf);
-        return false;
-    }
-
-    // Parse descriptor chain looking for mass storage interface
-    uint16_t offset = 0;
-    bool in_mass_storage = false;
-    uint8_t bulk_in_ep = 0, bulk_out_ep = 0;
-    uint16_t bulk_in_max_pkt = 0, bulk_out_max_pkt = 0;
-    uint8_t iface_number = 0;
-
-    while (offset + 2 <= total_len)
-    {
-        uint8_t desc_len = buf[offset];
-        uint8_t desc_type = buf[offset + 1];
-        if (desc_len == 0)
-            break;
-
-        if (desc_type == USB_DESC_TYPE_INTERFACE && desc_len >= 9)
-        {
-            usb_interface_descriptor* iface = (usb_interface_descriptor*)(buf + offset);
-
-            if (iface->bInterfaceClass == USB_CLASS_MASS_STORAGE && iface->bInterfaceSubClass == USB_SUBCLASS_SCSI &&
-                iface->bInterfaceProtocol == USB_PROTOCOL_BBB)
-            {
-                in_mass_storage = true;
-                iface_number = iface->bInterfaceNumber;
-
-                // Mark in device registry
-                for (uint8_t d = 0; d < device_count; d++)
-                {
-                    if (device_infos[d].slot_id == slot_id)
-                    {
-                        device_infos[d].is_mass_storage = true;
-                        break;
-                    }
-                }
-            }
-            else
-            {
-                in_mass_storage = false;
-            }
-        }
-
-        if (desc_type == USB_DESC_TYPE_ENDPOINT && desc_len >= 7 && in_mass_storage)
-        {
-            usb_endpoint_descriptor* ep = (usb_endpoint_descriptor*)(buf + offset);
-            if ((ep->bmAttributes & 0x03) == 2)
-            {
-                if (ep->bEndpointAddress & 0x80)
-                {
-                    bulk_in_ep = ep->bEndpointAddress;
-                    bulk_in_max_pkt = ep->wMaxPacketSize;
-                }
-                else
-                {
-                    bulk_out_ep = ep->bEndpointAddress;
-                    bulk_out_max_pkt = ep->wMaxPacketSize;
-                }
-            }
-        }
-        offset += desc_len;
-    }
-
-    // Register mass storage device
-    if (bulk_in_ep && bulk_out_ep && mass_storage_count < MAX_MASS_STORAGE_DEVS)
-    {
-        usb_mass_storage_dev* msd = &mass_storage_devs[mass_storage_count++];
-        msd->hc = hc;
-        msd->slot_id = slot_id;
-        msd->port_index = port_index;
-        msd->port_speed = port_speed;
-        msd->config_value = config_value;
-        msd->interface_number = iface_number;
-        msd->bulk_in_ep = bulk_in_ep;
-        msd->bulk_out_ep = bulk_out_ep;
-        msd->bulk_in_max_packet = bulk_in_max_pkt;
-        msd->bulk_out_max_packet = bulk_out_max_pkt;
-        msd->found = true;
-    }
-
-    free_xhci_memory(buf);
-    return true;
-}
-
-// Point the event routing at a mass storage device's bulk rings, or take
-// them out of it.
-static void msd_route_rings(usb_mass_storage_dev* msd, bool on)
-{
-    uint8_t in_dci = (msd->bulk_in_ep & 0x0F) * 2 + 1;
-    uint8_t out_dci = (msd->bulk_out_ep & 0x0F) * 2;
-    set_ring(msd->hc, msd->slot_id, in_dci, on ? &msd->bulk_in_ring : nullptr);
-    set_ring(msd->hc, msd->slot_id, out_dci, on ? &msd->bulk_out_ring : nullptr);
-}
-
-static bool configure_mass_storage(usb_mass_storage_dev* msd)
-{
-    xhci_controller* hc = msd->hc;
-    uint8_t slot_id = msd->slot_id;
-
-    // SET_CONFIGURATION
-    uint8_t setup[8] = {0x00, 0x09, msd->config_value, 0x00, 0x00, 0x00, 0x00, 0x00};
-    if (!control_transfer_no_data(hc, slot_id, setup))
-    {
-        uart::printf("xhci: SET_CONFIGURATION failed slot=%u\n", (uint32_t)slot_id);
-        return false;
-    }
-
-    // Allocate transfer rings for bulk endpoints
-    transfer_ring_init(&msd->bulk_in_ring, XHCI_TRANSFER_RING_TRB_COUNT);
-    transfer_ring_init(&msd->bulk_out_ring, XHCI_TRANSFER_RING_TRB_COUNT);
-
-    // Calculate DCI for each endpoint
-    uint8_t in_ep_num = msd->bulk_in_ep & 0x0F;
-    uint8_t out_ep_num = msd->bulk_out_ep & 0x0F;
-    uint8_t in_dci = in_ep_num * 2 + 1;
-    uint8_t out_dci = out_ep_num * 2;
-    uint8_t max_dci = in_dci > out_dci ? in_dci : out_dci;
-    msd_route_rings(msd, true);
-
-    // Build Input Context for Configure Endpoint Command
-    void* input_ctx = alloc_input_context(hc);
-    if (!input_ctx) return false;
-
-    input_control_ctx(input_ctx)->add_flags = (1 << 0) | (1 << in_dci) | (1 << out_dci);
-    input_control_ctx(input_ctx)->drop_flags = 0;
-
-    // Copy and update slot context
-    void* out_ctx = (void*)hc->dcbaa_virt[slot_id];
-    *input_slot_ctx(hc, input_ctx) = *device_slot_ctx(out_ctx);
-    input_slot_ctx(hc, input_ctx)->context_entries = max_dci;
-
-    // Bulk IN endpoint context
-    xhci_endpoint_context* ep_in = input_ep_ctx(hc, input_ctx, in_dci);
-    ep_in->endpoint_type = XHCI_EP_TYPE_BULK_IN;
-    ep_in->max_packet_size = msd->bulk_in_max_packet;
-    ep_in->max_burst_size = 0;
-    ep_in->error_count = 3;
-    ep_in->average_trb_length = 1024;
-    ep_in->transfer_ring_dequeue_ptr = msd->bulk_in_ring.phys_base | 1;
-
-    // Bulk OUT endpoint context
-    xhci_endpoint_context* ep_out = input_ep_ctx(hc, input_ctx, out_dci);
-    ep_out->endpoint_type = XHCI_EP_TYPE_BULK_OUT;
-    ep_out->max_packet_size = msd->bulk_out_max_packet;
-    ep_out->max_burst_size = 0;
-    ep_out->error_count = 3;
-    ep_out->average_trb_length = 1024;
-    ep_out->transfer_ring_dequeue_ptr = msd->bulk_out_ring.phys_base | 1;
-
-    // Send Configure Endpoint Command
-    xhci_trb_t cmd;
-    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
-    cmd.parameter = xhci_virt_to_phys(input_ctx);
-    cmd.control = (XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24);
-
-    xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 500);
-    // Done with once the command completes; one that never did may still
-    // be read by the controller, so it is left alone then.
-    if (cc)
-        free_xhci_memory(input_ctx);
-    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
-    {
-        uart::printf("xhci: configure endpoint failed slot=%u code=%u\n", (uint32_t)slot_id,
-                     cc ? (uint32_t)cc->completion_code : 0);
-        return false;
-    }
-
-    msd->configured = true;
-    return true;
-}
-
-static void setup_device(xhci_controller* hc, uint8_t port_index)
-{
-    xhci_portsc portsc = read_portsc(hc, port_index);
-    uint8_t port_speed = portsc.port_speed;
-    uint8_t port_id = port_index + 1;
-
-    uint8_t slot_id = enable_device_slot(hc);
-    if (slot_id == 0)
-    {
-        uart::printf("xhci: failed to enable slot for port %u\n", (uint32_t)port_index);
-        return;
-    }
-
-    if (!create_device_context(hc, slot_id))
-        return;
-
-    // Allocate EP0 transfer ring
-    xhci_transfer_ring* ep0_ring = &hc->ep0_rings[slot_id];
-    transfer_ring_init(ep0_ring, XHCI_TRANSFER_RING_TRB_COUNT);
-    set_ring(hc, slot_id, 1, ep0_ring);
-
-    // Build Input Context for Address Device
-    void* input_ctx = alloc_input_context(hc);
-    if (!input_ctx)
-        return;
-
-    input_control_ctx(input_ctx)->add_flags = (1 << 0) | (1 << 1);
-    input_control_ctx(input_ctx)->drop_flags = 0;
-
-    xhci_slot_context* slot = input_slot_ctx(hc, input_ctx);
-    slot->route_string = 0;
-    slot->speed = port_speed;
-    slot->context_entries = 1;
-    slot->root_hub_port_num = port_id;
-
-    xhci_endpoint_context* ep0 = input_ep_ctx(hc, input_ctx, 1);
-    ep0->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR;
-    ep0->max_packet_size = max_packet_size_for_speed(port_speed);
-    ep0->max_burst_size = 0;
-    ep0->error_count = 3;
-    ep0->average_trb_length = 8;
-    ep0->transfer_ring_dequeue_ptr = ep0_ring->phys_base | 1;
-
-    // Address Device Command
-    xhci_trb_t cmd;
-    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
-    cmd.parameter = xhci_virt_to_phys(input_ctx);
-    cmd.status = 0;
-    cmd.control = (XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24);
-
-    xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 500);
-    // Done with once the command completes; one that never did may still
-    // be read by the controller, so it is left alone then.
-    if (cc)
-        free_xhci_memory(input_ctx);
-    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
-    {
-        uart::printf("xhci: address device failed port=%u\n", (uint32_t)port_index);
-        return;
-    }
-    
-    get_device_descriptor(hc, slot_id, port_speed, port_index);
-    get_config_descriptor(hc, slot_id, port_speed, port_index);
-}
-
-// Capacity cache helper
-
-static usb_status ensure_capacity_cached(uint8_t dev_index)
-{
-    if (dev_index >= mass_storage_count)
-        return USB_ERR_NOT_FOUND;
-    if (msd_capacity_cached[dev_index])
-        return USB_OK;
-
-    usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
-    if (!msd->configured)
-        return USB_ERR_NOT_READY;
-
-    uint32_t last_lba, block_size;
-    if (!scsi_read_capacity(msd, &last_lba, &block_size))
-        return USB_ERR_IO;
-
-    msd_last_lba[dev_index] = last_lba;
-    msd_block_size[dev_index] = block_size;
-    msd_capacity_cached[dev_index] = true;
-    return USB_OK;
-}
-
 // Controller selection
 
 // Halt a controller we are about to walk away from: with R/S clear it stops
@@ -2069,41 +1121,192 @@ static void stop_controller(xhci_controller* hc)
     }
 }
 
-// Forget the devices found so far. A controller that is tried and dropped
-// takes its devices with it.
-static void reset_device_state()
+
+// Transfers
+
+// The 8-byte setup packet as the Setup Stage TRB carries it (immediate data).
+static uint64_t setup_as_parameter(const uint8_t* setup)
 {
-    device_count = 0;
-    mass_storage_count = 0;
-
-    memory::memset((uint8_t*)mass_storage_devs, 0, sizeof(mass_storage_devs));
-    memory::memset((uint8_t*)device_infos, 0, sizeof(device_infos));
-    memory::memset((uint8_t*)msd_capacity_cached, 0, sizeof(msd_capacity_cached));
-    memory::memset((uint8_t*)msd_block_size, 0, sizeof(msd_block_size));
-    memory::memset((uint8_t*)msd_last_lba, 0, sizeof(msd_last_lba));
-
-    // The bounce buffers are sized from the block size of the device that
-    // used to hold this index, so they cannot be carried over to another
-    // controller's devices.
-    memory::memset((uint8_t*)msd_dma_buf, 0, sizeof(msd_dma_buf));
-    memory::memset((uint8_t*)msd_dma_phys, 0, sizeof(msd_dma_phys));
-    memory::memset((uint8_t*)msd_dma_size, 0, sizeof(msd_dma_size));
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--)
+        v = (v << 8) | setup[i];
+    return v;
 }
 
-// Bring up one controller and enumerate what is attached to it. Leaves the
-// controller running on success; `mass_storage_count` says what it found.
-//
-// Everything the controller had before is forgotten. The DMA allocations it
+static bool control_transfer(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ring, const uint8_t* setup,
+                             uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms)
+{
+    transfer_start(ring);
+
+    // Setup Stage. TRT: 0 no data stage, 2 OUT data, 3 IN data.
+    uint32_t trt = length == 0 ? 0 : (in ? 3 : 2);
+    xhci_trb_t setup_trb;
+    memory::memset((uint8_t*)&setup_trb, 0, sizeof(xhci_trb_t));
+    setup_trb.parameter = setup_as_parameter(setup);
+    setup_trb.status = 8;
+    setup_trb.control = (XHCI_TRB_TYPE_SETUP_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 6) // IDT
+                        | (trt << 16);
+    transfer_ring_enqueue(ring, &setup_trb);
+
+    if (length > 0)
+    {
+        xhci_trb_t data_trb;
+        memory::memset((uint8_t*)&data_trb, 0, sizeof(xhci_trb_t));
+        data_trb.parameter = (uint64_t)data_phys;
+        data_trb.status = length;
+        data_trb.control = (XHCI_TRB_TYPE_DATA_STAGE << XHCI_TRB_TYPE_SHIFT)
+                           | (in ? (1 << 16) : 0)   // DIR
+                           | (in ? (1 << 2) : 0);   // ISP: a short reply is reported, with how short
+        transfer_ring_enqueue(ring, &data_trb);
+    }
+
+    // Status Stage, in the direction opposite to the data (IN without data).
+    xhci_trb_t status_trb;
+    memory::memset((uint8_t*)&status_trb, 0, sizeof(xhci_trb_t));
+    status_trb.control = (XHCI_TRB_TYPE_STATUS_STAGE << XHCI_TRB_TYPE_SHIFT) | (1 << 5)  // IOC
+                         | ((length == 0 || !in) ? (1 << 16) : 0);                      // DIR=IN
+    transfer_ring_enqueue(ring, &status_trb);
+
+    ring_doorbell(hc, slot, XHCI_DOORBELL_TARGET_CONTROL_EP);
+    return transfer_wait(hc, ring, timeout_ms);
+}
+
+static bool normal_transfer(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                            uintptr_t data_phys, uint32_t length, uint32_t timeout_ms)
+{
+    transfer_start(ring);
+
+    xhci_trb_t trb;
+    memory::memset((uint8_t*)&trb, 0, sizeof(xhci_trb_t));
+    trb.parameter = (uint64_t)data_phys;
+    trb.status = length;
+    trb.control = (XHCI_TRB_TYPE_NORMAL << XHCI_TRB_TYPE_SHIFT) | (1 << 5)    // IOC
+                  | (1 << 2);                                                   // ISP
+    transfer_ring_enqueue(ring, &trb);
+
+    ring_doorbell(hc, slot, dci);
+    return transfer_wait(hc, ring, timeout_ms);
+}
+
+// Device slots
+
+static bool address_device(xhci_controller* hc, uint8_t slot_id, uint8_t port, uint8_t speed,
+                           uint16_t max_packet, xhci_transfer_ring* ep0)
+{
+    if (!create_device_context(hc, slot_id))
+        return false;
+
+    transfer_ring_init(ep0, XHCI_TRANSFER_RING_TRB_COUNT);
+    set_ring(hc, slot_id, 1, ep0);
+
+    void* input_ctx = alloc_input_context(hc);
+    if (!input_ctx)
+        return false;
+
+    input_control_ctx(input_ctx)->add_flags = (1 << 0) | (1 << 1);
+    input_control_ctx(input_ctx)->drop_flags = 0;
+
+    xhci_slot_context* slot = input_slot_ctx(hc, input_ctx);
+    slot->route_string = 0;
+    slot->speed = speed;
+    slot->context_entries = 1;
+    slot->root_hub_port_num = port + 1;
+
+    xhci_endpoint_context* ep0_ctx = input_ep_ctx(hc, input_ctx, 1);
+    ep0_ctx->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR;
+    ep0_ctx->max_packet_size = max_packet;
+    ep0_ctx->max_burst_size = 0;
+    ep0_ctx->error_count = 3;
+    ep0_ctx->average_trb_length = 8;
+    ep0_ctx->transfer_ring_dequeue_ptr = ep0->phys_base | 1;
+
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.parameter = xhci_virt_to_phys(input_ctx);
+    cmd.control = (XHCI_TRB_TYPE_ADDRESS_DEVICE_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24);
+
+    xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 500);
+    // Done with once the command completes; one that never did may still
+    // be read by the controller, so it is left alone then.
+    if (cc)
+        free_xhci_memory(input_ctx);
+    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+    {
+        uart::printf("xhci: address device failed port=%u code=%u\n", (uint32_t)port,
+                     cc ? (uint32_t)cc->completion_code : 0);
+        return false;
+    }
+    return true;
+}
+
+static bool configure_endpoints(xhci_controller* hc, uint8_t slot_id, xhci_ep_config* eps, uint8_t count)
+{
+    void* input_ctx = alloc_input_context(hc);
+    if (!input_ctx)
+        return false;
+
+    // The slot context comes along (A0) because Context Entries grows to
+    // the highest DCI in use.
+    void* out_ctx = (void*)hc->dcbaa_virt[slot_id];
+    *input_slot_ctx(hc, input_ctx) = *device_slot_ctx(out_ctx);
+    uint8_t max_dci = device_slot_ctx(out_ctx)->context_entries;
+
+    uint32_t add = 1 << 0;
+    for (uint8_t i = 0; i < count; i++)
+    {
+        xhci_ep_config* e = &eps[i];
+        transfer_ring_init(e->ring, XHCI_TRANSFER_RING_TRB_COUNT);
+
+        xhci_endpoint_context* ctx = input_ep_ctx(hc, input_ctx, e->dci);
+        ctx->endpoint_type = e->type;
+        ctx->max_packet_size = e->max_packet;
+        ctx->max_burst_size = 0;
+        ctx->error_count = 3;
+        ctx->interval = e->interval;
+        bool periodic = e->type == XHCI_EP_TYPE_INTERRUPT_IN || e->type == XHCI_EP_TYPE_INTERRUPT_OUT;
+        ctx->average_trb_length = periodic ? e->max_packet : 1024;
+        ctx->max_esit_payload_lo = periodic ? e->max_packet : 0;
+        ctx->transfer_ring_dequeue_ptr = e->ring->phys_base | 1;
+
+        add |= 1u << e->dci;
+        if (e->dci > max_dci)
+            max_dci = e->dci;
+    }
+    input_slot_ctx(hc, input_ctx)->context_entries = max_dci;
+    input_control_ctx(input_ctx)->add_flags = add;
+    input_control_ctx(input_ctx)->drop_flags = 0;
+
+    xhci_trb_t cmd;
+    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+    cmd.parameter = xhci_virt_to_phys(input_ctx);
+    cmd.control = (XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24);
+
+    xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 500);
+    if (cc)
+        free_xhci_memory(input_ctx);
+    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+    {
+        uart::printf("xhci: configure endpoint failed slot=%u code=%u\n", (uint32_t)slot_id,
+                     cc ? (uint32_t)cc->completion_code : 0);
+        return false;
+    }
+
+    for (uint8_t i = 0; i < count; i++)
+        set_ring(hc, slot_id, eps[i].dci, eps[i].ring);
+    return true;
+}
+
+// Bring up one controller, up to the point where its ports show what is
+// attached. Everything it had before is forgotten. The DMA allocations it
 // made are not reclaimed - alloc_xhci_memory has no size-tracking free list
 // and this runs a handful of times at boot - but nothing points at them any
 // more.
-static bool init_controller(xhci_controller* hc)
+static bool start(xhci_controller* hc)
 {
     PCIDevice* dev = hc->pci;
     memory::memset((uint8_t*)hc, 0, sizeof(*hc));
     hc->pci = dev;
     hc->ctx_entry_size = 32;
-    reset_device_state();
 
     pci::enable_device(dev);
 
@@ -2157,96 +1360,23 @@ static bool init_controller(xhci_controller* hc)
 
     power_on_all_ports(hc);
     wait_for_port_connections(hc);
-
-    // Enumerate ports
-    for (uint8_t i = 0; i < hc->max_ports; i++)
-    {
-        xhci_portsc portsc = read_portsc(hc, i);
-        if (portsc.ccs)
-        {
-            if (reset_port(hc, i))
-            {
-                portsc = read_portsc(hc, i);
-                process_events(hc);
-                setup_device(hc, i);
-            }
-            else
-            {
-                uart::printf("xhci: port %u: reset failed\n", (uint32_t)i);
-            }
-        }
-    }
-
-    // Configure and prepare all mass storage devices. Slots that fail
-    // configuration or never reach readiness are dropped: the block layer
-    // above must not see a counted-but-unusable device.
-    uint8_t ready_count = 0;
-    for (uint8_t i = 0; i < mass_storage_count; i++)
-    {
-        usb_mass_storage_dev* msd = &mass_storage_devs[i];
-        if (!configure_mass_storage(msd))
-        {
-            msd_route_rings(msd, false);
-            continue;
-        }
-
-        scsi_inquiry(msd);
-        if (!scsi_test_unit_ready(msd))
-        {
-            msd_route_rings(msd, false);
-            continue;
-        }
-
-        if (ready_count != i)
-        {
-            // Its rings move with it: events must find them at the new place.
-            mass_storage_devs[ready_count] = *msd;
-            memory::memset((uint8_t*)msd, 0, sizeof(*msd));
-            msd_route_rings(&mass_storage_devs[ready_count], true);
-        }
-        ready_count++;
-    }
-    mass_storage_count = ready_count;
-
-    for (uint8_t i = 0; i < mass_storage_count; i++)
-    {
-        if (ensure_capacity_cached(i) != USB_OK)
-            uart::printf("xhci: msd %u: READ CAPACITY failed\n", (uint32_t)i);
-    }
-
     return true;
 }
 
-// Public API
+// The controller as usb.cpp sees it (xhci.h).
 
-namespace usb
+namespace xhci
 {
-    // Example using
-    //  uint8_t sector[512];
-    //  uint8_t data[512] = {0xDE, 0xAD, 0xBE, 0xEF}; // test data
-    //  usb::read_sectors(0, 0, 1, sector);           // read MBR
-    //  usb::write_sectors(0, 2, 1, data);            // write sector 2
-    
-    //  usb_block_device bdev;
-    //  usb::get_block_device_info(0, &bdev);         // capacity info
-
-    bool init()
+    uint8_t find_controllers()
     {
-        shared_cbw = nullptr;
-        shared_csw = nullptr;
-        shared_cbw_phys = 0;
-        shared_csw_phys = 0;
-        bot_tag = 1;
-        active = nullptr;
         controller_count = 0;
-        reset_device_state();
 
-        // Collect every xHCI controller. A desktop board usually has one (the
-        // PCH at 00:14.0), but a mobile chipset commonly adds a second one for
-        // its USB4/Thunderbolt ports - and that one sits at a *lower* device
-        // number (00:0d.0 on Alder Lake-P), so "the first xHCI on the bus" is
-        // the controller with no user-facing ports on exactly the machines
-        // where that matters.
+        // Every xHCI controller. A desktop board usually has one (the PCH at
+        // 00:14.0), but a mobile chipset commonly adds a second one for its
+        // USB4/Thunderbolt ports - and that one sits at a *lower* device
+        // number (00:0d.0 on Alder Lake-P), so "the first xHCI on the bus"
+        // is the controller with no user-facing ports on exactly the
+        // machines where that matters.
         for (uint32_t i = 0; i < pci::device_count() &&
                              controller_count < MAX_XHCI_CONTROLLERS; i++)
         {
@@ -2259,243 +1389,131 @@ namespace usb
             memory::memset((uint8_t*)&controllers[controller_count], 0, sizeof(xhci_controller));
             controllers[controller_count++].pci = d;
         }
-
-        if (controller_count == 0)
-        {
-            uart::printf("xhci: no controller found\n");
-            return false;
-        }
-
-        uart::printf("xhci: %u controller(s) found\n", (uint32_t)controller_count);
-
-        // Try them in turn and keep the one that actually has our storage on
-        // it. A controller that yields no mass storage is halted again before
-        // the next attempt, so an abandoned one cannot keep DMAing into
-        // memory its successor is about to allocate.
-        uint8_t best = 0;
-        uint8_t best_devices = 0;
-        bool have_best = false;
-
-        for (uint8_t i = 0; i < controller_count; i++)
-        {
-            xhci_controller* hc = &controllers[i];
-            if (init_controller(hc) && mass_storage_count > 0)
-            {
-                active = hc;
-                uart::printf("xhci: using controller %u:%u.%u (%u disk(s))\n",
-                             (uint32_t)hc->pci->bus,
-                             (uint32_t)hc->pci->device,
-                             (uint32_t)hc->pci->function,
-                             (uint32_t)mass_storage_count);
-                return true;
-            }
-
-            if (!have_best || device_count > best_devices)
-            {
-                best = i;
-                best_devices = device_count;
-                have_best = true;
-            }
-
-            uart::printf("xhci: controller %u:%u.%u: %u device(s), no storage\n",
-                         (uint32_t)hc->pci->bus,
-                         (uint32_t)hc->pci->device,
-                         (uint32_t)hc->pci->function,
-                         (uint32_t)device_count);
-
-            if (i + 1 < controller_count)
-                stop_controller(hc);
-        }
-
-        // No storage anywhere. Leave the controller that at least saw devices
-        // running, so lsusb/usbinfo still have something to report. The last
-        // one tried is still running; it stops before the best one restarts.
-        if (best_devices > 0 && best != controller_count - 1)
-        {
-            stop_controller(&controllers[controller_count - 1]);
-            init_controller(&controllers[best]);
-            active = &controllers[best];
-        }
-        else
-            active = &controllers[controller_count - 1];
-
-        return false;
-    }
-
-    const char* get_usb_class_name(uint8_t cls)
-    {
-        return usb_class_name(cls);
-    }
-
-    const char* get_usb_speed_str(uint8_t speed)
-    {
-        return usb_speed_str(speed);
-    }
-
-    uint32_t get_context_entry_size()
-    {
-        return active ? active->ctx_entry_size : 32;
-    }
-
-    uint8_t get_port_count()
-    {
-        return active && active->op_regs ? active->max_ports : 0;
-    }
-
-    // Raw PORTSC of one root port, for `usbports`. Zero when no controller
-    // came up, which the caller reports as such.
-    uint32_t get_port_status(uint8_t port)
-    {
-        if (!active || !active->op_regs || port >= active->max_ports)
-            return 0;
-        return read_portsc(active, port).raw;
-    }
-
-    bool port_is_usb3(uint8_t port)
-    {
-        return active && is_usb3_port(active, port);
-    }
-
-    uint8_t get_controller_count()
-    {
         return controller_count;
     }
 
-    // Bus/device/function of the controller we are driving, or 0:0.0 when
-    // none came up.
-    void get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn)
+    xhci_controller* controller(uint8_t index)
     {
-        *bus = active ? active->pci->bus : 0;
-        *dev = active ? active->pci->device : 0;
-        *fn  = active ? active->pci->function : 0;
+        return index < controller_count ? &controllers[index] : nullptr;
     }
 
-    uint8_t get_device_count()
+    PCIDevice* pci_device(xhci_controller* hc)
     {
-        return device_count;
+        return hc->pci;
     }
 
-    usb_status get_device_info(uint8_t index, usb_device_info* out)
+    bool start(xhci_controller* hc)
     {
-        if (index >= device_count)
-            return USB_ERR_NOT_FOUND;
-        if (!out)
-            return USB_ERR_INVALID_PARAM;
-        *out = device_infos[index];
-        return USB_OK;
+        return ::start(hc);
     }
 
-    uint8_t get_block_device_count()
+    void stop(xhci_controller* hc)
     {
-        return mass_storage_count;
+        stop_controller(hc);
     }
 
-    usb_status get_block_device_info(uint8_t index, usb_block_device* out)
+    uint8_t port_count(xhci_controller* hc)
     {
-        if (index >= mass_storage_count)
-            return USB_ERR_NOT_FOUND;
-        if (!out)
-            return USB_ERR_INVALID_PARAM;
-
-        usb_status st = ensure_capacity_cached(index);
-        if (st != USB_OK)
-            return st;
-
-        out->device_index = index;
-        out->block_size = msd_block_size[index];
-        out->last_lba = msd_last_lba[index];
-        out->total_bytes = ((uint64_t)msd_last_lba[index] + 1) * msd_block_size[index];
-        out->ready = mass_storage_devs[index].configured;
-        return USB_OK;
+        return hc->op_regs ? hc->max_ports : 0;
     }
 
-    usb_status read_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, void* buffer)
+    uint32_t port_status(xhci_controller* hc, uint8_t port)
     {
-        if (dev_index >= mass_storage_count)
-            return USB_ERR_NOT_FOUND;
-        if (!buffer || count == 0)
-            return USB_ERR_INVALID_PARAM;
-
-        usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
-        if (!msd->configured)
-            return USB_ERR_NOT_READY;
-
-        usb_status st = ensure_capacity_cached(dev_index);
-        if (st != USB_OK)
-            return st;
-
-        // One request may not exceed the reusable DMA buffer; the block layer
-        // above splits larger transfers.
-        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
-            return USB_ERR_INVALID_PARAM;
-
-        // Bounds-check against the capacity READ CAPACITY reported: a bogus
-        // LBA from a broken filesystem must never reach the device.
-        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
-            return USB_ERR_INVALID_PARAM;
-
-        if (!ensure_dma_buffer(dev_index))
-            return USB_ERR_IO;
-
-        uint32_t bs = msd_block_size[dev_index];
-        uint32_t total = (uint32_t)count * bs;
-
-        uint8_t* dma_buf = msd_dma_buf[dev_index];
-        uintptr_t dma_phys = msd_dma_phys[dev_index];
-
-        bool ok = scsi_read_10(msd, lba, count, dma_buf, dma_phys, bs);
-        if (ok)
-            memory::memcpy((uint8_t*)buffer, dma_buf, total);
-
-        return ok ? USB_OK : USB_ERR_IO;
+        if (!hc->op_regs || port >= hc->max_ports)
+            return 0;
+        return read_portsc(hc, port).raw;
     }
 
-    usb_status write_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, const void* buffer)
+    bool port_is_usb3(xhci_controller* hc, uint8_t port)
     {
-        if (dev_index >= mass_storage_count)
-            return USB_ERR_NOT_FOUND;
-        if (!buffer || count == 0)
-            return USB_ERR_INVALID_PARAM;
-
-        usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
-        if (!msd->configured)
-            return USB_ERR_NOT_READY;
-
-        usb_status st = ensure_capacity_cached(dev_index);
-        if (st != USB_OK)
-            return st;
-
-        if ((uint32_t)count * msd_block_size[dev_index] > USB_MAX_XFER_BYTES)
-            return USB_ERR_INVALID_PARAM;
-
-        if ((uint64_t)lba + count > (uint64_t)msd_last_lba[dev_index] + 1)
-            return USB_ERR_INVALID_PARAM;
-
-        if (!ensure_dma_buffer(dev_index))
-            return USB_ERR_IO;
-
-        uint32_t bs = msd_block_size[dev_index];
-        uint32_t total = (uint32_t)count * bs;
-
-        uint8_t* dma_buf = msd_dma_buf[dev_index];
-        uintptr_t dma_phys = msd_dma_phys[dev_index];
-
-        memory::memcpy(dma_buf, (uint8_t*)buffer, total);
-        bool ok = scsi_write_10(msd, lba, count, dma_buf, dma_phys, bs);
-
-        return ok ? USB_OK : USB_ERR_IO;
+        return is_usb3_port(hc, port);
     }
 
-    usb_status flush_cache(uint8_t dev_index)
+    bool port_connected(xhci_controller* hc, uint8_t port)
     {
-        if (dev_index >= mass_storage_count)
-            return USB_ERR_NOT_FOUND;
-
-        usb_mass_storage_dev* msd = &mass_storage_devs[dev_index];
-        if (!msd->configured)
-            return USB_ERR_NOT_READY;
-
-        return scsi_synchronize_cache(msd) ? USB_OK : USB_ERR_IO;
+        return read_portsc(hc, port).ccs;
     }
 
-} // namespace usb
+    bool reset_port(xhci_controller* hc, uint8_t port)
+    {
+        return ::reset_port(hc, port);
+    }
+
+    uint8_t port_speed(xhci_controller* hc, uint8_t port)
+    {
+        return read_portsc(hc, port).port_speed;
+    }
+
+    uint32_t context_entry_size(xhci_controller* hc)
+    {
+        return hc->ctx_entry_size;
+    }
+
+    uint8_t enable_slot(xhci_controller* hc)
+    {
+        return enable_device_slot(hc);
+    }
+
+    bool address_device(xhci_controller* hc, uint8_t slot, uint8_t port, uint8_t speed,
+                        uint16_t max_packet, xhci_transfer_ring* ep0)
+    {
+        return ::address_device(hc, slot, port, speed, max_packet, ep0);
+    }
+
+    bool set_ep0_max_packet(xhci_controller* hc, uint8_t slot, uint16_t max_packet)
+    {
+        return evaluate_context(hc, slot, max_packet);
+    }
+
+    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count)
+    {
+        return ::configure_endpoints(hc, slot, eps, count);
+    }
+
+    bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring)
+    {
+        return ::reset_endpoint(hc, slot, dci, ring);
+    }
+
+    bool control(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
+                 uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms)
+    {
+        return control_transfer(hc, slot, ep0, setup, data_phys, length, in, timeout_ms);
+    }
+
+    bool normal(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                uintptr_t data_phys, uint32_t length, uint32_t timeout_ms)
+    {
+        return normal_transfer(hc, slot, dci, ring, data_phys, length, timeout_ms);
+    }
+
+    bool completed_ok(const xhci_transfer_ring* ring)
+    {
+        return transfer_ok(ring);
+    }
+
+    const char* completion_code_str(uint8_t code)
+    {
+        return ::completion_code_str(code);
+    }
+
+    void* dma_alloc(size_t size, size_t alignment, size_t boundary)
+    {
+        return alloc_xhci_memory(size, alignment, boundary);
+    }
+
+    void dma_free(void* ptr)
+    {
+        free_xhci_memory(ptr);
+    }
+
+    uintptr_t phys(void* vaddr)
+    {
+        return xhci_virt_to_phys(vaddr);
+    }
+
+    void delay_ms(uint32_t ms)
+    {
+        ::delay_ms(ms);
+    }
+}

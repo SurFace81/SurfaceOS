@@ -280,76 +280,6 @@ struct xhci_transfer_event_trb_t {
     };
 } __attribute__((packed));
 
-// USB standard descriptors
-
-struct usb_device_descriptor {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;
-    uint16_t bcdUSB;
-    uint8_t  bDeviceClass;
-    uint8_t  bDeviceSubClass;
-    uint8_t  bDeviceProtocol;
-    uint8_t  bMaxPacketSize0;
-    uint16_t idVendor;
-    uint16_t idProduct;
-    uint16_t bcdDevice;
-    uint8_t  iManufacturer;
-    uint8_t  iProduct;
-    uint8_t  iSerialNumber;
-    uint8_t  bNumConfigurations;
-} __attribute__((packed));
-
-struct usb_config_descriptor {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;
-    uint16_t wTotalLength;
-    uint8_t  bNumInterfaces;
-    uint8_t  bConfigurationValue;
-    uint8_t  iConfiguration;
-    uint8_t  bmAttributes;
-    uint8_t  bMaxPower;
-} __attribute__((packed));
-
-struct usb_interface_descriptor {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;
-    uint8_t  bInterfaceNumber;
-    uint8_t  bAlternateSetting;
-    uint8_t  bNumEndpoints;
-    uint8_t  bInterfaceClass;
-    uint8_t  bInterfaceSubClass;
-    uint8_t  bInterfaceProtocol;
-    uint8_t  iInterface;
-} __attribute__((packed));
-
-struct usb_endpoint_descriptor {
-    uint8_t  bLength;
-    uint8_t  bDescriptorType;
-    uint8_t  bEndpointAddress;
-    uint8_t  bmAttributes;
-    uint16_t wMaxPacketSize;
-    uint8_t  bInterval;
-} __attribute__((packed));
-
-// Bulk-Only Transport structures (USB Mass Storage spec)
-
-struct usb_cbw {
-    uint32_t dCBWSignature;
-    uint32_t dCBWTag;
-    uint32_t dCBWDataTransferLength;
-    uint8_t  bmCBWFlags;
-    uint8_t  bCBWLUN;
-    uint8_t  bCBWCBLength;
-    uint8_t  CBWCB[16];
-} __attribute__((packed));
-
-struct usb_csw {
-    uint32_t dCSWSignature;
-    uint32_t dCSWTag;
-    uint32_t dCSWDataResidue;
-    uint8_t  bCSWStatus;
-} __attribute__((packed));
-
 // USBCMD bits
 #define XHCI_USBCMD_RUN_STOP           (1 << 0)
 #define XHCI_USBCMD_HCRESET            (1 << 1)
@@ -451,43 +381,17 @@ struct usb_csw {
 // Device Context Indexes: 1 is the control endpoint, 2..31 the others.
 #define XHCI_MAX_DCI 32
 
-// Endpoint types
+// Endpoint types (Endpoint Context EP Type)
 #define XHCI_EP_TYPE_BULK_OUT       2
+#define XHCI_EP_TYPE_INTERRUPT_OUT  3
 #define XHCI_EP_TYPE_CONTROL_BIDIR  4
 #define XHCI_EP_TYPE_BULK_IN        6
+#define XHCI_EP_TYPE_INTERRUPT_IN   7
 
 // Doorbell targets
 #define XHCI_DOORBELL_TARGET_COMMAND_RING   0
 #define XHCI_DOORBELL_TARGET_CONTROL_EP     1
 
-// USB descriptor types
-#define USB_DESC_TYPE_DEVICE        1
-#define USB_DESC_TYPE_CONFIG        2
-#define USB_DESC_TYPE_INTERFACE     4
-#define USB_DESC_TYPE_ENDPOINT      5
-
-// USB Mass Storage class
-#define USB_CLASS_MASS_STORAGE      0x08
-#define USB_SUBCLASS_SCSI           0x06
-#define USB_PROTOCOL_BBB            0x50
-
-// BOT signatures and flags
-#define USB_CBW_SIGNATURE  0x43425355
-#define USB_CSW_SIGNATURE  0x53425355
-#define USB_CBW_FLAG_IN    0x80
-#define USB_CBW_FLAG_OUT   0x00
-
-// SCSI opcodes
-#define SCSI_TEST_UNIT_READY    0x00
-#define SCSI_REQUEST_SENSE      0x03
-#define SCSI_INQUIRY            0x12
-#define SCSI_READ_CAPACITY_10   0x25
-#define SCSI_READ_10            0x28
-#define SCSI_WRITE_10           0x2A
-#define SCSI_SYNCHRONIZE_CACHE  0x35
-
-// Sense keys (REQUEST SENSE, fixed format byte 2)
-#define SCSI_SENSE_ILLEGAL_REQUEST  0x05
 
 // Max USB3 ports we track
 #define XHCI_MAX_USB3_PORTS 32
@@ -506,71 +410,100 @@ struct usb_csw {
 #define XHCI_PORT_POLL_INTERVAL_MS  10
 #define XHCI_PORT_DEBOUNCE_MS       100
 
-// Public API structures
 
-enum usb_status {
-    USB_OK = 0,
-    USB_ERR_NOT_FOUND,
-    USB_ERR_NOT_READY,
-    USB_ERR_TIMEOUT,
-    USB_ERR_STALL,
-    USB_ERR_IO,
-    USB_ERR_INVALID_PARAM,
-    USB_ERR_NO_DEVICE
+// ---------------------------------------------------------------------------
+// The controller as the USB core (usb.cpp) sees it. Everything here works on
+// one controller and is synchronous: a call returns when the controller has
+// answered or the timeout has passed.
+
+// A transfer ring: the TRBs the controller reads for one endpoint.
+struct xhci_transfer_ring
+{
+    xhci_trb_t* trbs;
+    uintptr_t phys_base;
+    size_t max_trb_count;
+    size_t enqueue_ptr;
+    uint8_t cycle_bit;
+
+    // How the transfer last started on this ring ended, filled in by the
+    // event processing: `done` once its final event arrived, with that
+    // event's completion code, and the bytes a short packet left untouched.
+    volatile bool done;
+    uint8_t cc;
+    uint32_t residue;
 };
 
-struct usb_device_info {
-    uint8_t  slot_id;
-    uint8_t  port_index;
-    uint8_t  port_speed;
-    uint16_t vendor_id;
-    uint16_t product_id;
-    uint16_t bcd_usb;
-    uint8_t  device_class;
-    uint8_t  device_subclass;
-    uint8_t  device_protocol;
-    char     vendor_str[9];
-    char     product_str[17];
-    bool     is_mass_storage;
-    bool     connected;
+// One endpoint to configure on a device (Configure Endpoint command).
+struct xhci_ep_config
+{
+    uint8_t dci;                // Device Context Index: ep_num * 2 + (IN ? 1 : 0)
+    uint8_t type;               // XHCI_EP_TYPE_*
+    uint16_t max_packet;
+    uint8_t interval;           // Endpoint Context Interval (2^n * 125 us)
+    xhci_transfer_ring* ring;   // initialised by configure_endpoints()
 };
 
-struct usb_block_device {
-    uint8_t  device_index;
-    uint32_t block_size;
-    uint32_t last_lba;
-    uint64_t total_bytes;
-    bool     ready;
-};
+struct xhci_controller;
 
-// Public API
-namespace usb {
-    bool       init();
-    uint32_t   get_context_entry_size();
-    uint8_t    get_port_count();
-    uint32_t   get_port_status(uint8_t port);
-    bool       port_is_usb3(uint8_t port);
-    uint8_t    get_controller_count();
-    void       get_controller_location(uint8_t* bus, uint8_t* dev, uint8_t* fn);
-    uint8_t    get_device_count();
-    usb_status get_device_info(uint8_t index, usb_device_info* out);
-    uint8_t    get_block_device_count();
-    usb_status get_block_device_info(uint8_t index, usb_block_device* out);
-    // Single-request limits: count sectors <= USB_MAX_XFER_BYTES, lba+count within
-    // the device. Larger transfers are split by the block layer above.
-    usb_status read_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, void* buffer);
-    usb_status write_sectors(uint8_t dev_index, uint32_t lba, uint16_t count, const void* buffer);
-    // SYNCHRONIZE CACHE: force the device's write cache to stable storage.
-    usb_status flush_cache(uint8_t dev_index);
+namespace xhci
+{
+    // Find every xHCI controller on the PCI bus; how many there are.
+    uint8_t find_controllers();
+    xhci_controller* controller(uint8_t index);
+    PCIDevice* pci_device(xhci_controller* hc);
 
-    const char* get_usb_class_name(uint8_t cls);
-    const char* get_usb_speed_str(uint8_t speed);
+    // Reset and start a controller, power its ports and wait for what is
+    // attached to show up. False when it cannot be brought up.
+    bool start(xhci_controller* hc);
+    // Halt it: it stops reading our rings.
+    void stop(xhci_controller* hc);
+
+    // Root ports, 0-based.
+    uint8_t port_count(xhci_controller* hc);
+    uint32_t port_status(xhci_controller* hc, uint8_t port);     // raw PORTSC
+    bool port_is_usb3(xhci_controller* hc, uint8_t port);
+    bool port_connected(xhci_controller* hc, uint8_t port);
+    // Reset a connected port; true when it came out enabled.
+    bool reset_port(xhci_controller* hc, uint8_t port);
+    uint8_t port_speed(xhci_controller* hc, uint8_t port);        // XHCI speed ID
+    uint32_t context_entry_size(xhci_controller* hc);
+
+    // Device slots. enable_slot() returns the slot ID, 0 on failure.
+    uint8_t enable_slot(xhci_controller* hc);
+    // Address the device on `port` in `slot`, with `ep0` as its control
+    // ring (initialised here) and `max_packet` as EP0's packet size.
+    bool address_device(xhci_controller* hc, uint8_t slot, uint8_t port, uint8_t speed,
+                        uint16_t max_packet, xhci_transfer_ring* ep0);
+    // EP0's real packet size, once the device descriptor told it.
+    bool set_ep0_max_packet(xhci_controller* hc, uint8_t slot, uint16_t max_packet);
+    // Add endpoints to a device, rings and all, in one command.
+    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count);
+    // After a halt: reset the endpoint and move its dequeue pointer past
+    // whatever was left on the ring.
+    bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring);
+
+    // Transfers. False on timeout; otherwise ring->cc and ring->residue
+    // say how it went.
+    //
+    // A control transfer: `setup` is the 8-byte setup packet; `in` says the
+    // direction of a data stage of `length` bytes at `data_phys` (none when
+    // length is 0).
+    bool control(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
+                 uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms);
+    // One Normal TRB of `length` bytes on endpoint `dci`.
+    bool normal(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
+                uintptr_t data_phys, uint32_t length, uint32_t timeout_ms);
+    bool completed_ok(const xhci_transfer_ring* ring);     // SUCCESS or SHORT_PACKET
+    const char* completion_code_str(uint8_t code);
+
+    // Memory the controller reads or writes: `size` bytes aligned to
+    // `alignment` that do not cross a `boundary` (0: any), zeroed.
+    void* dma_alloc(size_t size, size_t alignment, size_t boundary);
+    void dma_free(void* ptr);
+    uintptr_t phys(void* vaddr);
+
+    // Busy wait on the PIT; usable before anything is scheduled.
+    void delay_ms(uint32_t ms);
 }
-
-// Largest single SCSI READ(10)/WRITE(10) this driver will issue, in bytes:
-// what one Normal TRB carries, and the size of the per-device DMA bounce
-// buffer. The block layer splits larger requests. It covers a 64 KiB FAT32
-// cluster (a single cluster read must not be split by the FS layer).
-#define USB_MAX_XFER_BYTES 65536
 
 #endif // XHCI_H

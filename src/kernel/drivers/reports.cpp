@@ -9,7 +9,7 @@
 #include "../../include/dev/blkdev.h"
 #include "../../include/fs/vfs.h"
 #include "../../include/stdlib/string.h"
-#include "../../include/drivers/usb/xhci.h"
+#include "../../include/drivers/usb/usb.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/mm/pmm.h"
@@ -178,9 +178,9 @@ static void cmd_lsusb(int argc, const char** argv)
             (uint32_t)info.slot_id, 
             (uint32_t)info.port_index, 
             usb::get_usb_speed_str(info.port_speed));
-        screen::printf("\n\r      class=%s  %s\n\r", 
+        screen::printf("\n\r      class=%s  driver=%s\n\r",
             usb::get_usb_class_name(info.device_class),
-            info.is_mass_storage ? "[mass storage]" : "");
+            info.driver ? info.driver : "none");
     }
 }
 
@@ -225,40 +225,15 @@ static void cmd_usbinfo(int argc, const char** argv)
     screen::printf("\n\r  Speed:         %s", usb::get_usb_speed_str(info.port_speed));
     screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
     screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
-    screen::printf("\n\r  Class:         %s (0x%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
-    screen::printf("\n\r  Subclass:      0x%x", (uint32_t)info.device_subclass);
-    screen::printf("\n\r  Protocol:      0x%x", (uint32_t)info.device_protocol);
-    screen::printf("\n\r  Mass Storage:  %s", info.is_mass_storage ? "Yes" : "No");
-    screen::printf("\n\r  Connected:     %s", info.connected ? "Yes" : "No");
+    screen::printf("\n\r  Class:         %s (%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
+    screen::printf("\n\r  Subclass:      %x", (uint32_t)info.device_subclass);
+    screen::printf("\n\r  Protocol:      %x", (uint32_t)info.device_protocol);
+    screen::printf("\n\r  Driver:        %s", info.driver ? info.driver : "none");
 
     if (info.vendor_str[0] != '\0')
         screen::printf("\n\r  Vendor:        %s", info.vendor_str);
     if (info.product_str[0] != '\0')
         screen::printf("\n\r  Product:       %s", info.product_str);
-
-    if (info.is_mass_storage)
-    {
-        uint8_t blk_count = usb::get_block_device_count();
-        for (uint8_t b = 0; b < blk_count; b++)
-        {
-            usb_block_device bdev;
-            if (usb::get_block_device_info(b, &bdev) != USB_OK)
-                continue;
-
-            screen::printf("\n\r  Block device:");
-            screen::printf("\n\r    Block size:  %u bytes", bdev.block_size);
-            screen::printf("\n\r    Last LBA:    %u", bdev.last_lba);
-
-            uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
-            if (total_mb > 1024)
-                screen::printf("\n\r    Capacity:    %u GB", (uint32_t)(total_mb / 1024));
-            else
-                screen::printf("\n\r    Capacity:    %u MB", (uint32_t)total_mb);
-
-            screen::printf("\n\r    Ready:       %s", bdev.ready ? "Yes" : "No");
-            break;
-        }
-    }
 }
 
 // One lsblk row: the name, after `branch` for a partition.

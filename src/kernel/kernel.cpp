@@ -29,7 +29,7 @@
 #include "version.h"
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
-#include "../include/drivers/usb/xhci.h"
+#include "../include/drivers/usb/usb.h"
 #include "../include/stdlib/string.h"
 #include "../include/errno.h"
 #include "../include/fs/dirent.h"
@@ -222,11 +222,10 @@ namespace
         uint8_t bus = 0, dev = 0, fn = 0;
         usb::get_controller_location(&bus, &dev, &fn);
         // screen::printf("  xhci: %u controller(s), using %u:%u.%u; "
-        //                "%u usb device(s), %u disk(s), %u volume(s)\n\r",
+        //                "%u usb device(s), %u block device(s)\n\r",
         //                (uint32_t)usb::get_controller_count(),
         //                (uint32_t)bus, (uint32_t)dev, (uint32_t)fn,
         //                (uint32_t)usb::get_device_count(),
-        //                (uint32_t)usb::get_block_device_count(),
         //                blkdevs);
     }
 
@@ -404,9 +403,9 @@ extern "C" void kmain(uint64_t boot_header_phys)
     usb::init();
     uart::printf("boot: usb ready\n");
 
-    // Block layer: whole disks from USB MSD, their partitions, then the
-    // sector cache (sized from the devices it found).
-    block::enumerate_usb();
+    // Block layer: the whole disks USB MSD registered during usb::init(),
+    // their partitions, then the sector cache (sized from the devices it
+    // found).
     part::enumerate();
     bcache::init();
     vfs::init();
