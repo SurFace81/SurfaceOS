@@ -357,6 +357,7 @@ struct xhci_transfer_event_trb_t {
 #define XHCI_TRB_TYPE_CONFIGURE_ENDPOINT_CMD    12
 #define XHCI_TRB_TYPE_EVALUATE_CONTEXT_CMD      13
 #define XHCI_TRB_TYPE_RESET_ENDPOINT_CMD        14
+#define XHCI_TRB_TYPE_STOP_ENDPOINT_CMD         15
 #define XHCI_TRB_TYPE_SET_TR_DEQUEUE_PTR_CMD    16
 #define XHCI_TRB_TYPE_NOOP_CMD                  23
 
@@ -378,6 +379,10 @@ struct xhci_transfer_event_trb_t {
 #define XHCI_TRB_COMPLETION_SUCCESS     1
 #define XHCI_TRB_COMPLETION_STALL       6
 #define XHCI_TRB_COMPLETION_SHORT_PACKET 13
+
+// Endpoint Context EP State
+#define XHCI_EP_STATE_RUNNING   1
+#define XHCI_EP_STATE_HALTED    2
 
 // Device Context Indexes: 1 is the control endpoint, 2..31 the others.
 #define XHCI_MAX_DCI 32
@@ -513,8 +518,8 @@ namespace xhci
     // null) marks the device as a hub at the same time.
     bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count,
                              const xhci_hub_info* hub);
-    // After a halt: reset the endpoint and move its dequeue pointer past
-    // whatever was left on the ring.
+    // After a halt, or a transfer that never came back: stop the endpoint
+    // and move its dequeue pointer past whatever was left on the ring.
     bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring);
     // A device that is gone: no more events reach its rings, and the slot
     // and its context are given back.

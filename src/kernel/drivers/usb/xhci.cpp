@@ -602,16 +602,28 @@ static bool transfer_ok(const xhci_transfer_ring* ring)
 // Reset endpoint and set new dequeue pointer
 static bool reset_endpoint(xhci_controller* hc, uint8_t slot_id, uint8_t dci, xhci_transfer_ring* ring)
 {
-    xhci_trb_t cmd;
-    memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
-    cmd.control =
-        (XHCI_TRB_TYPE_RESET_ENDPOINT_CMD << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24) | ((uint32_t)dci << 16);
+    // Halted by an error, it takes Reset Endpoint; still running with a
+    // transfer that never came back (a timeout), Stop Endpoint. Either way
+    // it ends up stopped, where its dequeue pointer can be moved.
+    volatile xhci_endpoint_context* ep =
+        (volatile xhci_endpoint_context*)((uint8_t*)hc->dcbaa_virt[slot_id] + hc->ctx_entry_size * dci);
+    uint32_t state = ep->endpoint_state;
+    uint32_t type = state == XHCI_EP_STATE_HALTED  ? XHCI_TRB_TYPE_RESET_ENDPOINT_CMD :
+                    state == XHCI_EP_STATE_RUNNING ? XHCI_TRB_TYPE_STOP_ENDPOINT_CMD : 0;
 
-    xhci_cmd_completion_trb_t* cc = send_command(hc, &cmd, 200);
-    if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+    xhci_trb_t cmd;
+    xhci_cmd_completion_trb_t* cc;
+    if (type)
     {
-        uart::printf("xhci: reset endpoint failed dci=%u\n", (uint32_t)dci);
-        return false;
+        memory::memset((uint8_t*)&cmd, 0, sizeof(xhci_trb_t));
+        cmd.control = (type << XHCI_TRB_TYPE_SHIFT) | ((uint32_t)slot_id << 24) | ((uint32_t)dci << 16);
+        cc = send_command(hc, &cmd, 200);
+        if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
+        {
+            uart::printf("xhci: %s endpoint failed dci=%u\n",
+                         type == XHCI_TRB_TYPE_RESET_ENDPOINT_CMD ? "reset" : "stop", (uint32_t)dci);
+            return false;
+        }
     }
 
     // Set TR Dequeue Pointer

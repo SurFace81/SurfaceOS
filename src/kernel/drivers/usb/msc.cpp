@@ -47,7 +47,15 @@ struct usb_csw {
 // Sense keys (REQUEST SENSE, fixed format byte 2)
 #define SCSI_SENSE_ILLEGAL_REQUEST  0x05
 
-static const uint32_t BULK_TIMEOUT_MS = 2000;
+// The command and data phases move at the device's pace; the status comes
+// when the command is done, which for SYNCHRONIZE CACHE on a real stick
+// (or QEMU, whose flush is an fdatasync on the host) can take seconds. An
+// unplugged device ends a wait at once, whatever these say.
+static const uint32_t BULK_TIMEOUT_MS   = 5000;
+static const uint32_t STATUS_TIMEOUT_MS = 20000;
+
+// Class request: Bulk-Only Mass Storage Reset (BOT 3.1)
+#define BOT_REQ_RESET 0xFF
 
 // READ(10)/WRITE(10) carry a 32-bit LBA: a device whose last LBA does not
 // fit, or that reports READ CAPACITY(10)'s 0xFFFFFFFF "use READ(16)"
@@ -60,6 +68,7 @@ struct msc_dev
     blkdev* disk;               // its entry in the block registry
     usb_endpoint* in;
     usb_endpoint* out;
+    uint8_t interface;
     uint32_t block_size;
     uint32_t last_lba;
     // One reusable DMA bounce buffer, USB_MAX_XFER_BYTES long. Allocating
@@ -87,9 +96,10 @@ static uint32_t bot_tag = 1;
 // BOT (Bulk-Only Transport)
 
 // A bulk transfer; a stalled endpoint is cleared and reported as a stall.
-static usb_status bulk(msc_dev* m, usb_endpoint* ep, void* buf, uint32_t length, uint32_t* actual)
+static usb_status bulk(msc_dev* m, usb_endpoint* ep, void* buf, uint32_t length, uint32_t* actual,
+                       uint32_t timeout_ms = BULK_TIMEOUT_MS)
 {
-    usb_status st = usb::bulk(m->dev, ep, buf, length, actual, BULK_TIMEOUT_MS);
+    usb_status st = usb::bulk(m->dev, ep, buf, length, actual, timeout_ms);
     if (st == USB_ERR_STALL)
         usb::clear_halt(m->dev, ep);
     return st;
@@ -98,14 +108,9 @@ static usb_status bulk(msc_dev* m, usb_endpoint* ep, void* buf, uint32_t length,
 // One SCSI command through BOT: the command block out, the data in or out,
 // the status block in. 0 on success, the CSW status (1: failed, 2: phase
 // error) when the device refused, -1 when the transport broke.
-static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t scsi_cmd_len, void* data_buf,
-                                 uint32_t data_length, uint8_t direction)
+static sint32_t bot_transport(msc_dev* m, const uint8_t* scsi_cmd, uint8_t scsi_cmd_len, void* data_buf,
+                              uint32_t data_length, uint8_t direction)
 {
-    // Unplugged (the USB core noticed it mid-transfer): nothing to say to
-    // it, and nothing to log for every request that still comes.
-    if (m->dev->gone)
-        return -1;
-
     memory::memset((uint8_t*)cbw, 0, sizeof(usb_cbw));
     cbw->dCBWSignature = USB_CBW_SIGNATURE;
     cbw->dCBWTag = bot_tag++;
@@ -133,9 +138,9 @@ static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t sc
     // The status phase may stall once; after clearing it the CSW comes.
     memory::memset((uint8_t*)csw, 0, sizeof(usb_csw));
     uint32_t got = 0;
-    usb_status st = bulk(m, m->in, csw, 13, &got);
+    usb_status st = bulk(m, m->in, csw, 13, &got, STATUS_TIMEOUT_MS);
     if (st == USB_ERR_STALL)
-        st = bulk(m, m->in, csw, 13, &got);
+        st = bulk(m, m->in, csw, 13, &got, STATUS_TIMEOUT_MS);
     if (st != USB_OK || got < 13)
     {
         uart::printf("bot: CSW receive failed\n");
@@ -156,6 +161,32 @@ static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t sc
     }
 
     return 0;
+}
+
+// After the transport broke or a phase error, the device and we disagree
+// about where in a command we are; every later command would fail too.
+// Reset Recovery (BOT 5.3.4) puts both back at the start of one.
+static void reset_recovery(msc_dev* m)
+{
+    uart::printf("bot: %s: reset recovery\n", m->disk ? m->disk->name : "msc");
+    usb::control(m->dev, USB_DIR_OUT | USB_TYPE_CLASS | USB_RECIP_INTERFACE, BOT_REQ_RESET, 0,
+                 m->interface, nullptr, 0, nullptr);
+    usb::clear_halt(m->dev, m->in);
+    usb::clear_halt(m->dev, m->out);
+}
+
+static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t scsi_cmd_len, void* data_buf,
+                                 uint32_t data_length, uint8_t direction)
+{
+    // Unplugged (the USB core noticed it mid-transfer): nothing to say to
+    // it, and nothing to log for every request that still comes.
+    if (m->dev->gone)
+        return -1;
+
+    sint32_t result = bot_transport(m, scsi_cmd, scsi_cmd_len, data_buf, data_length, direction);
+    if ((result == -1 || result == 2) && !m->dev->gone)
+        reset_recovery(m);
+    return result;
 }
 
 // SCSI commands
@@ -455,6 +486,7 @@ static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
 
     memory::memset((uint8_t*)m, 0, sizeof(*m));
     m->dev = dev;
+    m->interface = iface->bInterfaceNumber;
     const usb_endpoint_descriptor* descs[2] = { bulk_in, bulk_out };
     if (!start(m, descs))
     {
