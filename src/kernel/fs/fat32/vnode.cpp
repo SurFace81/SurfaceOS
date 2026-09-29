@@ -1122,6 +1122,7 @@ namespace
         }
 
         m->fs_priv = sb;
+        block::hold(dev);       // registered while mounted, even if unplugged
 
         uart::printf("fat32: %s mounted: cluster=%u clusters=%u free=%u\n",
                      dev->name, sb->cluster_size, sb->total_clusters,
@@ -1137,14 +1138,17 @@ namespace
         if (!sb || !sb->active)
             return -EINVAL;
 
+        // On an unplugged disk these fail; the unmount goes on regardless.
         fat::flush_fsinfo(sb);
         fat::set_dirty_bit(sb, false);
         bcache::release(sb->dev);
 
+        blkdev* dev = sb->dev;
         if (sb->scratch)
             kfree(sb->scratch);
         memory::memset((uint8_t*)sb, 0, sizeof(fat_super));
         m->fs_priv = nullptr;
+        block::drop(dev);
         return 0;
     }
 }

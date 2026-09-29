@@ -501,8 +501,8 @@ namespace xhci
     // Free a ring's TRBs, once the controller no longer reads it.
     void free_ring(xhci_transfer_ring* ring);
 
-    // Transfers. False on timeout; otherwise ring->cc and ring->residue
-    // say how it went.
+    // Transfers. False on timeout, or as soon as the device's port is
+    // empty; otherwise ring->cc and ring->residue say how it went.
     //
     // A control transfer: `setup` is the 8-byte setup packet; `in` says the
     // direction of a data stage of `length` bytes at `data_phys` (none when

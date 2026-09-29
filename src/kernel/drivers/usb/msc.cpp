@@ -57,6 +57,7 @@ static const uint64_t MAX_LBA32_SECTORS = 0xFFFFFFFFULL;
 struct msc_dev
 {
     usb_device* dev;
+    blkdev* disk;               // its entry in the block registry
     usb_endpoint* in;
     usb_endpoint* out;
     uint32_t block_size;
@@ -68,12 +69,13 @@ struct msc_dev
     // SYNCHRONIZE CACHE was rejected as an unknown command: the device has
     // no cache it lets us flush, so flushes are skipped from then on.
     bool no_sync_cache;
-    // Unplugged: its disk stays registered, but every request fails.
+    // Unplugged: its disk stays registered while mounted, but every
+    // request fails.
     bool gone;
 };
 
 // An entry stays taken while its disk is registered, gone or not: the
-// disk's priv points at it.
+// disk's priv points at it. forget() frees it.
 #define MAX_MSC_DEVS 8
 static msc_dev msc_devs[MAX_MSC_DEVS];
 
@@ -99,6 +101,11 @@ static usb_status bulk(msc_dev* m, usb_endpoint* ep, void* buf, uint32_t length,
 static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t scsi_cmd_len, void* data_buf,
                                  uint32_t data_length, uint8_t direction)
 {
+    // Unplugged (the USB core noticed it mid-transfer): nothing to say to
+    // it, and nothing to log for every request that still comes.
+    if (m->dev->gone)
+        return -1;
+
     memory::memset((uint8_t*)cbw, 0, sizeof(usb_cbw));
     cbw->dCBWSignature = USB_CBW_SIGNATURE;
     cbw->dCBWTag = bot_tag++;
@@ -326,7 +333,13 @@ static sint64_t msc_flush(blkdev* bdev)
     return scsi_synchronize_cache(m) ? 0 : -EIO;
 }
 
-static blkdev_ops msc_ops = { msc_read, msc_write, msc_flush };
+// The block layer let go of the disk: the entry is free.
+static void msc_forget(blkdev* disk)
+{
+    memory::memset((uint8_t*)disk->priv, 0, sizeof(msc_dev));
+}
+
+static blkdev_ops msc_ops = { msc_read, msc_write, msc_flush, msc_forget };
 
 // "usb<n>" for the lowest n no disk has: a stick plugged in again gets its
 // name back once the old disk is gone.
@@ -375,6 +388,7 @@ static bool register_disk(msc_dev* m)
     blkdev* disk = block::register_dev(&d);
     if (!disk)
         return false;
+    m->disk = disk;
     uart::printf("msc: %s: %s %s, %uB x %u (%u MB)\n", d.name, m->dev->vendor, m->dev->product,
                  d.sector_size, (uint32_t)sectors,
                  (uint32_t)(sectors * d.sector_size / (1024 * 1024)));
@@ -459,11 +473,14 @@ static void msc_disconnect(usb_device* dev)
         msc_dev* m = &msc_devs[i];
         if (m->gone || m->dev != dev)
             continue;
-        uart::printf("msc: device gone, its disk fails from now on\n");
+        uart::printf("msc: %s: device gone\n", m->disk->name);
         m->gone = true;
         m->dev = nullptr;
         usb::dma_free(m->dma_buf);
         m->dma_buf = nullptr;
+        // Last: it may free the entry right away (forget) when nothing
+        // is mounted from the disk.
+        block::disk_gone(m->disk);
     }
 }
 

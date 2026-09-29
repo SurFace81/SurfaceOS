@@ -46,6 +46,13 @@ namespace
     {
         if (!b->dirty)
             return 0;
+        // Its disk was unplugged: the data cannot be written anywhere.
+        // It is dropped, so it does not fail every later sync as well.
+        if (block::gone(b->dev))
+        {
+            b->dirty = false;
+            return -EIO;
+        }
         sint64_t rc = block::write(b->dev, b->lba, 1, b->data);
         if (rc == 0)
             b->dirty = false;
@@ -181,7 +188,7 @@ namespace bcache
             return nullptr;
         }
 
-        if (b->valid && b->dirty)
+        if (b->valid && b->dirty && !block::gone(b->dev))
         {
             sint64_t rc = writeback(b);
             if (rc != 0)
@@ -388,8 +395,11 @@ namespace bcache
             if (dev && b->dev != dev)
                 continue;
 
+            // A buffer of an unplugged disk fails only a flush of that
+            // disk, not a flush of everything.
+            bool lost = block::gone(b->dev);
             sint64_t rc = writeback(b);
-            if (rc != 0 && first_err == 0)
+            if (rc != 0 && first_err == 0 && (dev || !lost))
                 first_err = rc;
         }
 
@@ -400,6 +410,8 @@ namespace bcache
             blkdev* d = block::get(i);
             if (d->parent)
                 continue;               // one SYNCHRONIZE CACHE per disk
+            if (d->gone && !dev)
+                continue;               // unplugged: nothing to flush into
             if (dev)
             {
                 blkdev* root = dev;
@@ -442,6 +454,24 @@ namespace bcache
             b->dev   = nullptr;
         }
         return rc;
+    }
+
+    void discard(blkdev* dev)
+    {
+        for (uint32_t i = 0; i < nbuf; i++)
+        {
+            buf* b = &buffers[i];
+            if (!b->valid || b->dev != dev)
+                continue;
+            b->dirty = false;
+            // A locked buffer stays with its holder until put(); the
+            // device is not dropped while anything holds it.
+            if (b->refcnt == 0)
+            {
+                b->valid = false;
+                b->dev   = nullptr;
+            }
+        }
     }
 
     void stats(uint32_t* dirty, uint32_t* used)

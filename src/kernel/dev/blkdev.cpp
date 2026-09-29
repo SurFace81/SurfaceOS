@@ -6,7 +6,9 @@
 // LBAs and split requests that exceed the driver's per-transfer limit.
 
 #include "../../include/dev/blkdev.h"
+#include "../../include/dev/bcache.h"
 #include "../../include/drivers/uart.h"
+#include "../../include/drivers/screen.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/mm/memory.h"
 #include "../../include/mm/heap.h"
@@ -17,18 +19,63 @@ namespace
     const uint32_t MAX_BLKDEVS    = 16;     // a few disks + their partitions
     const uint32_t MAX_IO_RETRIES = 3;
 
+    // Entries are reused once their device left the registry; pointers to
+    // live entries stay valid.
     blkdev  devices[MAX_BLKDEVS];
-    uint32_t device_count = 0;
+
+    blkdev* free_entry()
+    {
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+            if (!devices[i].registered)
+                return &devices[i];
+        return nullptr;
+    }
+
+    blkdev* disk_of(blkdev* dev)
+    {
+        while (dev->parent)
+            dev = dev->parent;
+        return dev;
+    }
+
+    // A gone disk that nothing holds any more - neither it nor one of its
+    // partitions - leaves the registry, partitions first.
+    void collect(blkdev* disk)
+    {
+        if (!disk->gone || disk->users)
+            return;
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+            if (devices[i].registered && devices[i].parent == disk && devices[i].users)
+                return;
+
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+        {
+            blkdev* d = &devices[i];
+            if (d->registered && d->parent == disk)
+            {
+                bcache::discard(d);
+                memory::memset((uint8_t*)d, 0, sizeof(blkdev));
+            }
+        }
+        bcache::discard(disk);
+        uart::printf("blkdev: %s removed\n", disk->name);
+        if (disk->ops && disk->ops->forget)
+            disk->ops->forget(disk);
+        memory::memset((uint8_t*)disk, 0, sizeof(blkdev));
+    }
 }
 
 namespace block
 {
     blkdev* register_dev(const blkdev* dev)
     {
-        if (!dev || device_count >= MAX_BLKDEVS)
+        blkdev* reg = dev ? free_entry() : nullptr;
+        if (!reg)
             return nullptr;
-        blkdev* reg = &devices[device_count++];
         *reg = *dev;
+        reg->registered = true;
+        reg->gone = false;
+        reg->users = 0;
         uart::printf("blkdev: %s %uB x %u registered\n",
                      reg->name, reg->sector_size, (uint32_t)reg->sector_count);
         return reg;
@@ -37,12 +84,12 @@ namespace block
     blkdev* alloc_partition(blkdev* parent, const char* name,
                             uint64_t lba_offset, uint64_t sector_count)
     {
-        if (!parent || device_count >= MAX_BLKDEVS)
+        blkdev* dev = parent ? free_entry() : nullptr;
+        if (!dev)
             return nullptr;
         if (lba_offset + sector_count > parent->sector_count)
             return nullptr;
 
-        blkdev* dev = &devices[device_count];
         memory::memset((uint8_t*)dev, 0, sizeof(blkdev));
         strncpy(dev->name, name, sizeof(dev->name) - 1);
         dev->sector_size        = parent->sector_size;
@@ -52,7 +99,7 @@ namespace block
         dev->priv               = parent->priv;
         dev->parent             = parent;
         dev->lba_offset         = lba_offset;
-        device_count++;
+        dev->registered         = true;
         return dev;
     }
 
@@ -77,6 +124,8 @@ namespace block
             return -EINVAL;     // beyond the device/partition end
 
         blkdev* real = resolve(dev, &lba);
+        if (real->gone)
+            return -EIO;
         uint8_t* dst = (uint8_t*)buf;
 
         uint32_t done = 0;
@@ -110,6 +159,8 @@ namespace block
             return -EINVAL;
 
         blkdev* real = resolve(dev, &lba);
+        if (real->gone)
+            return -EIO;
         const uint8_t* src = (const uint8_t*)buf;
 
         uint32_t done = 0;
@@ -144,9 +195,9 @@ namespace block
 
         // SYNCHRONIZE CACHE is whole-device: send it to the disk itself,
         // not to a partition view of it.
-        blkdev* disk = dev;
-        while (disk->parent)
-            disk = disk->parent;
+        blkdev* disk = disk_of(dev);
+        if (disk->gone)
+            return -EIO;
 
         sint64_t rc = -EIO;
         for (uint32_t attempt = 0; attempt < MAX_IO_RETRIES; attempt++)
@@ -160,19 +211,70 @@ namespace block
 
     blkdev* find(const char* name)
     {
-        for (uint32_t i = 0; i < device_count; i++)
-            if (strcmp(devices[i].name, name) == 0)
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+            if (devices[i].registered && strcmp(devices[i].name, name) == 0)
                 return &devices[i];
         return nullptr;
     }
 
     uint32_t count()
     {
-        return device_count;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+            if (devices[i].registered)
+                n++;
+        return n;
     }
 
     blkdev* get(uint32_t index)
     {
-        return index < device_count ? &devices[index] : nullptr;
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+            if (devices[i].registered && index-- == 0)
+                return &devices[i];
+        return nullptr;
+    }
+
+    void disk_gone(blkdev* disk)
+    {
+        disk->gone = true;
+
+        bool used = disk->users > 0;
+        bcache::discard(disk);
+        for (uint32_t i = 0; i < MAX_BLKDEVS; i++)
+        {
+            blkdev* d = &devices[i];
+            if (d->registered && d->parent == disk)
+            {
+                bcache::discard(d);
+                if (d->users)
+                    used = true;
+            }
+        }
+
+        if (used)
+        {
+            // What was not written yet is lost; the user has to know.
+            uart::printf("blkdev: %s removed while mounted\n", disk->name);
+            screen::printf("\n\r%s was removed while mounted: unmount it (mount lists where)",
+                           disk->name);
+        }
+        collect(disk);
+    }
+
+    bool gone(blkdev* dev)
+    {
+        return disk_of(dev)->gone;
+    }
+
+    void hold(blkdev* dev)
+    {
+        dev->users++;
+    }
+
+    void drop(blkdev* dev)
+    {
+        if (dev->users)
+            dev->users--;
+        collect(disk_of(dev));
     }
 }

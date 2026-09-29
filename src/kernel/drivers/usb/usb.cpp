@@ -102,6 +102,18 @@ static void hex4(uint16_t v, char* out)
     out[4] = '\0';
 }
 
+// A transfer that did not end: the device was unplugged (its port is empty
+// - from now on it gets no more requests), or it did not answer in time.
+static usb_status not_ended(usb_device* dev)
+{
+    if (!xhci::port_connected(dev->hc, dev->port))
+    {
+        dev->gone = true;
+        return USB_ERR_NO_DEVICE;
+    }
+    return USB_ERR_TIMEOUT;
+}
+
 // How a transfer on `ring` ended, as a status.
 static usb_status ring_status(const xhci_transfer_ring* ring)
 {
@@ -569,9 +581,11 @@ namespace usb
         if (!xhci::control(dev->hc, dev->slot, ring, setup, phys, length, in, 500))
         {
             // The controller may still write the buffer: it is not freed.
-            uart::printf("usb: slot %u: control request %x timed out\n",
-                         (uint32_t)dev->slot, (uint32_t)request);
-            return USB_ERR_TIMEOUT;
+            usb_status st = not_ended(dev);
+            if (st == USB_ERR_TIMEOUT)
+                uart::printf("usb: slot %u: control request %x timed out\n",
+                             (uint32_t)dev->slot, (uint32_t)request);
+            return st;
         }
 
         usb_status st = ring_status(ring);
@@ -604,9 +618,11 @@ namespace usb
         xhci_transfer_ring* ring = &ep->ring;
         if (!xhci::normal(dev->hc, dev->slot, ep->dci, ring, xhci::phys(dma_buf), length, timeout_ms))
         {
-            uart::printf("usb: slot %u ep %x: bulk transfer timed out\n",
-                         (uint32_t)dev->slot, (uint32_t)ep->address);
-            return USB_ERR_TIMEOUT;
+            usb_status st = not_ended(dev);
+            if (st == USB_ERR_TIMEOUT)
+                uart::printf("usb: slot %u ep %x: bulk transfer timed out\n",
+                             (uint32_t)dev->slot, (uint32_t)ep->address);
+            return st;
         }
         if (ring->cc == XHCI_TRB_COMPLETION_STALL)
             return USB_ERR_STALL;

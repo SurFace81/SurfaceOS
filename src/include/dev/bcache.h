@@ -62,6 +62,10 @@ namespace bcache
     // (umount path). 0 or -errno.
     sint64_t release(blkdev* dev);
 
+    // Forget every buffer of `dev` without writing it back: the device is
+    // gone, or leaving the registry.
+    void discard(blkdev* dev);
+
     // Diagnostics for `sync`/meminfo.
     void stats(uint32_t* dirty, uint32_t* used);
 }

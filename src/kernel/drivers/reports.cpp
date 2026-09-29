@@ -269,6 +269,8 @@ static void lsblk_row(blkdev* d, const char* branch)
         screen::printf("  size=%u MB", (uint32_t)total_mb);
     if (d->parent)
         screen::printf("  offset=%u", (uint32_t)d->lba_offset);
+    if (block::gone(d))
+        screen::printf("  (unplugged)");
 
     uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
                  d->sector_size, (uint32_t)d->sector_count, (uint32_t)d->lba_offset);

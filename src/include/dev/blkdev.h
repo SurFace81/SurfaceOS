@@ -24,6 +24,9 @@ struct blkdev_ops
     sint64_t (*write)(blkdev* dev, uint64_t lba, uint32_t count, const void* buf);
     // Force the device's write cache to stable storage, if it has one.
     sint64_t (*flush)(blkdev* dev);
+    // The registry dropped this whole disk (it was gone, and nobody used
+    // it any more): priv is no longer referenced. May be null.
+    void (*forget)(blkdev* disk);
 };
 
 struct blkdev
@@ -39,6 +42,11 @@ struct blkdev
     // on the parent. Whole disks leave both zero/null.
     blkdev*     parent;
     uint64_t    lba_offset;
+
+    // Kept by the registry.
+    bool        registered;         // a live entry; otherwise free
+    bool        gone;               // whole disk unplugged: all I/O fails
+    uint32_t    users;              // hold()s: mounted filesystems
 };
 
 namespace block
@@ -61,7 +69,20 @@ namespace block
 
     blkdev*  find(const char* name);
     uint32_t count();
-    blkdev*  get(uint32_t index);
+    blkdev*  get(uint32_t index);       // the index-th registered device
+
+    // A disk whose device is gone (the driver says so). Its data in the
+    // cache is dropped and every request to it or its partitions fails
+    // from now on; once nothing holds it or a partition of it, it leaves
+    // the registry and its name is free again.
+    void disk_gone(blkdev* disk);
+    // True when dev, or the disk it is a partition of, is gone.
+    bool gone(blkdev* dev);
+
+    // A user (a mounted filesystem) keeps the device registered while it
+    // holds it, gone or not.
+    void hold(blkdev* dev);
+    void drop(blkdev* dev);
 }
 
 #endif // BLKDEV_H

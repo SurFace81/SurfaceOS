@@ -255,6 +255,9 @@ struct xhci_controller
     xhci_cmd_ring cmd_ring;
     xhci_evt_ring evt_ring;
 
+    // The root port (0-based) of the device in each slot.
+    uint8_t slot_port[XHCI_MAX_SLOTS + 1];
+
     // Where a Transfer Event goes: the ring of (slot, DCI), at
     // rings[slot * XHCI_MAX_DCI + dci]; null for endpoints not in use.
     xhci_transfer_ring** rings;
@@ -573,16 +576,20 @@ static void transfer_start(xhci_transfer_ring* ring)
     ring->residue = 0;
 }
 
-// Wait for the transfer started on `ring` to end. False on timeout;
-// otherwise ring->cc and ring->residue say how it went.
-static bool transfer_wait(xhci_controller* hc, xhci_transfer_ring* ring, uint32_t timeout_ms)
+static xhci_portsc read_portsc(xhci_controller* hc, uint8_t port);
+
+// Wait for the transfer started on `ring` to end. False on timeout, or at
+// once when the device's port is empty: an unplugged device never answers,
+// and waiting out every timeout of every request to it stalls the system.
+// Otherwise ring->cc and ring->residue say how it went.
+static bool transfer_wait(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ring, uint32_t timeout_ms)
 {
     for (uint32_t waited = 0;; waited++)
     {
         process_events(hc);
         if (ring->done)
             return true;
-        if (waited >= timeout_ms)
+        if (waited >= timeout_ms || !read_portsc(hc, hc->slot_port[slot]).ccs)
             return false;
         delay_ms(1);
     }
@@ -1222,6 +1229,7 @@ static bool address_device(xhci_controller* hc, uint8_t slot_id, uint8_t port, u
     slot->speed = speed;
     slot->context_entries = 1;
     slot->root_hub_port_num = port + 1;
+    hc->slot_port[slot_id] = port;
 
     xhci_endpoint_context* ep0_ctx = input_ep_ctx(hc, input_ctx, 1);
     ep0_ctx->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR;
@@ -1561,14 +1569,14 @@ namespace xhci
                  uintptr_t data_phys, uint16_t length, bool in, uint32_t timeout_ms)
     {
         ::control_start(hc, slot, ep0, setup, data_phys, length, in);
-        return transfer_wait(hc, ep0, timeout_ms);
+        return transfer_wait(hc, slot, ep0, timeout_ms);
     }
 
     bool normal(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring,
                 uintptr_t data_phys, uint32_t length, uint32_t timeout_ms)
     {
         ::normal_start(hc, slot, dci, ring, data_phys, length);
-        return transfer_wait(hc, ring, timeout_ms);
+        return transfer_wait(hc, slot, ring, timeout_ms);
     }
 
     void control_start(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ep0, const uint8_t* setup,
