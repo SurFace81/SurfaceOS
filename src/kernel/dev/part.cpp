@@ -267,97 +267,93 @@ namespace part
         }
     }
 
-    void enumerate()
+    void scan(blkdev* disk)
     {
-        for (uint32_t di = 0; block::get(di); di++)
+        if (disk->parent)
+            return;         // whole disks only
+
+        uint32_t ss = disk->sector_size;
+        uint8_t* sector0 = (uint8_t*)kmalloc(ss);
+        if (!sector0)
+            return;
+
+        if (block::read(disk, 0, 1, sector0) != 0)
         {
-            blkdev* disk = block::get(di);
-            if (disk->parent)
-                continue;       // whole disks only
+            uart::printf("part: %s: sector 0 unreadable\n", disk->name);
+            kfree(sector0);
+            return;
+        }
 
-            uint32_t ss = disk->sector_size;
-            uint8_t* sector0 = (uint8_t*)kmalloc(ss);
-            if (!sector0)
-                return;
+        if (mbr_signature(sector0, ss))
+        {
+            const mbr_entry* e0 = (const mbr_entry*)(sector0 + 446);
 
-            if (block::read(disk, 0, 1, sector0) != 0)
+            // Protective MBR + a valid GPT header at LBA 1?
+            if (e0->type == 0xEE && disk->sector_count >= 2)
             {
-                uart::printf("part: %s: sector 0 unreadable\n", disk->name);
-                kfree(sector0);
-                continue;
-            }
-
-            if (mbr_signature(sector0, ss))
-            {
-                const mbr_entry* e0 = (const mbr_entry*)(sector0 + 446);
-
-                // Protective MBR + a valid GPT header at LBA 1?
-                if (e0->type == 0xEE && disk->sector_count >= 2)
+                uint8_t* sector1 = (uint8_t*)kmalloc(ss);
+                if (sector1)
                 {
-                    uint8_t* sector1 = (uint8_t*)kmalloc(ss);
-                    if (sector1)
+                    bool gpt_ok = false;
+                    if (block::read(disk, 1, 1, sector1) == 0)
                     {
-                        bool gpt_ok = false;
-                        if (block::read(disk, 1, 1, sector1) == 0)
+                        const gpt_header* hdr = (const gpt_header*)sector1;
+                        if (memory::memcmp(hdr->signature, (uint8_t*)"EFI PART", 8) == 0 &&
+                            hdr->header_size >= 92 && hdr->header_size <= ss)
                         {
-                            const gpt_header* hdr = (const gpt_header*)sector1;
-                            if (memory::memcmp(hdr->signature, (uint8_t*)"EFI PART", 8) == 0 &&
-                                hdr->header_size >= 92 && hdr->header_size <= ss)
+                            // Header CRC over header_size with the CRC
+                            // field zeroed.
+                            uint8_t* tmp = (uint8_t*)kmalloc(hdr->header_size);
+                            if (tmp)
                             {
-                                // Header CRC over header_size with the CRC
-                                // field zeroed.
-                                uint8_t* tmp = (uint8_t*)kmalloc(hdr->header_size);
-                                if (tmp)
-                                {
-                                    memory::memcpy(tmp, sector1, hdr->header_size);
-                                    memory::memset(tmp + 16, 0, 4);
-                                    gpt_ok = crc32(tmp, hdr->header_size) == hdr->header_crc;
-                                    kfree(tmp);
-                                }
+                                memory::memcpy(tmp, sector1, hdr->header_size);
+                                memory::memset(tmp + 16, 0, 4);
+                                gpt_ok = crc32(tmp, hdr->header_size) == hdr->header_crc;
+                                kfree(tmp);
                             }
                         }
-
-                        if (gpt_ok)
-                        {
-                            uart::printf("part: %s: GPT\n", disk->name);
-                            parse_gpt(disk, (const gpt_header*)sector1);
-                            kfree(sector1);
-                            kfree(sector0);
-                            continue;
-                        }
-                        kfree(sector1);
-                        uart::printf("part: %s: 0xEE entry but no valid GPT header\n",
-                                     disk->name);
                     }
-                }
 
-                // Plain MBR with FAT-type entries?
-                bool any_fat = false;
-                for (uint32_t i = 0; i < 4; i++)
-                {
-                    const mbr_entry* e = (const mbr_entry*)(sector0 + 446 + i * 16);
-                    if (e->type != 0 && mbr_type_is_fat(e->type))
-                        any_fat = true;
-                }
-                if (any_fat)
-                {
-                    uart::printf("part: %s: MBR\n", disk->name);
-                    parse_mbr(disk, sector0);
-                    kfree(sector0);
-                    continue;
+                    if (gpt_ok)
+                    {
+                        uart::printf("part: %s: GPT\n", disk->name);
+                        parse_gpt(disk, (const gpt_header*)sector1);
+                        kfree(sector1);
+                        kfree(sector0);
+                        return;
+                    }
+                    kfree(sector1);
+                    uart::printf("part: %s: 0xEE entry but no valid GPT header\n",
+                                 disk->name);
                 }
             }
 
-            if (is_fat_boot_sector(sector0, ss))
+            // Plain MBR with FAT-type entries?
+            bool any_fat = false;
+            for (uint32_t i = 0; i < 4; i++)
             {
-                uart::printf("part: %s: superfloppy (FAT32 at LBA 0)\n", disk->name);
+                const mbr_entry* e = (const mbr_entry*)(sector0 + 446 + i * 16);
+                if (e->type != 0 && mbr_type_is_fat(e->type))
+                    any_fat = true;
             }
-            else
+            if (any_fat)
             {
-                uart::printf("part: %s: no partition table, no FAT boot sector\n",
-                             disk->name);
+                uart::printf("part: %s: MBR\n", disk->name);
+                parse_mbr(disk, sector0);
+                kfree(sector0);
+                return;
             }
-            kfree(sector0);
         }
+
+        if (is_fat_boot_sector(sector0, ss))
+        {
+            uart::printf("part: %s: superfloppy (FAT32 at LBA 0)\n", disk->name);
+        }
+        else
+        {
+            uart::printf("part: %s: no partition table, no FAT boot sector\n",
+                         disk->name);
+        }
+        kfree(sector0);
     }
 }

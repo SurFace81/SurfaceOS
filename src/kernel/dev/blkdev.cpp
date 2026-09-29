@@ -23,17 +23,15 @@ namespace
 
 namespace block
 {
-    sint64_t register_dev(blkdev* dev)
+    blkdev* register_dev(const blkdev* dev)
     {
         if (!dev || device_count >= MAX_BLKDEVS)
-            return -ENOMEM;
-        devices[device_count] = *dev;
-        device_count++;
+            return nullptr;
+        blkdev* reg = &devices[device_count++];
+        *reg = *dev;
         uart::printf("blkdev: %s %uB x %u registered\n",
-                     devices[device_count - 1].name,
-                     devices[device_count - 1].sector_size,
-                     (uint32_t)devices[device_count - 1].sector_count);
-        return 0;
+                     reg->name, reg->sector_size, (uint32_t)reg->sector_count);
+        return reg;
     }
 
     blkdev* alloc_partition(blkdev* parent, const char* name,

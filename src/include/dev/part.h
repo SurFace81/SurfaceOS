@@ -18,8 +18,10 @@
 
 namespace part
 {
-    // Scan every whole disk (parent == nullptr) and register partitions.
-    void enumerate();
+    // Read the partition table of a whole disk (parent == nullptr) and
+    // register its partitions. The disk driver calls it right after
+    // registering the disk, at boot or when it is plugged in.
+    void scan(blkdev* disk);
 
     // True if sector 0 of `dev` looks like a FAT32 boot sector (superfloppy).
     bool is_fat_boot_sector(const uint8_t* sector, uint32_t sector_size);

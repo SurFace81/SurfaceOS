@@ -44,8 +44,9 @@ struct blkdev
 namespace block
 {
     // Register a device a driver built (whole disks; partitions come from
-    // alloc_partition). The registry keeps a copy. 0 or -errno.
-    sint64_t register_dev(blkdev* dev);
+    // alloc_partition). The registry keeps a copy and returns it; nullptr
+    // when the registry is full.
+    blkdev* register_dev(const blkdev* dev);
 
     // Allocate a zeroed blkdev for a partition of `parent` from the static
     // pool. nullptr when the pool is full.

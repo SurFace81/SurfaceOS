@@ -400,10 +400,8 @@ extern "C" void kmain(uint64_t boot_header_phys)
     usb::init();
     uart::printf("boot: usb ready\n");
 
-    // Block layer: the whole disks USB MSD registered during usb::init(),
-    // their partitions, then the sector cache (sized from the devices it
-    // found).
-    part::enumerate();
+    // The disks USB MSD found are registered by now, partitions and all;
+    // the sector cache and the filesystems come next.
     bcache::init();
     vfs::init();
     filesys::init();

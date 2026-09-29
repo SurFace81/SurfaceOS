@@ -3,6 +3,7 @@
 
 #include "../../../include/drivers/usb/usb.h"
 #include "../../../include/dev/blkdev.h"
+#include "../../../include/dev/part.h"
 #include "../../../include/errno.h"
 
 #define USB_CLASS_MASS_STORAGE  0x08
@@ -71,9 +72,10 @@ struct msc_dev
     bool gone;
 };
 
+// An entry stays taken while its disk is registered, gone or not: the
+// disk's priv points at it.
 #define MAX_MSC_DEVS 8
 static msc_dev msc_devs[MAX_MSC_DEVS];
-static uint8_t msc_count = 0;
 
 // Command and status blocks, shared: one command is in flight at a time.
 static usb_cbw* cbw = nullptr;
@@ -135,13 +137,13 @@ static sint32_t bot_scsi_command(msc_dev* m, const uint8_t* scsi_cmd, uint8_t sc
 
     if (csw->dCSWSignature != USB_CSW_SIGNATURE)
     {
-        uart::printf("bot: invalid CSW signature 0x%x\n", csw->dCSWSignature);
+        uart::printf("bot: invalid CSW signature %x\n", csw->dCSWSignature);
         return -1;
     }
 
     if (csw->bCSWStatus != 0)
     {
-        uart::printf("bot: command 0x%x failed status=%u\n", (uint32_t)scsi_cmd[0],
+        uart::printf("bot: command %x failed status=%u\n", (uint32_t)scsi_cmd[0],
                      (uint32_t)csw->bCSWStatus);
         return (sint32_t)csw->bCSWStatus;
     }
@@ -326,8 +328,26 @@ static sint64_t msc_flush(blkdev* bdev)
 
 static blkdev_ops msc_ops = { msc_read, msc_write, msc_flush };
 
-// The device as a whole disk. False when its geometry is unusable.
-static bool register_disk(msc_dev* m, uint8_t index)
+// "usb<n>" for the lowest n no disk has: a stick plugged in again gets its
+// name back once the old disk is gone.
+static void disk_name(char* name)
+{
+    for (uint32_t n = 0;; n++)
+    {
+        uint32_t i = 0;
+        name[i++] = 'u'; name[i++] = 's'; name[i++] = 'b';
+        if (n >= 10)
+            name[i++] = (char)('0' + n / 10);
+        name[i++] = (char)('0' + n % 10);
+        name[i] = '\0';
+        if (!block::find(name))
+            return;
+    }
+}
+
+// The device as a whole disk, partitions and all. False when its geometry
+// is unusable.
+static bool register_disk(msc_dev* m)
 {
     uint64_t sectors = (uint64_t)m->last_lba + 1;
     if (m->last_lba == MAX_LBA32_SECTORS || sectors > MAX_LBA32_SECTORS)
@@ -345,26 +365,40 @@ static bool register_disk(msc_dev* m, uint8_t index)
 
     blkdev d;
     memory::memset((uint8_t*)&d, 0, sizeof(d));
-    d.name[0] = 'u'; d.name[1] = 's'; d.name[2] = 'b';
-    if (index >= 10)
-    {
-        d.name[3] = (char)('0' + index / 10);
-        d.name[4] = (char)('0' + index % 10);
-    }
-    else
-        d.name[3] = (char)('0' + index);
+    disk_name(d.name);
     d.sector_size        = m->block_size;
     d.sector_count       = sectors;
     d.max_sectors_per_io = USB_MAX_XFER_BYTES / m->block_size;
     d.ops                = &msc_ops;
     d.priv               = m;
 
-    if (block::register_dev(&d) != 0)
+    blkdev* disk = block::register_dev(&d);
+    if (!disk)
         return false;
     uart::printf("msc: %s: %s %s, %uB x %u (%u MB)\n", d.name, m->dev->vendor, m->dev->product,
                  d.sector_size, (uint32_t)sectors,
                  (uint32_t)(sectors * d.sector_size / (1024 * 1024)));
+    part::scan(disk);
     return true;
+}
+
+// Configure the device, wait until it is ready and register its disk.
+static bool start(msc_dev* m, const usb_endpoint_descriptor* const* bulk_in_out)
+{
+    if (usb::set_configuration(m->dev) != USB_OK)
+        return false;
+    usb_endpoint* eps[2];
+    if (usb::open_endpoints(m->dev, bulk_in_out, 2, eps) != USB_OK)
+        return false;
+    m->in = eps[0];
+    m->out = eps[1];
+
+    scsi_inquiry(m);
+    if (!scsi_test_unit_ready(m) || !scsi_read_capacity(m))
+        return false;
+
+    m->dma_buf = (uint8_t*)usb::dma_alloc(USB_MAX_XFER_BYTES);
+    return m->dma_buf && register_disk(m);
 }
 
 static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
@@ -372,7 +406,11 @@ static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
     if (iface->bInterfaceClass != USB_CLASS_MASS_STORAGE || iface->bInterfaceSubClass != USB_SUBCLASS_SCSI ||
         iface->bInterfaceProtocol != USB_PROTOCOL_BBB)
         return false;
-    if (msc_count >= MAX_MSC_DEVS)
+    msc_dev* m = nullptr;
+    for (uint8_t i = 0; i < MAX_MSC_DEVS && !m; i++)
+        if (!msc_devs[i].dev && !msc_devs[i].gone)
+            m = &msc_devs[i];
+    if (!m)
     {
         uart::printf("msc: too many devices\n");
         return false;
@@ -401,39 +439,27 @@ static bool msc_probe(usb_device* dev, const usb_interface_descriptor* iface)
         csw = (usb_csw*)usb::dma_alloc(sizeof(usb_csw));
     }
 
-    msc_dev* m = &msc_devs[msc_count];
     memory::memset((uint8_t*)m, 0, sizeof(*m));
     m->dev = dev;
-
-    if (usb::set_configuration(dev) != USB_OK)
-        return false;
     const usb_endpoint_descriptor* descs[2] = { bulk_in, bulk_out };
-    usb_endpoint* eps[2];
-    if (usb::open_endpoints(dev, descs, 2, eps) != USB_OK)
+    if (!start(m, descs))
+    {
+        // The entry is free again; the device keeps what it was given.
+        usb::dma_free(m->dma_buf);
+        memory::memset((uint8_t*)m, 0, sizeof(*m));
         return false;
-    m->in = eps[0];
-    m->out = eps[1];
-
-    scsi_inquiry(m);
-    if (!scsi_test_unit_ready(m) || !scsi_read_capacity(m))
-        return false;
-
-    m->dma_buf = (uint8_t*)usb::dma_alloc(USB_MAX_XFER_BYTES);
-    if (!m->dma_buf || !register_disk(m, msc_count))
-        return false;
-
-    msc_count++;
+    }
     return true;
 }
 
 static void msc_disconnect(usb_device* dev)
 {
-    for (uint8_t i = 0; i < msc_count; i++)
+    for (uint8_t i = 0; i < MAX_MSC_DEVS; i++)
     {
         msc_dev* m = &msc_devs[i];
         if (m->gone || m->dev != dev)
             continue;
-        uart::printf("msc: usb%u: device gone, its disk fails from now on\n", (uint32_t)i);
+        uart::printf("msc: device gone, its disk fails from now on\n");
         m->gone = true;
         m->dev = nullptr;
         usb::dma_free(m->dma_buf);
