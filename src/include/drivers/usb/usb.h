@@ -77,9 +77,12 @@ struct usb_endpoint_descriptor {
 #define USB_RECIP_DEVICE        0x00
 #define USB_RECIP_INTERFACE     0x01
 #define USB_RECIP_ENDPOINT      0x02
+#define USB_RECIP_OTHER         0x03    // a hub's port
 
 // Standard requests
+#define USB_REQ_GET_STATUS          0
 #define USB_REQ_CLEAR_FEATURE       1
+#define USB_REQ_SET_FEATURE         3
 #define USB_REQ_GET_DESCRIPTOR      6
 #define USB_REQ_SET_CONFIGURATION   9
 
@@ -129,8 +132,23 @@ struct usb_device
     volatile bool gone;         // unplugged: every request fails with NO_DEVICE
     xhci_controller* hc;
     uint8_t slot;
-    uint8_t port;               // root port, 0-based
+    uint8_t port;               // root port its chain starts at, 0-based
     uint8_t speed;              // xHCI speed ID
+
+    // Behind a hub: the hub, and the port of it (1-based) the device is on.
+    // tier counts the hubs above it; route is its xHCI route string; a low
+    // or full speed device behind a high speed hub has that hub's slot and
+    // port as its transaction translator.
+    usb_device* parent;
+    uint8_t hub_port;
+    uint8_t tier;
+    uint32_t route;
+    uint8_t tt_slot;
+    uint8_t tt_port;
+
+    // A hub says so (its driver sets these before open_endpoints()).
+    uint8_t hub_ports;
+    uint8_t hub_think_time;
 
     usb_device_descriptor desc;
     uint8_t* config;            // the whole configuration descriptor
@@ -159,13 +177,16 @@ struct usb_class_driver
     // Every timer tick (may be null); runs in the timer interrupt, so the
     // same rules as for on_complete apply.
     void (*tick)();
+    // Work that has to wait (may be null): run by the usb kernel process
+    // after the driver asked for it with wake_hotplug().
+    void (*work)();
 };
 
 // For lsusb/usbinfo.
 struct usb_device_info {
     uint8_t  controller;        // index, as get_controller_location() takes
     uint8_t  slot_id;
-    uint8_t  port_index;
+    char     path[24];          // root port, then hub ports: "0.3.2"
     uint8_t  port_speed;
     uint16_t vendor_id;
     uint16_t product_id;
@@ -187,6 +208,18 @@ namespace usb
     // Start the usb kernel process, which handles devices plugged in or
     // pulled out from now on. Once processes exist.
     void start_hotplug();
+
+    // --- For the hub driver -------------------------------------------------
+
+    // A device on port `port` (1-based) of `hub`, reset and running at
+    // `speed` (xHCI speed ID): enumerate it and hand it to a driver.
+    usb_device* enumerate_hub_port(usb_device* hub, uint8_t port, uint8_t speed);
+    usb_device* device_on_hub_port(usb_device* hub, uint8_t port);
+    // A device that is gone, and everything plugged into it.
+    void detach_device(usb_device* dev);
+    // Ask for the drivers' work() in the usb kernel process; fine from an
+    // interrupt.
+    void wake_hotplug();
 
     // --- For class drivers --------------------------------------------------
 

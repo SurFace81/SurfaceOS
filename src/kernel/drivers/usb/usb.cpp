@@ -10,18 +10,23 @@
 // interface of each device to them in this order.
 extern const usb_class_driver msc_driver;
 extern const usb_class_driver hid_kbd_driver;
+extern const usb_class_driver hub_driver;
 
 static const usb_class_driver* const class_drivers[] = {
     &msc_driver,
     &hid_kbd_driver,
+    &hub_driver,
 };
 
 #define MAX_USB_DEVICES 32
 // Entries are reused once their device is gone; in_use marks the live ones.
 static usb_device devices[MAX_USB_DEVICES];
 
-// The usb kernel process sleeps here until a port changes (hotplug below).
+// The usb kernel process sleeps here until a port changes (hotplug below):
+// a root port (the controller says so) or a hub's (its driver says so, by
+// wake_hotplug(), and does the work in its work()).
 static wait_queue hotplug_wq;
+static volatile bool driver_work = false;
 
 // Longest configuration descriptor we read; the rest is cut off.
 static const uint16_t MAX_CONFIG_LEN = 1024;
@@ -102,11 +107,28 @@ static void hex4(uint16_t v, char* out)
     out[4] = '\0';
 }
 
-// A transfer that did not end: the device was unplugged (its port is empty
-// - from now on it gets no more requests), or it did not answer in time.
-static usb_status not_ended(usb_device* dev)
+// Is the device still plugged in: its root port connected and, behind
+// hubs, the port of its hub too (asked of the hub; USB 2.0 11.24.2.7 and
+// USB 3 10.16.2.6 both keep "connection" in bit 0 of the port status).
+static bool still_attached(usb_device* dev)
 {
     if (!xhci::port_connected(dev->hc, dev->port))
+        return false;
+    if (!dev->parent)
+        return true;
+    uint8_t status[4];
+    uint16_t got = 0;
+    if (usb::control(dev->parent, USB_DIR_IN | USB_TYPE_CLASS | USB_RECIP_OTHER, USB_REQ_GET_STATUS,
+                     0, dev->hub_port, status, sizeof(status), &got) != USB_OK || got < 4)
+        return !dev->parent->gone;
+    return status[0] & 1;
+}
+
+// A transfer that did not end: the device was unplugged (from now on it
+// gets no more requests), or it did not answer in time.
+static usb_status not_ended(usb_device* dev)
+{
+    if (!still_attached(dev))
     {
         dev->gone = true;
         return USB_ERR_NO_DEVICE;
@@ -257,15 +279,38 @@ static void attach_drivers(usb_device* dev)
     }
 }
 
-// Enumerate the device on one connected root port: reset, address, read
-// what it is, and hand it to a driver.
-static void enumerate_port(xhci_controller* hc, uint8_t port)
+// "0", "0.3", "0.3.2": the root port (0-based, as usbports numbers
+// them), then the hub port at each tier (1-based, as hubs number them).
+static void device_path(const usb_device* dev, char* out, uint32_t size)
 {
-    if (!xhci::reset_port(hc, port))
+    uint8_t ports[8];
+    uint8_t n = 0;
+    for (const usb_device* d = dev; d->parent && n < 8; d = d->parent)
+        ports[n++] = d->hub_port;
+
+    uint32_t i = 0;
+    auto put_num = [&](uint32_t v) {
+        char tmp[4];
+        uint32_t t = 0;
+        do { tmp[t++] = (char)('0' + v % 10); v /= 10; } while (v && t < 4);
+        while (t && i + 1 < size)
+            out[i++] = tmp[--t];
+    };
+    put_num(dev->port);
+    while (n && i + 2 < size)
     {
-        uart::printf("usb: port %u: reset failed\n", (uint32_t)port);
-        return;
+        out[i++] = '.';
+        put_num(ports[--n]);
     }
+    out[i] = '\0';
+}
+
+// A new device, at the root port `port` (parent null) or on port `hub_port`
+// of the hub `parent`, already reset and running at `speed`: address it,
+// read what it is, and hand it to a driver.
+static usb_device* attach(xhci_controller* hc, usb_device* parent, uint8_t port, uint8_t hub_port,
+                          uint8_t speed)
+{
     usb_device* dev = nullptr;
     for (uint8_t i = 0; i < MAX_USB_DEVICES && !dev; i++)
         if (!devices[i].in_use)
@@ -273,29 +318,61 @@ static void enumerate_port(xhci_controller* hc, uint8_t port)
     if (!dev)
     {
         uart::printf("usb: port %u: too many devices\n", (uint32_t)port);
-        return;
+        return nullptr;
     }
 
     memory::memset((uint8_t*)dev, 0, sizeof(*dev));
     dev->hc = hc;
     dev->port = port;
-    dev->speed = xhci::port_speed(hc, port);
+    dev->speed = speed;
+    dev->parent = parent;
+    dev->hub_port = hub_port;
+
+    xhci_dev_location where = {};
+    where.root_port = port;
+    where.speed = speed;
+    if (parent)
+    {
+        // One route nibble per hub tier below the root port; a port past
+        // 15 cannot be expressed and is clamped (xHCI 8.9).
+        dev->tier = (uint8_t)(parent->tier + 1);
+        dev->route = parent->route | ((uint32_t)(hub_port < 15 ? hub_port : 15) << (4 * parent->tier));
+
+        // A low or full speed device behind a high speed hub goes through
+        // the nearest such hub's transaction translator.
+        if (speed <= 2)
+        {
+            if (parent->speed == 3)
+            {
+                dev->tt_slot = parent->slot;
+                dev->tt_port = hub_port;
+            }
+            else
+            {
+                dev->tt_slot = parent->tt_slot;
+                dev->tt_port = parent->tt_port;
+            }
+        }
+        where.route = dev->route;
+        where.tt_hub_slot = dev->tt_slot;
+        where.tt_port = dev->tt_port;
+    }
 
     dev->slot = xhci::enable_slot(hc);
     if (dev->slot == 0)
     {
         uart::printf("usb: port %u: no device slot\n", (uint32_t)port);
-        return;
+        return nullptr;
     }
 
     dev->ep0.type = USB_EP_CONTROL;
     dev->ep0.dci = 1;
     dev->ep0.max_packet = max_packet_size_for_speed(dev->speed);
-    if (!xhci::address_device(hc, dev->slot, port, dev->speed, dev->ep0.max_packet, &dev->ep0.ring))
+    if (!xhci::address_device(hc, dev->slot, &where, dev->ep0.max_packet, &dev->ep0.ring))
     {
         xhci::disable_slot(hc, dev->slot);
         xhci::free_ring(&dev->ep0.ring);
-        return;
+        return nullptr;
     }
 
     // From here on the controller knows the device, and its EP0 ring lives
@@ -303,23 +380,43 @@ static void enumerate_port(xhci_controller* hc, uint8_t port)
     dev->in_use = true;
 
     if (!read_descriptors(dev))
-        return;
+        return dev;
 
-    char id[10];
+    char id[10], path[24];
     hex4(dev->desc.idVendor, id);
     id[4] = ':';
     hex4(dev->desc.idProduct, id + 5);
-    uart::printf("usb: port %u slot %u: %s %s, %s\n", (uint32_t)port, (uint32_t)dev->slot, id,
+    device_path(dev, path, sizeof(path));
+    uart::printf("usb: port %s slot %u: %s %s, %s\n", path, (uint32_t)dev->slot, id,
                  usb_class_name(dev->desc.bDeviceClass), usb_speed_str(dev->speed));
 
     attach_drivers(dev);
+    return dev;
 }
 
-// The device on a port that is gone: the drivers let go of it, the
-// controller forgets it, and its entry is free again.
+// Enumerate the device on one connected root port.
+static void enumerate_port(xhci_controller* hc, uint8_t port)
+{
+    if (!xhci::reset_port(hc, port))
+    {
+        uart::printf("usb: port %u: reset failed\n", (uint32_t)port);
+        return;
+    }
+    attach(hc, nullptr, port, 0, xhci::port_speed(hc, port));
+}
+
+// A device that is gone: the drivers let go of it, the controller forgets
+// it, and its entry is free again. Behind a hub, whatever was plugged into
+// it went with it and goes first.
 static void detach(usb_device* dev)
 {
-    uart::printf("usb: port %u slot %u: disconnected\n", (uint32_t)dev->port, (uint32_t)dev->slot);
+    for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+        if (devices[i].in_use && devices[i].parent == dev)
+            detach(&devices[i]);
+
+    char path[24];
+    device_path(dev, path, sizeof(path));
+    uart::printf("usb: port %s slot %u: disconnected\n", path, (uint32_t)dev->slot);
 
     // No request reaches it from here on, and after disable_slot no event
     // reaches its rings - so the drivers can free what the controller wrote
@@ -338,10 +435,11 @@ static void detach(usb_device* dev)
     memory::memset((uint8_t*)dev, 0, sizeof(*dev));
 }
 
+// The device plugged straight into a root port.
 static usb_device* device_on(xhci_controller* hc, uint8_t port)
 {
     for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
-        if (devices[i].in_use && devices[i].hc == hc && devices[i].port == port)
+        if (devices[i].in_use && !devices[i].parent && devices[i].hc == hc && devices[i].port == port)
             return &devices[i];
     return nullptr;
 }
@@ -355,10 +453,10 @@ static uint8_t devices_on(xhci_controller* hc)
     return n;
 }
 
-// Hotplug: a port whose state changed. Its device, if it had one, is gone
-// when the port is empty or saw a new connection (a quick unplug and plug
-// in); a connected port with no device gets one. Everything else - the
-// changes a port reset leaves behind - needs nothing.
+// Hotplug: a root port whose state changed. Its device, if it had one, is
+// gone when the port is empty or saw a new connection (a quick unplug and
+// plug in); a connected port with no device gets one. Everything else -
+// the changes a port reset leaves behind - needs nothing.
 static void port_changed(xhci_controller* hc, uint8_t port)
 {
     uint32_t sc = xhci::port_ack(hc, port);
@@ -381,8 +479,10 @@ static void port_changed(xhci_controller* hc, uint8_t port)
         enumerate_port(hc, port);
 }
 
-static bool any_port_changed(void*)
+static bool hotplug_pending(void*)
 {
+    if (driver_work)
+        return true;
     for (uint8_t i = 0; xhci::controller(i); i++)
         if (xhci::ports_changed(xhci::controller(i)))
             return true;
@@ -390,18 +490,26 @@ static bool any_port_changed(void*)
 }
 
 // The usb kernel process: plugging in and pulling out, handled where
-// waiting is allowed. The timer tick wakes it.
+// waiting is allowed. The timer tick (root ports) and the hub driver wake
+// it.
 static void hotplug_main(void*)
 {
     for (;;)
     {
-        wait::wait_event(&hotplug_wq, any_port_changed, nullptr, 0);
+        wait::wait_event(&hotplug_wq, hotplug_pending, nullptr, 0);
         for (uint8_t i = 0; xhci::controller(i); i++)
         {
             xhci_controller* hc = xhci::controller(i);
             uint8_t port;
             while (xhci::take_port_change(hc, &port))
                 port_changed(hc, port);
+        }
+        if (driver_work)
+        {
+            driver_work = false;
+            for (const usb_class_driver* drv : class_drivers)
+                if (drv->work)
+                    drv->work();
         }
     }
 }
@@ -464,6 +572,30 @@ namespace usb
         }
 
         return devices_with_driver() > 0;
+    }
+
+    usb_device* enumerate_hub_port(usb_device* hub, uint8_t port, uint8_t speed)
+    {
+        return attach(hub->hc, hub, hub->port, port, speed);
+    }
+
+    usb_device* device_on_hub_port(usb_device* hub, uint8_t port)
+    {
+        for (uint8_t i = 0; i < MAX_USB_DEVICES; i++)
+            if (devices[i].in_use && devices[i].parent == hub && devices[i].hub_port == port)
+                return &devices[i];
+        return nullptr;
+    }
+
+    void detach_device(usb_device* dev)
+    {
+        detach(dev);
+    }
+
+    void wake_hotplug()
+    {
+        driver_work = true;
+        wait::wake_up(&hotplug_wq);
     }
 
     void start_hotplug()
@@ -546,7 +678,8 @@ namespace usb
             }
         }
 
-        if (!xhci::configure_endpoints(dev->hc, dev->slot, cfg, count))
+        xhci_hub_info hub = { dev->hub_ports, dev->hub_think_time };
+        if (!xhci::configure_endpoints(dev->hc, dev->slot, cfg, count, dev->hub_ports ? &hub : nullptr))
             return USB_ERR_IO;
 
         for (uint8_t i = 0; i < count; i++)
@@ -691,8 +824,9 @@ namespace usb
     {
         for (uint8_t i = 0; xhci::controller(i); i++)
             xhci::poll(xhci::controller(i));
-        if (any_port_changed(nullptr))
-            wait::wake_up(&hotplug_wq);
+        for (uint8_t i = 0; xhci::controller(i); i++)
+            if (xhci::ports_changed(xhci::controller(i)))
+                wait::wake_up(&hotplug_wq);
         for (const usb_class_driver* drv : class_drivers)
             if (drv->tick)
                 drv->tick();
@@ -791,7 +925,7 @@ namespace usb
         memory::memset((uint8_t*)out, 0, sizeof(*out));
         out->controller = controller_index(dev->hc);
         out->slot_id = dev->slot;
-        out->port_index = dev->port;
+        device_path(dev, out->path, sizeof(out->path));
         out->port_speed = dev->speed;
         out->vendor_id = dev->desc.idVendor;
         out->product_id = dev->desc.idProduct;

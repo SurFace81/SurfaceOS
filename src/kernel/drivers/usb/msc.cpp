@@ -484,4 +484,4 @@ static void msc_disconnect(usb_device* dev)
     }
 }
 
-extern const usb_class_driver msc_driver = { "msc", msc_probe, msc_disconnect, nullptr };
+extern const usb_class_driver msc_driver = { "msc", msc_probe, msc_disconnect, nullptr, nullptr };

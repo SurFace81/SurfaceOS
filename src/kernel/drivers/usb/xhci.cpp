@@ -1208,7 +1208,7 @@ static void normal_start(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_tr
 
 // Device slots
 
-static bool address_device(xhci_controller* hc, uint8_t slot_id, uint8_t port, uint8_t speed,
+static bool address_device(xhci_controller* hc, uint8_t slot_id, const xhci_dev_location* where,
                            uint16_t max_packet, xhci_transfer_ring* ep0)
 {
     if (!create_device_context(hc, slot_id))
@@ -1225,11 +1225,13 @@ static bool address_device(xhci_controller* hc, uint8_t slot_id, uint8_t port, u
     input_control_ctx(input_ctx)->drop_flags = 0;
 
     xhci_slot_context* slot = input_slot_ctx(hc, input_ctx);
-    slot->route_string = 0;
-    slot->speed = speed;
+    slot->route_string = where->route;
+    slot->speed = where->speed;
     slot->context_entries = 1;
-    slot->root_hub_port_num = port + 1;
-    hc->slot_port[slot_id] = port;
+    slot->root_hub_port_num = where->root_port + 1;
+    slot->parent_hub_slot_id = where->tt_hub_slot;
+    slot->parent_port_number = where->tt_port;
+    hc->slot_port[slot_id] = where->root_port;
 
     xhci_endpoint_context* ep0_ctx = input_ep_ctx(hc, input_ctx, 1);
     ep0_ctx->endpoint_type = XHCI_EP_TYPE_CONTROL_BIDIR;
@@ -1251,14 +1253,15 @@ static bool address_device(xhci_controller* hc, uint8_t slot_id, uint8_t port, u
         free_xhci_memory(input_ctx);
     if (!cc || cc->completion_code != XHCI_TRB_COMPLETION_SUCCESS)
     {
-        uart::printf("xhci: address device failed port=%u code=%u\n", (uint32_t)port,
-                     cc ? (uint32_t)cc->completion_code : 0);
+        uart::printf("xhci: address device failed port=%u route=%x code=%u\n",
+                     (uint32_t)where->root_port, where->route, cc ? (uint32_t)cc->completion_code : 0);
         return false;
     }
     return true;
 }
 
-static bool configure_endpoints(xhci_controller* hc, uint8_t slot_id, xhci_ep_config* eps, uint8_t count)
+static bool configure_endpoints(xhci_controller* hc, uint8_t slot_id, xhci_ep_config* eps, uint8_t count,
+                                const xhci_hub_info* hub)
 {
     void* input_ctx = alloc_input_context(hc);
     if (!input_ctx)
@@ -1292,6 +1295,12 @@ static bool configure_endpoints(xhci_controller* hc, uint8_t slot_id, xhci_ep_co
             max_dci = e->dci;
     }
     input_slot_ctx(hc, input_ctx)->context_entries = max_dci;
+    if (hub)
+    {
+        input_slot_ctx(hc, input_ctx)->hub = 1;
+        input_slot_ctx(hc, input_ctx)->port_count = hub->ports;
+        input_slot_ctx(hc, input_ctx)->tt_think_time = hub->think_time;
+    }
     input_control_ctx(input_ctx)->add_flags = add;
     input_control_ctx(input_ctx)->drop_flags = 0;
 
@@ -1514,10 +1523,10 @@ namespace xhci
         return enable_device_slot(hc);
     }
 
-    bool address_device(xhci_controller* hc, uint8_t slot, uint8_t port, uint8_t speed,
+    bool address_device(xhci_controller* hc, uint8_t slot, const xhci_dev_location* where,
                         uint16_t max_packet, xhci_transfer_ring* ep0)
     {
-        return ::address_device(hc, slot, port, speed, max_packet, ep0);
+        return ::address_device(hc, slot, where, max_packet, ep0);
     }
 
     bool set_ep0_max_packet(xhci_controller* hc, uint8_t slot, uint16_t max_packet)
@@ -1525,9 +1534,10 @@ namespace xhci
         return evaluate_context(hc, slot, max_packet);
     }
 
-    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count)
+    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count,
+                             const xhci_hub_info* hub)
     {
-        return ::configure_endpoints(hc, slot, eps, count);
+        return ::configure_endpoints(hc, slot, eps, count, hub);
     }
 
     bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring)

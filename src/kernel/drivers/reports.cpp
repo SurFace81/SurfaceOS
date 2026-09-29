@@ -182,11 +182,11 @@ static void cmd_lsusb(int argc, const char** argv)
         hex_to_str(info.vendor_id, vid, 4);
         hex_to_str(info.product_id, pid, 4);
 
-        screen::printf("\n\r  [%u] %s:%s  ctrl=%u slot=%u port=%u  %s",
+        screen::printf("\n\r  [%u] %s:%s  ctrl=%u slot=%u port=%s  %s",
             (uint32_t)i, vid, pid,
             (uint32_t)info.controller,
-            (uint32_t)info.slot_id, 
-            (uint32_t)info.port_index, 
+            (uint32_t)info.slot_id,
+            info.path,
             usb::get_usb_speed_str(info.port_speed));
         screen::printf("\n\r      class=%s  driver=%s\n\r",
             usb::get_usb_class_name(info.device_class),
@@ -238,7 +238,7 @@ static void cmd_usbinfo(int argc, const char** argv)
     screen::printf("\n\r  Controller:    %u (%u:%u.%u)", (uint32_t)info.controller,
                    (uint32_t)bus, (uint32_t)dev, (uint32_t)fn);
     screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
-    screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
+    screen::printf("\n\r  Port:          %s", info.path);
     screen::printf("\n\r  Class:         %s (%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
     screen::printf("\n\r  Subclass:      %x", (uint32_t)info.device_subclass);
     screen::printf("\n\r  Protocol:      %x", (uint32_t)info.device_protocol);

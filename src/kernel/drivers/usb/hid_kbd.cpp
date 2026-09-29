@@ -293,5 +293,5 @@ static void hid_kbd_disconnect(usb_device* dev)
 }
 
 extern const usb_class_driver hid_kbd_driver = {
-    "hid-kbd", hid_kbd_probe, hid_kbd_disconnect, hid_kbd_tick
+    "hid-kbd", hid_kbd_probe, hid_kbd_disconnect, hid_kbd_tick, nullptr
 };

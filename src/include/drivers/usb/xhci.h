@@ -449,6 +449,25 @@ struct xhci_ep_config
     xhci_transfer_ring* ring;   // initialised by configure_endpoints()
 };
 
+// Where a device sits, for its slot context (xHCI 4.3.3, 6.2.2).
+struct xhci_dev_location
+{
+    uint8_t root_port;          // root port its chain starts at, 0-based
+    uint32_t route;             // route string: a hub port per tier, 4 bits each
+    uint8_t speed;              // xHCI speed ID
+    // A low or full speed device behind a high speed hub talks through
+    // that hub's transaction translator: its slot and port (0: none).
+    uint8_t tt_hub_slot;
+    uint8_t tt_port;
+};
+
+// A hub, as the slot context describes it (set with its endpoints).
+struct xhci_hub_info
+{
+    uint8_t ports;
+    uint8_t think_time;         // TT Think Time, high speed hubs: 0..3
+};
+
 struct xhci_controller;
 
 namespace xhci
@@ -484,14 +503,16 @@ namespace xhci
 
     // Device slots. enable_slot() returns the slot ID, 0 on failure.
     uint8_t enable_slot(xhci_controller* hc);
-    // Address the device on `port` in `slot`, with `ep0` as its control
+    // Address the device at `where` in `slot`, with `ep0` as its control
     // ring (initialised here) and `max_packet` as EP0's packet size.
-    bool address_device(xhci_controller* hc, uint8_t slot, uint8_t port, uint8_t speed,
+    bool address_device(xhci_controller* hc, uint8_t slot, const xhci_dev_location* where,
                         uint16_t max_packet, xhci_transfer_ring* ep0);
     // EP0's real packet size, once the device descriptor told it.
     bool set_ep0_max_packet(xhci_controller* hc, uint8_t slot, uint16_t max_packet);
-    // Add endpoints to a device, rings and all, in one command.
-    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count);
+    // Add endpoints to a device, rings and all, in one command. `hub` (or
+    // null) marks the device as a hub at the same time.
+    bool configure_endpoints(xhci_controller* hc, uint8_t slot, xhci_ep_config* eps, uint8_t count,
+                             const xhci_hub_info* hub);
     // After a halt: reset the endpoint and move its dequeue pointer past
     // whatever was left on the ring.
     bool reset_endpoint(xhci_controller* hc, uint8_t slot, uint8_t dci, xhci_transfer_ring* ring);
