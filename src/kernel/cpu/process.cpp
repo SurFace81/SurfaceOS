@@ -304,7 +304,7 @@ namespace process
 
     static pid_t    next_pid  = 1;
 
-    // Ctrl+Alt+C (keyboard.cpp): the screen whose programs are to end, -1
+    // Ctrl+Alt+C (kbd.cpp): the screen whose programs are to end, -1
     // for none. Acted on at the next scheduling decision - the keyboard IRQ
     // can land anywhere.
     static volatile sint32_t end_screen = -1;
@@ -1788,7 +1788,7 @@ namespace process
                            uint32_t flags = 0);
 
     // A kernel process: no user address space, runs `entry` on its task.
-    static Process* start_kernel_process(const char* name, void (*entry)(void*))
+    Process* start_kernel_process(const char* name, void (*entry)(void*))
     {
         Process* p = alloc_process();
         if (!p)

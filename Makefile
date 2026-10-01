@@ -50,10 +50,15 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/irq.o \
 				bin/kernel/cpu/interrupts.asm.o \
 				bin/kernel/drivers/keyboard.o \
+				bin/kernel/drivers/kbd.o \
 				bin/kernel/drivers/reports.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/drivers/usb/xhci.o \
+				bin/kernel/drivers/usb/usb.o \
+				bin/kernel/drivers/usb/msc.o \
+				bin/kernel/drivers/usb/hid_kbd.o \
+				bin/kernel/drivers/usb/hub.o \
 				bin/kernel/dev/blkdev.o \
 				bin/kernel/dev/part.o \
 				bin/kernel/dev/bcache.o \

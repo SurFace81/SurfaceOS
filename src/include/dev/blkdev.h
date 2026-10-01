@@ -5,10 +5,10 @@
 
 // Unified block device interface (stage 3.2).
 //
-// Drivers (today: USB MSD in xhci.cpp) register whole disks; part.cpp
-// registers partitions as children of a disk with an lba_offset. Everything
-// above (bcache, FAT32, ...) talks only to this interface and never to a
-// specific bus.
+// Drivers (today: USB MSD in drivers/usb/msc.cpp) register whole disks;
+// part.cpp registers partitions as children of a disk with an lba_offset.
+// Everything above (bcache, FAT32, ...) talks only to this interface and
+// never to a specific bus.
 //
 // All calls return 0 on success or a negative errno. Sizes and LBAs are
 // 64-bit; the driver enforces its own per-request limit via
@@ -24,6 +24,9 @@ struct blkdev_ops
     sint64_t (*write)(blkdev* dev, uint64_t lba, uint32_t count, const void* buf);
     // Force the device's write cache to stable storage, if it has one.
     sint64_t (*flush)(blkdev* dev);
+    // The registry dropped this whole disk (it was gone, and nobody used
+    // it any more): priv is no longer referenced. May be null.
+    void (*forget)(blkdev* disk);
 };
 
 struct blkdev
@@ -33,23 +36,25 @@ struct blkdev
     uint64_t    sector_count;
     uint32_t    max_sectors_per_io; // driver limit; blkdev splits above it
     blkdev_ops* ops;
-    void*       priv;               // driver-private (e.g. usb device index)
+    void*       priv;               // driver-private (e.g. its device state)
 
     // Partitions: parent != nullptr, and lba_offset is the partition start
     // on the parent. Whole disks leave both zero/null.
     blkdev*     parent;
     uint64_t    lba_offset;
+
+    // Kept by the registry.
+    bool        registered;         // a live entry; otherwise free
+    bool        gone;               // whole disk unplugged: all I/O fails
+    uint32_t    users;              // hold()s: mounted filesystems
 };
 
 namespace block
 {
-    // Register whole disks behind every USB mass-storage device: usb0..usbN.
-    // Devices READ CAPACITY reports as >= 2 TiB (LBA32 overflow marker) are
-    // rejected with an explicit message - READ(16) does not exist yet.
-    void enumerate_usb();
-
-    // Register an externally built device (partitions). 0 or -errno.
-    sint64_t register_dev(blkdev* dev);
+    // Register a device a driver built (whole disks; partitions come from
+    // alloc_partition). The registry keeps a copy and returns it; nullptr
+    // when the registry is full.
+    blkdev* register_dev(const blkdev* dev);
 
     // Allocate a zeroed blkdev for a partition of `parent` from the static
     // pool. nullptr when the pool is full.
@@ -64,7 +69,20 @@ namespace block
 
     blkdev*  find(const char* name);
     uint32_t count();
-    blkdev*  get(uint32_t index);
+    blkdev*  get(uint32_t index);       // the index-th registered device
+
+    // A disk whose device is gone (the driver says so). Its data in the
+    // cache is dropped and every request to it or its partitions fails
+    // from now on; once nothing holds it or a partition of it, it leaves
+    // the registry and its name is free again.
+    void disk_gone(blkdev* disk);
+    // True when dev, or the disk it is a partition of, is gone.
+    bool gone(blkdev* dev);
+
+    // A user (a mounted filesystem) keeps the device registered while it
+    // holds it, gone or not.
+    void hold(blkdev* dev);
+    void drop(blkdev* dev);
 }
 
 #endif // BLKDEV_H

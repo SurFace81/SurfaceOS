@@ -43,7 +43,7 @@ struct term_cell
 };
 
 // Screens: each has its own cells, cursor, colours and parser state, and
-// the panel shows one of them (Alt+F1..F9, keyboard.cpp). Past those nine,
+// the panel shows one of them (Alt+F1..F9, kbd.cpp). Past those nine,
 // hidden screens for programs running in the background: never shown,
 // their grids taken only while one is in use.
 #define TERM_SCREENS        9

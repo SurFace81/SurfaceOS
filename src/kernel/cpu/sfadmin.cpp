@@ -19,6 +19,7 @@
 #include "../../include/cpu/smp.h"
 #include "../../include/mm/pmm.h"
 #include "../../include/mm/memory.h"
+#include "../../include/stdlib/string.h"
 #include "../../include/errno.h"
 #include "../../sdk/include/sfos.h"
 
@@ -134,18 +135,29 @@ namespace
         if (!dev)
             return;
 
+        // What is mounted from it, gathered first: unmounting the last
+        // volume of an unplugged disk takes the disk and its partitions out
+        // of the block registry, `dev` included.
+        mount* targets[8];
         uint32_t found = 0;
-        SfStatus st = SF_SUCCESS;
-        for (uint32_t i = 0; block::get(i); i++)
+        for (uint32_t i = 0; block::get(i) && found < 8; i++)
         {
             blkdev* d = block::get(i);
             mount* m = part_of(d, dev) ? mounts::of_device(d->name) : nullptr;
-            if (!m)
-                continue;
-            found++;
-            sint64_t rc = mounts::unmount(m);
+            if (m)
+                targets[found++] = m;
+        }
+
+        SfStatus st = SF_SUCCESS;
+        for (uint32_t i = 0; i < found; i++)
+        {
+            char name[sizeof(targets[i]->devname)];
+            strncpy(name, targets[i]->devname, sizeof(name) - 1);
+            name[sizeof(name) - 1] = '\0';
+
+            sint64_t rc = mounts::unmount(targets[i]);
             uart::printf("umount: %s %s\n", rc == 0 ? "ok" : rc == -EBUSY ? "busy" : "failed",
-                         d->name);
+                         name);
             if (rc == -EBUSY)
                 st = SF_IN_USE;
             else if (rc == -EPERM)

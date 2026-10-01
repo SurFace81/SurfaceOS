@@ -9,7 +9,7 @@
 #include "../../include/dev/blkdev.h"
 #include "../../include/fs/vfs.h"
 #include "../../include/stdlib/string.h"
-#include "../../include/drivers/usb/xhci.h"
+#include "../../include/drivers/usb/usb.h"
 #include "../../include/mm/heap.h"
 #include "../../include/mm/memory.h"
 #include "../../include/mm/pmm.h"
@@ -118,35 +118,44 @@ static void cmd_dmesg(int argc, const char** argv)
     }
 }
 
-// usbports: the raw root-port state of the active controller. The one thing
+// usbports: the raw root-port state of every controller. The one thing
 // worth photographing when a machine enumerates nothing: it separates "no
 // controller", "port unpowered", "nothing plugged in" and "device present but
 // enumeration failed".
 static void cmd_usbports(int argc, const char** argv)
 {
-    uint8_t ports = usb::get_port_count();
+    uint8_t controllers = usb::get_controller_count();
     screen::printf("\n\r");
-    screen::printf("\n\r Root ports: %u   context entry: %u bytes",
-                   (uint32_t)ports, usb::get_context_entry_size());
-
-    if (ports == 0)
+    if (controllers == 0)
     {
-        screen::printf("\n\r No controller running");
+        screen::printf("\n\r No controller found");
         return;
     }
 
-    for (uint8_t i = 0; i < ports; i++)
+    for (uint8_t c = 0; c < controllers; c++)
     {
-        uint32_t raw = usb::get_port_status(i);
-        char hex[9];
-        hex_to_str(raw, hex, 8);
+        uint8_t bus, dev, fn;
+        usb::get_controller_location(c, &bus, &dev, &fn);
+        uint8_t ports = usb::get_port_count(c);
+        screen::printf("\n\r Controller %u (%u:%u.%u): %u root ports, context entry %u bytes",
+                       (uint32_t)c, (uint32_t)bus, (uint32_t)dev, (uint32_t)fn,
+                       (uint32_t)ports, usb::get_context_entry_size(c));
+        if (ports == 0)
+            screen::printf("\n\r  not running");
 
-        screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
-            (uint32_t)i,
-            usb::port_is_usb3(i) ? "usb3" : "usb2",
-            hex,
-            raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
-            (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+        for (uint8_t i = 0; i < ports; i++)
+        {
+            uint32_t raw = usb::get_port_status(c, i);
+            char hex[9];
+            hex_to_str(raw, hex, 8);
+
+            screen::printf("\n\r  [%u] %s  0x%s  ccs=%u ped=%u pp=%u pr=%u pls=%u spd=%u",
+                (uint32_t)i,
+                usb::port_is_usb3(c, i) ? "usb3" : "usb2",
+                hex,
+                raw & 1, (raw >> 1) & 1, (raw >> 9) & 1, (raw >> 4) & 1,
+                (raw >> 5) & 0xF, (raw >> 10) & 0xF);
+        }
     }
 }
 
@@ -173,14 +182,15 @@ static void cmd_lsusb(int argc, const char** argv)
         hex_to_str(info.vendor_id, vid, 4);
         hex_to_str(info.product_id, pid, 4);
 
-        screen::printf("\n\r  [%u] %s:%s  slot=%u port=%u  %s",
+        screen::printf("\n\r  [%u] %s:%s  ctrl=%u slot=%u port=%s  %s",
             (uint32_t)i, vid, pid,
-            (uint32_t)info.slot_id, 
-            (uint32_t)info.port_index, 
+            (uint32_t)info.controller,
+            (uint32_t)info.slot_id,
+            info.path,
             usb::get_usb_speed_str(info.port_speed));
-        screen::printf("\n\r      class=%s  %s\n\r", 
+        screen::printf("\n\r      class=%s  driver=%s\n\r",
             usb::get_usb_class_name(info.device_class),
-            info.is_mass_storage ? "[mass storage]" : "");
+            info.driver ? info.driver : "none");
     }
 }
 
@@ -223,42 +233,21 @@ static void cmd_usbinfo(int argc, const char** argv)
     screen::printf("\n\r  Product ID:    0x%s", pid);
     screen::printf("\n\r  USB Version:   %c.%c%c", bcd[1], bcd[2], bcd[3]);
     screen::printf("\n\r  Speed:         %s", usb::get_usb_speed_str(info.port_speed));
+    uint8_t bus, dev, fn;
+    usb::get_controller_location(info.controller, &bus, &dev, &fn);
+    screen::printf("\n\r  Controller:    %u (%u:%u.%u)", (uint32_t)info.controller,
+                   (uint32_t)bus, (uint32_t)dev, (uint32_t)fn);
     screen::printf("\n\r  Slot:          %u", (uint32_t)info.slot_id);
-    screen::printf("\n\r  Port:          %u", (uint32_t)info.port_index);
-    screen::printf("\n\r  Class:         %s (0x%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
-    screen::printf("\n\r  Subclass:      0x%x", (uint32_t)info.device_subclass);
-    screen::printf("\n\r  Protocol:      0x%x", (uint32_t)info.device_protocol);
-    screen::printf("\n\r  Mass Storage:  %s", info.is_mass_storage ? "Yes" : "No");
-    screen::printf("\n\r  Connected:     %s", info.connected ? "Yes" : "No");
+    screen::printf("\n\r  Port:          %s", info.path);
+    screen::printf("\n\r  Class:         %s (%x)", usb::get_usb_class_name(info.device_class), (uint32_t)info.device_class);
+    screen::printf("\n\r  Subclass:      %x", (uint32_t)info.device_subclass);
+    screen::printf("\n\r  Protocol:      %x", (uint32_t)info.device_protocol);
+    screen::printf("\n\r  Driver:        %s", info.driver ? info.driver : "none");
 
     if (info.vendor_str[0] != '\0')
         screen::printf("\n\r  Vendor:        %s", info.vendor_str);
     if (info.product_str[0] != '\0')
         screen::printf("\n\r  Product:       %s", info.product_str);
-
-    if (info.is_mass_storage)
-    {
-        uint8_t blk_count = usb::get_block_device_count();
-        for (uint8_t b = 0; b < blk_count; b++)
-        {
-            usb_block_device bdev;
-            if (usb::get_block_device_info(b, &bdev) != USB_OK)
-                continue;
-
-            screen::printf("\n\r  Block device:");
-            screen::printf("\n\r    Block size:  %u bytes", bdev.block_size);
-            screen::printf("\n\r    Last LBA:    %u", bdev.last_lba);
-
-            uint64_t total_mb = bdev.total_bytes / (1024 * 1024);
-            if (total_mb > 1024)
-                screen::printf("\n\r    Capacity:    %u GB", (uint32_t)(total_mb / 1024));
-            else
-                screen::printf("\n\r    Capacity:    %u MB", (uint32_t)total_mb);
-
-            screen::printf("\n\r    Ready:       %s", bdev.ready ? "Yes" : "No");
-            break;
-        }
-    }
 }
 
 // One lsblk row: the name, after `branch` for a partition.
@@ -280,6 +269,8 @@ static void lsblk_row(blkdev* d, const char* branch)
         screen::printf("  size=%u MB", (uint32_t)total_mb);
     if (d->parent)
         screen::printf("  offset=%u", (uint32_t)d->lba_offset);
+    if (block::gone(d))
+        screen::printf("  (unplugged)");
 
     uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
                  d->sector_size, (uint32_t)d->sector_count, (uint32_t)d->lba_offset);

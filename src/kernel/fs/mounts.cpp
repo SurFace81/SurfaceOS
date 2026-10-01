@@ -97,8 +97,13 @@ namespace mounts
                             strncmp(path, "/mount/", 7) == 0 &&
                             strcmp(path + 7, name) == 0;
 
+        // A volume whose disk was unplugged is let go without writing:
+        // there is nowhere to write to.
+        blkdev* dev = block::find(name);
+        bool gone = dev && block::gone(dev);
+
         vnode* root = m->root;
-        sint64_t rc = root->ops->fsync ? root->ops->fsync(root) : 0;
+        sint64_t rc = root->ops->fsync && !gone ? root->ops->fsync(root) : 0;
         if (rc == 0)
             rc = vfs::umount(m);
         if (rc == 0 && in_mount_dir)

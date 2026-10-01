@@ -9,8 +9,8 @@
 // Every filesystem read/write goes through here: on real hardware each FAT
 // lookup is a separate SCSI round trip, and the old driver paid one per
 // sector. The cache is a fixed pool allocated once from the PMM (sized from
-// total memory, block size = the largest sector size any registered device
-// reports, so 512 and 4096 both work).
+// total memory; a buffer is one 4 KiB frame, so sectors of 512 to 4096
+// bytes all fit, from disks present at boot or plugged in later).
 //
 // Lifecycle of one buffer:
 //   bcache::get(dev, lba)      -> locked buf with valid contents (read on
@@ -36,7 +36,6 @@ struct buf
 
 namespace bcache
 {
-    // Call after blkdev/part enumeration so the block size is known.
     void init();
 
     uint32_t block_size();
@@ -62,6 +61,10 @@ namespace bcache
     // Write back everything, then invalidate every buffer of `dev`
     // (umount path). 0 or -errno.
     sint64_t release(blkdev* dev);
+
+    // Forget every buffer of `dev` without writing it back: the device is
+    // gone, or leaving the registry.
+    void discard(blkdev* dev);
 
     // Diagnostics for `sync`/meminfo.
     void stats(uint32_t* dirty, uint32_t* used);
