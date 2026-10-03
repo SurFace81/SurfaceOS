@@ -3,6 +3,7 @@
 // USB core's (usb.cpp); this file only moves TRBs.
 
 #include "../../../include/drivers/usb/xhci.h"
+#include "../../../include/cpu/wait.h"
 #include "../../../include/drivers/pit.h"
 
 // Utility functions
@@ -24,6 +25,13 @@ static void delay_ms(uint32_t ms)
     if (hz)
     {
         uint64_t target = pit::ticks() + ((uint64_t)ms * hz + 999) / 1000;
+
+        // A thread sleeps meanwhile, and the CPU and the kernel are the
+        // others'. A transfer waits so, a millisecond at a time: spinning,
+        // a disk write held up the whole system to the end. A sleep cut
+        // short (the process is being ended) spins the rest.
+        if (wait::can_sleep() && wait::sleep_until(target))
+            return;
 
         // Bounded so a stopped timer degrades into a spin rather than a hang.
         uint64_t guard = (uint64_t)ms * 20000000ULL + 1000000ULL;
@@ -544,6 +552,11 @@ static void dump_controller_state(xhci_controller* hc, const char* why)
                  hc->evt_ring.trbs[hc->evt_ring.dequeue_ptr].control);
 }
 
+// Most transfers and commands end within microseconds: look for that a
+// while before waiting a millisecond at a time - which, asleep, is a tick
+// or two each.
+static const uint32_t QUICK_POLLS = 2000;
+
 // Send a command and wait for its completion. The result is a copy the
 // controller does not write to; it stays valid until the next command.
 static xhci_cmd_completion_trb_t* send_command(xhci_controller* hc, xhci_trb_t* cmd_trb, uint32_t timeout_ms)
@@ -552,7 +565,13 @@ static xhci_cmd_completion_trb_t* send_command(xhci_controller* hc, xhci_trb_t* 
     hc->cmd_pending = hc->cmd_ring.phys_base + hc->cmd_ring.enqueue_ptr * sizeof(xhci_trb_t);
     cmd_ring_enqueue(&hc->cmd_ring, cmd_trb);
     ring_command_doorbell(hc);
+    wait::yield_if_due();
 
+    for (uint32_t i = 0; i < QUICK_POLLS && !hc->cmd_done; i++)
+    {
+        process_events(hc);
+        asm volatile("pause");
+    }
     for (uint32_t waited = 0;; waited++)
     {
         process_events(hc);
@@ -584,6 +603,14 @@ static xhci_portsc read_portsc(xhci_controller* hc, uint8_t port);
 // Otherwise ring->cc and ring->residue say how it went.
 static bool transfer_wait(xhci_controller* hc, uint8_t slot, xhci_transfer_ring* ring, uint32_t timeout_ms)
 {
+    wait::yield_if_due();
+    for (uint32_t i = 0; i < QUICK_POLLS; i++)
+    {
+        process_events(hc);
+        if (ring->done)
+            return true;
+        asm volatile("pause");
+    }
     for (uint32_t waited = 0;; waited++)
     {
         process_events(hc);

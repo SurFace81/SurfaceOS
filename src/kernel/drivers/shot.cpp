@@ -1,6 +1,7 @@
 // Screenshots (shot.h). The picture is copied out of the back buffer at
 // once, as a whole BMP file in contiguous frames, so what is written is
-// one moment; then the file goes to the disk in one write.
+// one moment; then the file goes to the disk a piece at a time, each piece
+// flushed, the title bar counting the megabytes.
 
 #include "../../include/drivers/shot.h"
 #include "../../include/drivers/screen.h"
@@ -18,6 +19,9 @@ namespace
 {
     wait_queue shot_wq;
     volatile bool wanted = false;
+    volatile bool busy   = false;      // one is being taken or written
+
+    const uint64_t PIECE = 256 * 1024;
 
     bool is_wanted(void*) { return wanted; }
 
@@ -104,10 +108,18 @@ namespace
         vnode* v = nullptr;
         if (dir && dir->ops->create && dir->ops->create(dir, name, 0644, &v) == 0)
         {
-            uint64_t done = 0;
-            ok = v->ops->write(v, 0, bmp, size, &done) == 0 && done == size;
-            if (v->ops->fsync)
-                v->ops->fsync(v);
+            uint64_t off = 0;
+            ok = true;
+            while (ok && off < size)
+            {
+                uint64_t n = size - off < PIECE ? size - off : PIECE;
+                uint64_t done = 0;
+                ok = v->ops->write(v, off, bmp + off, n, &done) == 0 && done == n;
+                if (v->ops->fsync)
+                    v->ops->fsync(v);   // on the disk now: the count is true
+                off += done;
+                term::set_progress("screenshot", off, size);
+            }
             vfs::unref(v);
         }
         if (dir)
@@ -126,18 +138,16 @@ namespace
             char name[40];
             bool ok = save(name);
 
-            // Say so in the title bar of the screen shown.
+            // How it went, on the title bar for a few seconds.
             char text[64] = "";
             char* e = text;
-            for (const char* c = ok ? "saved /files/screenshots/" : "screenshot failed"; *c; c++)
+            for (const char* c = ok ? "saved " : "screenshot failed"; *c; c++)
                 *e++ = *c;
             for (const char* c = name; ok && *c && e < text + sizeof(text) - 1; c++)
                 *e++ = *c;
             *e = '\0';
-            uint32_t prev = term::selected();
-            term::select(term::shown_screen());
-            term::set_subtitle(text);
-            term::select(prev);
+            term::set_status(text, 4000);
+            busy = false;
         }
     }
 }
@@ -151,7 +161,11 @@ namespace shot
 
     void request()
     {
+        if (busy)
+            return;                     // one at a time
+        busy = true;
         wanted = true;
+        term::set_status("screenshot...", 0);
         wait::wake_up(&shot_wq);
     }
 }

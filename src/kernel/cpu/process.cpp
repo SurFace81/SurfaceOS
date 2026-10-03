@@ -74,6 +74,10 @@ namespace process
         bool        running;        // on its CPU right now
         bool        doomed;         // its process ended while it ran on another
                                     // CPU: it ends at its next kernel entry
+        uint32_t    holds;          // sleep locks held (wait.h): it is not ended
+                                    // there, but once it lets them go
+        uint64_t    borrowed_cr3;   // an address space it works in for now (a
+                                    // program being loaded), 0: its process's
 
         // What a handle to the thread refers to (its exit status for
         // Join); the thread holds one reference until it ends. Null for
@@ -299,6 +303,7 @@ namespace process
     // has used, and where this CPU's round-robin search goes on: each
     // CPU's own (percpu.h), named here as if they were variables.
     static inline Cpu* this_cpu() { return cpu::current(); }
+    static inline Cpu* cpu_here() { return this_cpu(); }    // for wait:: below
     #define cur_thread  (this_cpu()->thread)
     #define current     (this_cpu()->proc)
     #define slice_ticks (this_cpu()->slice_ticks)
@@ -345,7 +350,10 @@ namespace process
         for (uint32_t i = 0; i < MAX_THREADS; i++)
         {
             Thread* t = &threads[i];
-            if (t->state != TState::Unused || !t->kstack || &t->task == this_cpu()->running_task)
+            // A slot with a process is a thread not started yet: its stack
+            // is in use already.
+            if (t->state != TState::Unused || t->proc || !t->kstack ||
+                &t->task == this_cpu()->running_task)
                 continue;
             pmm::free_frames(virt_to_phys((void*)t->kstack), KERNEL_STACK_FRAMES);
             t->kstack = 0;
@@ -435,7 +443,9 @@ namespace process
             Thread* t = &threads[i];
             if (t->proc != p)
                 continue;
-            if (t->running && t != cur_thread)
+            // One running elsewhere, or asleep holding a lock (the exit of
+            // another of its threads), ends once it is back at a way out.
+            if ((t->running || t->holds) && t != cur_thread)
             {
                 t->doomed = true;
                 left++;
@@ -499,7 +509,9 @@ namespace process
     {
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
-            if (table[i].state != State::Unused)
+            // A slot with a pid is being set up: launch() may sleep (the
+            // program read from the disk) before it starts the process.
+            if (table[i].state != State::Unused || table[i].pid)
                 continue;
 
             Process* p = &table[i];
@@ -554,9 +566,9 @@ namespace process
         p->line_history = nullptr;
         if (p->out)
         {
-            if (p->out->ops->fsync)
+            if (p->out->ops->fsync && wait::can_sleep())
                 p->out->ops->fsync(p->out);
-            vfs::unref(p->out);
+            vfs::unref(p->out);         // its release writes the size back
         }
         p->out = nullptr;
         p->out_off = 0;
@@ -813,7 +825,7 @@ namespace process
         ScreenLog* l = &screen_log[s];
         if (l->v)
         {
-            if (l->v->ops->fsync)
+            if (l->v->ops->fsync && wait::can_sleep())
                 l->v->ops->fsync(l->v);
             vfs::unref(l->v);
         }
@@ -946,8 +958,9 @@ namespace process
         current = t->proc;
         t->running = true;
         cpu::set_kernel_stack(kstack_top(t));
-        paging::switch_address_space(t->proc->cr3);
-        this_cpu()->cr3 = t->proc->cr3;
+        uint64_t cr3 = t->borrowed_cr3 ? t->borrowed_cr3 : t->proc->cr3;
+        paging::switch_address_space(cr3);
+        this_cpu()->cr3 = cr3;
         fpu_restore(t->fpu);
         task::switch_to(&t->task);
     }
@@ -1196,8 +1209,13 @@ namespace process
             return -ENOMEM;
         }
 
+        // The new space is loaded while the file is read - a read that may
+        // sleep: whoever runs meanwhile loads their own, and this thread
+        // gets this one back (switch_thread).
         uint64_t prev = read_cr3();
         paging::switch_address_space(as);
+        if (cur_thread)
+            cur_thread->borrowed_cr3 = as;
 
         elf::LoadResult lr = {0, 0, false};
         bool ok = map_user_region(USER_STACK_TOP - USER_STACK_SIZE, USER_STACK_SIZE,
@@ -1258,6 +1276,8 @@ namespace process
             }
         }
 
+        if (cur_thread)
+            cur_thread->borrowed_cr3 = 0;
         paging::switch_address_space(prev);
         vfs::unref(v);
 
@@ -1354,6 +1374,7 @@ namespace process
     // 0), its screen and keys go back.
     static void terminate(Process* p, SfStatus status)
     {
+        wait::no_sleep scope;           // its threads are gone: none may sleep here
         p->sf_status = status;
         uart::printf("process: pid %u %s ended, status %llx\n", (uint32_t)p->pid, p->name,
                      status);
@@ -1409,8 +1430,12 @@ namespace process
         {
             uint32_t slot = (last_slot + i) % MAX_THREADS;
             Thread* t = &threads[slot];
+            // A paused process's thread still finishes what it holds a
+            // sleep lock for (a disk operation): the pause takes it at its
+            // way back to the program.
             if (t->state == TState::Unused || t->cpu != this_cpu()->index ||
-                t->proc->state != State::Live)
+                (t->proc->state != State::Live &&
+                 !(t->proc->state == State::Stopped && t->holds)))
                 continue;
 
             if (t->state == TState::Blocked && wake_ready(t))
@@ -1559,6 +1584,16 @@ namespace process
 
     // End the processes of this CPU that are to be ended. Returns true when
     // `current` can no longer continue and the caller has to reschedule.
+    // Does a thread of p hold a sleep lock (wait.h) - asleep in the middle
+    // of something that must not be left half done?
+    static bool holds_locks(const Process* p)
+    {
+        for (uint32_t i = 0; i < MAX_THREADS; i++)
+            if (threads[i].proc == p && threads[i].state != TState::Unused && threads[i].holds)
+                return true;
+        return false;
+    }
+
     static bool service_requests()
     {
         bool switch_away = false;
@@ -1567,6 +1602,8 @@ namespace process
             Process* p = &table[i];
             if (p->cpu != this_cpu()->index || !alive(p) || !p->end_requested)
                 continue;               // its own CPU acts on it (it may be running there)
+            if (holds_locks(p))
+                continue;               // ended once it has let them go
             switch_away |= (p == current);
             terminate(p, SF_ABORTED);
         }
@@ -1578,6 +1615,7 @@ namespace process
     // that can run (nullptr: none).
     static Thread* choose_next()
     {
+        wait::no_sleep scope;
         sint32_t s = end_screen;
         if (s >= 0)
         {
@@ -1608,11 +1646,18 @@ namespace process
 
         // Running again: whoever switched to us made us current.
         slice_ticks = 0;
+        this_cpu()->run_since = pit::ticks();
     }
 
     // Switch away at a way back to ring 3 (a call's end, an interrupt): the
     // trap frame on the kernel stack is what the process resumes from.
     static void reschedule(user_regs*, iret_frame*)
+    {
+        schedule();
+    }
+
+    // The CPU to the others for a turn, the thread staying runnable.
+    void yield()
     {
         schedule();
     }
@@ -2795,6 +2840,87 @@ namespace wait
             if (!process::queue_sleep(&process::timer_wq, tick))
                 return false;
         return true;
+    }
+
+    bool can_sleep()
+    {
+        uint64_t flags;
+        asm volatile("pushfq; pop %0" : "=r"(flags));
+        Cpu* c = process::cpu_here();
+        return c->thread && (flags & 0x200) && !c->no_sleep;
+    }
+
+    void yield_if_due()
+    {
+        Cpu* c = process::cpu_here();
+        if (pit::ticks() - c->run_since >= TIME_SLICE_TICKS && can_sleep())
+            process::yield();
+    }
+
+    no_sleep::no_sleep()  { process::cpu_here()->no_sleep++; }
+    no_sleep::~no_sleep() { process::cpu_here()->no_sleep--; }
+
+    struct ticket_wait
+    {
+        sleep_lock* l;
+        uint64_t    ticket;
+    };
+
+    static bool my_turn(void* a)
+    {
+        ticket_wait* w = (ticket_wait*)a;
+        return w->l->depth == 0 && w->l->serving == w->ticket;
+    }
+
+    bool lock(sleep_lock* l)
+    {
+        process::Thread* me = process::cpu_here()->thread;
+        if (l->depth && l->owner == me)
+        {
+            l->depth++;
+            if (me)
+                me->holds++;
+            return true;
+        }
+        if (!can_sleep() && !(l->depth == 0 && l->serving == l->next))
+        {
+            uart::printf("wait: a sleep lock is busy where nothing may sleep\n");
+            return false;
+        }
+
+        // A ticket, and the turn it gives. Waiting counts as holding: a
+        // ticket left behind would stop the queue.
+        ticket_wait w = { l, l->next++ };
+        if (me)
+            me->holds++;
+        while (!my_turn(&w))
+            wait_event(&l->wq, my_turn, &w, 0);     // false (being ended): look again
+        l->owner = me;
+        l->depth = 1;
+        return true;
+    }
+
+    void unlock(sleep_lock* l)
+    {
+        if (l->owner)
+            l->owner->holds--;
+        if (--l->depth == 0)
+        {
+            l->owner = nullptr;
+            l->serving++;
+            wake_up(&l->wq);
+        }
+    }
+
+    void pass(sleep_lock* l)
+    {
+        process::Thread* me = process::cpu_here()->thread;
+        if (!me || l->owner != me || l->depth != 1 || l->next == l->serving + 1 || !can_sleep())
+            return;                     // not held once, or nobody waits
+        me->holds++;                    // still not to be ended in between
+        unlock(l);
+        lock(l);                        // at the end of the queue
+        me->holds--;
     }
 
     bool wait_event(wait_queue* q, bool (*cond)(void*), void* arg, uint64_t tick)

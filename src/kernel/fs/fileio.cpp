@@ -14,14 +14,22 @@
 #include "../../include/errno.h"
 #include "../../include/fs/openflags.h"
 #include "../../include/fs/stat.h"
+#include "../../include/mm/heap.h"
+#include "../../include/dev/blkdev.h"
 
 namespace
 {
     const uint64_t BOUNCE_SIZE = 64 * 1024;
 
-    // Scratch for the bounce copies: only one call runs in the kernel at a
-    // time (the big kernel lock), so a single static buffer is safe.
-    uint8_t bounce[BOUNCE_SIZE];
+    // Scratch for the bounce copies, one per call: a call may sleep on the
+    // disk while another one runs in the kernel.
+    struct Bounce
+    {
+        uint8_t* p;
+        explicit Bounce(uint64_t count)
+            : p((uint8_t*)kmalloc(count < BOUNCE_SIZE ? count : BOUNCE_SIZE)) {}
+        ~Bounce() { if (p) kfree(p); }
+    };
 
     sint64_t open_target(vnode* target, sint32_t flags, bool created);
 
@@ -160,6 +168,10 @@ namespace
         if (!uaccess::writable(user_buf, count))
             return -EFAULT;
 
+        Bounce b(count);
+        uint8_t* bounce = b.p;
+        if (!bounce)
+            return -ENOMEM;
         uint64_t total = 0;
         uint64_t off = offset ? *offset : f->offset;
 
@@ -206,6 +218,10 @@ namespace
         if (!uaccess::readable(user_buf, count))
             return -EFAULT;
 
+        Bounce b(count);
+        uint8_t* bounce = b.p;
+        if (!bounce)
+            return -ENOMEM;
         uint64_t total = 0;
         uint64_t off = (f->flags & O_APPEND)
                      ? (uint64_t)-1      // resolved per chunk below
@@ -221,17 +237,20 @@ namespace
                 return total ? (sint64_t)total : -EFAULT;
 
             uint64_t woff = off;
+            uint64_t done = 0;
+            sint64_t rc;
             if (f->flags & O_APPEND)
             {
-                // O_APPEND: every chunk lands after the current end, atomic
-                // within the syscall (nothing else runs mid-syscall).
+                // O_APPEND: every chunk lands after the current end; the
+                // disks' lock keeps anyone from writing in between.
+                block::guard g;
                 struct stat st;
                 f->vn->ops->getattr(f->vn, &st);
                 woff = (uint64_t)st.st_size;
+                rc = f->vn->ops->write(f->vn, woff, bounce, chunk, &done);
             }
-
-            uint64_t done = 0;
-            sint64_t rc = f->vn->ops->write(f->vn, woff, bounce, chunk, &done);
+            else
+                rc = f->vn->ops->write(f->vn, woff, bounce, chunk, &done);
             if (rc != 0)
                 return total ? (sint64_t)total : rc;
             if (done == 0)

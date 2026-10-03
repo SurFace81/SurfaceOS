@@ -83,6 +83,23 @@ namespace block
     // holds it, gone or not.
     void hold(blkdev* dev);
     void drop(blkdev* dev);
+
+    // The disks' lock: one thing at a time works with them - a filesystem
+    // call, a mount, a sync, a partition scan, the usb process's plugging
+    // in and pulling out. Its holder may sleep on the disk (a USB transfer
+    // does) while the rest of the system goes on; nothing else meanwhile
+    // sees a filesystem half changed.
+    struct guard
+    {
+        guard();
+        ~guard();
+        bool taken;
+    };
+
+    // Long work under the lock (a big read or write, cut into pieces) lets
+    // the others waiting have their turn between the pieces. Only where
+    // the filesystems are whole, and with the lock taken just once.
+    void pass_turn();
 }
 
 #endif // BLKDEV_H

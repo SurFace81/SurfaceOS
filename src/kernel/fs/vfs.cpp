@@ -11,6 +11,9 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/errno.h"
 #include "../../include/fs/dirent.h"
+#include "../../include/dev/blkdev.h"
+#include "../../include/cpu/wait.h"
+#include "../../include/cpu/process.h"
 
 namespace
 {
@@ -236,6 +239,39 @@ namespace vfs
             v->refcnt++;
     }
 
+    // Last references dropped where nothing may sleep (the scheduler ending
+    // a process): the release may read and write the disk, so the reaper,
+    // a kernel process, drops them instead. Until it runs, they keep the
+    // vnode as it is.
+    static const uint32_t MAX_DEFERRED = 64;
+    static vnode*     deferred[MAX_DEFERRED];
+    static uint32_t   deferred_count;
+    static wait_queue reaper_wq;
+    static bool       reaper_on;
+
+    static bool has_deferred(void*) { return deferred_count != 0; }
+
+    void reap()
+    {
+        while (deferred_count)
+            unref(deferred[--deferred_count]);
+    }
+
+    static void reaper_main(void*)
+    {
+        for (;;)
+        {
+            wait::wait_event(&reaper_wq, has_deferred, nullptr, 0);
+            reap();
+        }
+    }
+
+    void start_reaper()
+    {
+        process::start_kernel_process("reaper", reaper_main);
+        reaper_on = true;
+    }
+
     void unref(vnode* v)
     {
         if (!v)
@@ -243,6 +279,12 @@ namespace vfs
         if (v->refcnt == 0)     // double-unref is a kernel bug; be loud
         {
             uart::printf("vfs: unref of dead vnode %llx\n", (uint64_t)(uintptr_t)v);
+            return;
+        }
+        if (v->refcnt == 1 && reaper_on && !wait::can_sleep() && deferred_count < MAX_DEFERRED)
+        {
+            deferred[deferred_count++] = v;
+            wait::wake_up(&reaper_wq);
             return;
         }
         if (--v->refcnt > 0)
@@ -282,6 +324,7 @@ namespace vfs
 
     sint64_t mount_at(vnode* point_dir, const char* devname, vfs_fs* fs, void* arg)
     {
+        block::guard g;
         if (mount_cnt >= MAX_MOUNTS)
             return -ENFILE;
 
@@ -357,6 +400,9 @@ namespace vfs
 
     sint64_t umount(mount* m, bool force)
     {
+        block::guard g;
+        if (wait::can_sleep())
+            reap();                     // vnodes the reaper has yet to drop
         if (!m || !m->active)
             return -EINVAL;
 
@@ -866,6 +912,9 @@ namespace vfs
 
     sint64_t sync_all()
     {
+        block::guard g;
+        if (wait::can_sleep())
+            reap();
         sint64_t first_err = 0;
         for (uint32_t i = 0; i < MAX_MOUNTS; i++)
         {

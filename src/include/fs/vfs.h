@@ -234,6 +234,12 @@ namespace vfs
     // Flush every mount (sync).
     sint64_t sync_all();
 
+    // The reaper: a kernel process that drops the last references let go
+    // where nothing may sleep (unref puts them off). Start it once
+    // processes exist; reap() drops them at once (from where one may sleep).
+    void start_reaper();
+    void reap();
+
     // --- system cwd ---------------------------------------------------------
     // One global current directory while the console drives the system
     // (stage 3.3). Stage 3.4 moves it into the Process struct; the root

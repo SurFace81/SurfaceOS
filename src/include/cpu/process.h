@@ -132,6 +132,9 @@ namespace process
     // goes to its file, not to the screen: true when it went there.
     bool output_to_file(const char* s, uint64_t len);
 
+    // Let the other threads of this CPU have a turn (wait::yield_if_due).
+    void yield();
+
     // --- Hooks from the trap entry points --------------------------------
 
     // The process calls of the SDK (sfcall.cpp). Arguments come from regs

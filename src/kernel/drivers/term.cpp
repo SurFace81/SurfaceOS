@@ -52,6 +52,11 @@ namespace
     uint32_t clock_minutes = ~0U;   // hours * 60 + minutes, as last drawn
     uint64_t clock_second = ~0ULL;  // uptime second the RTC was last read
 
+    // The system's own words, on every screen's title bar before the
+    // clock (set_status); they go at status_until (ms of uptime, 0: never).
+    char     status[64];
+    uint64_t status_until = 0;
+
     void copy_text(char* dst, uint32_t size, const char* src)
     {
         uint32_t i = 0;
@@ -84,6 +89,11 @@ namespace
                 title_dirty = true;
             }
         }
+        if (status[0] && status_until && pit::uptime_ms() >= status_until)
+        {
+            status[0] = 0;
+            title_dirty = true;
+        }
         if (!title_dirty)
             return;
         title_dirty = false;
@@ -108,8 +118,18 @@ namespace
         *p = 0;
 
         uint32_t h = clock_minutes / 60, m = clock_minutes % 60;
-        char right[6] = { (char)('0' + h / 10), (char)('0' + h % 10), ':',
+        char clock[6] = { (char)('0' + h / 10), (char)('0' + h % 10), ':',
                           (char)('0' + m / 10), (char)('0' + m % 10), 0 };
+        char right[sizeof(status) + 16];
+        char* r = right;
+        char* rend = right + sizeof(right) - 1;
+        if (status[0])
+        {
+            r = append(r, rend, status);
+            r = append(r, rend, "  ");
+        }
+        r = append(r, rend, clock);
+        *r = 0;
         screen::draw_title_bar(left, right);
     }
 
@@ -407,6 +427,51 @@ namespace term
         screens[n].paused = paused;
         if (&screens[n] == shown)
             title_dirty = true;
+    }
+
+    void set_status(const char* text, uint32_t ms)
+    {
+        copy_text(status, sizeof(status), text);
+        status_until = text && text[0] && ms ? pit::uptime_ms() + ms : 0;
+        title_dirty = true;
+    }
+
+    void set_progress(const char* what, uint64_t done, uint64_t total)
+    {
+        // "what ######.... 2.5/6.0 MB", the bar in block characters.
+        const uint32_t BAR = 10;
+        char text[64];
+        char* p = text;
+        char* end = text + sizeof(text) - 1;
+        p = append(p, end, what);
+        p = append(p, end, " ");
+        uint32_t full = total ? (uint32_t)(done * BAR / total) : 0;
+        for (uint32_t i = 0; i < BAR && p < end; i++)
+            *p++ = (char)(i < full ? 0xDB : 0xB0);       // full block, light shade
+        p = append(p, end, " ");
+        const uint64_t values[2] = { done, total };
+        for (uint32_t k = 0; k < 2; k++)
+        {
+            uint64_t tenths = values[k] * 10 / (1024 * 1024);
+            char num[24];
+            uint32_t n = 0;
+            uint64_t whole = tenths / 10;
+            do
+                num[n++] = (char)('0' + whole % 10);
+            while ((whole /= 10) && n < 20);
+            while (n && p < end)
+                *p++ = num[--n];
+            if (p + 2 < end)
+            {
+                *p++ = '.';
+                *p++ = (char)('0' + tenths % 10);
+            }
+            if (k == 0 && p < end)
+                *p++ = '/';
+        }
+        p = append(p, end, " MB");
+        *p = 0;
+        set_status(text, 0);
     }
 
     void set_subtitle(const char* text)

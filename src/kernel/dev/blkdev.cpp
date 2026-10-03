@@ -13,6 +13,13 @@
 #include "../../include/mm/memory.h"
 #include "../../include/mm/heap.h"
 #include "../../include/errno.h"
+#include "../../include/cpu/wait.h"
+
+static sleep_lock disks_lock;
+
+block::guard::guard()  : taken(wait::lock(&disks_lock)) {}
+block::guard::~guard() { if (taken) wait::unlock(&disks_lock); }
+void block::pass_turn()  { wait::pass(&disks_lock); }
 
 namespace
 {

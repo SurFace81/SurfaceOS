@@ -22,6 +22,22 @@ struct wait_queue
     process::Thread* head = nullptr;
 };
 
+// A lock whose holder may sleep - wait for a disk - while whoever else
+// wants it sleeps until its turn: they get it in the order they asked
+// (tickets), so nobody taking it again and again keeps the others out.
+// The holder may take it again (depth). A thread holding one, or waiting
+// for it, is not ended where it is: Ctrl+Alt+C and the like end it once
+// it has let go. Where no thread runs yet (boot) it is taken without
+// waiting.
+struct sleep_lock
+{
+    process::Thread* owner = nullptr;
+    uint32_t         depth = 0;
+    wait_queue       wq;
+    uint64_t         next = 0;      // the ticket the next one asking gets
+    uint64_t         serving = 0;   // whose turn it is
+};
+
 namespace wait
 {
     // true: woken (possibly spuriously - re-check the condition); false:
@@ -40,6 +56,34 @@ namespace wait
     // true: cond held or the deadline passed; false: the process is to be
     // ended.
     bool wait_event(wait_queue* q, bool (*cond)(void*), void* arg, uint64_t tick);
+
+    // May what runs now sleep? A thread with interrupts on, outside the
+    // scheduler: not an interrupt handler, not the boot or idle task.
+    bool can_sleep();
+
+    // A thread long in the kernel (a disk write) gives the CPU to the
+    // others for a turn, once its time slice is up. Nothing preempts the
+    // kernel: on one CPU, nothing else ran - keys included - until it slept.
+    void yield_if_due();
+
+    // Take l, sleeping while another thread has it; false when it could
+    // not be taken (held elsewhere, and this cannot sleep): the caller
+    // goes on without it and must not unlock.
+    bool lock(sleep_lock* l);
+    void unlock(sleep_lock* l);
+
+    // In the middle of something long under l (taken once, not nested):
+    // when others wait for it, let them have it, then take it back. The
+    // caller must be at a point where what l guards is whole. It is not
+    // ended meanwhile (as if it still held l).
+    void pass(sleep_lock* l);
+
+    // Nothing in between may sleep: what would has to put it off.
+    struct no_sleep
+    {
+        no_sleep();
+        ~no_sleep();
+    };
 }
 
 #endif // WAIT_H

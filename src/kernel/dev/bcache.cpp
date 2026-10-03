@@ -14,6 +14,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/stdlib/string.h"
 #include "../../include/errno.h"
+#include "../../include/drivers/term.h"
 
 namespace
 {
@@ -40,10 +41,28 @@ namespace
         return nullptr;
     }
 
-    // Write one buffer out. 0 or -EIO. The buffer stays valid: a failed
-    // write must not silently drop data, the caller decides what to do.
-    sint64_t writeback(buf* b)
+    // Where a run of sectors is put together for one write. All of the
+    // cache runs under the disks' lock (blkdev.h), so one will do.
+    const uint32_t STAGE_BYTES = 64 * 1024;     // a USB transfer at most
+    const uint64_t PROGRESS_FROM = 1024 * 1024; // a flush this big shows on the title bar
+    uint8_t stage[STAGE_BYTES];
+
+    bool dirty_at(blkdev* dev, uint64_t lba, buf** out)
     {
+        buf* b = find_buffer(dev, lba);
+        *out = b;
+        return b && b->dirty;
+    }
+
+    // Write a buffer out, and with it the dirty buffers of the sectors
+    // around it, as one request: a sector at a time, a big file took a
+    // command for every 512 bytes. 0 or -EIO. The buffers stay valid: a
+    // failed write must not silently drop data, the caller decides what
+    // to do. Returns how many sectors went in *count (may be null).
+    sint64_t writeback(buf* b, uint32_t* count = nullptr)
+    {
+        if (count)
+            *count = 0;
         if (!b->dirty)
             return 0;
         // Its disk was unplugged: the data cannot be written anywhere.
@@ -53,9 +72,36 @@ namespace
             b->dirty = false;
             return -EIO;
         }
-        sint64_t rc = block::write(b->dev, b->lba, 1, b->data);
+
+        blkdev* dev = b->dev;
+        uint32_t ss = dev->sector_size;
+        uint32_t max = ss && ss <= STAGE_BYTES ? STAGE_BYTES / ss : 1;
+
+        // The run: back to its first dirty sector, then forward.
+        buf* first = b;
+        buf* p;
+        for (uint32_t n = 1; n < max && first->lba && dirty_at(dev, first->lba - 1, &p); n++)
+            first = p;
+        buf* run[STAGE_BYTES / 512];
+        uint32_t n = 0;
+        run[n++] = first;
+        while (n < max && dirty_at(dev, first->lba + n, &p))
+            run[n++] = p;
+
+        sint64_t rc;
+        if (n == 1)
+            rc = block::write(dev, first->lba, 1, first->data);
+        else
+        {
+            for (uint32_t i = 0; i < n; i++)
+                memory::memcpy(stage + (uint64_t)i * ss, run[i]->data, ss);
+            rc = block::write(dev, first->lba, n, stage);
+        }
         if (rc == 0)
-            b->dirty = false;
+            for (uint32_t i = 0; i < n; i++)
+                run[i]->dirty = false;
+        if (count)
+            *count = n;
         return rc;
     }
 
@@ -386,6 +432,13 @@ namespace bcache
         if (!inited)
             return -ENXIO;
 
+        // A long one says how far it is, on the title bar.
+        uint64_t total = 0, written = 0;
+        for (uint32_t i = 0; i < nbuf; i++)
+            if (buffers[i].valid && buffers[i].dirty && (!dev || buffers[i].dev == dev))
+                total += buffers[i].dev->sector_size;
+        bool show = total >= PROGRESS_FROM;
+
         sint64_t first_err = 0;
         for (uint32_t i = 0; i < nbuf; i++)
         {
@@ -398,10 +451,17 @@ namespace bcache
             // A buffer of an unplugged disk fails only a flush of that
             // disk, not a flush of everything.
             bool lost = block::gone(b->dev);
-            sint64_t rc = writeback(b);
+            uint32_t ss = b->dev->sector_size;
+            uint32_t n = 0;
+            sint64_t rc = writeback(b, &n);
             if (rc != 0 && first_err == 0 && (dev || !lost))
                 first_err = rc;
+            written += (uint64_t)n * ss;
+            if (show)
+                term::set_progress("disk", written < total ? written : total, total);
         }
+        if (show)
+            term::set_status("", 0);
 
         // The device's own write cache (if any) must reach stable storage
         // before we claim "synced".

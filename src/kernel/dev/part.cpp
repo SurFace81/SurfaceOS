@@ -269,6 +269,7 @@ namespace part
 
     void scan(blkdev* disk)
     {
+        block::guard g;
         if (disk->parent)
             return;         // whole disks only
 

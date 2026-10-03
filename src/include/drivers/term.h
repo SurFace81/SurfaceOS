@@ -80,6 +80,13 @@ namespace term
     // Screen n's programs are paused (Ctrl+Alt+Z): "| paused" at the end.
     void set_paused(uint32_t n, bool paused);
 
+    // The system's own words on the title bar, before the clock and on
+    // whatever screen is shown (a screenshot saved, a disk written). They
+    // go after `ms` milliseconds (0: when replaced); "" takes them away.
+    // set_progress says "what ######.... 2.5/6.0 MB".
+    void set_status(const char* text, uint32_t ms);
+    void set_progress(const char* what, uint64_t done, uint64_t total);
+
     uint32_t cols();
     uint32_t rows();
 

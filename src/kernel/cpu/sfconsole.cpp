@@ -42,8 +42,8 @@ namespace
         }
 
         // Any length, a chunk at a time: -2 means the chunk is full and the
-        // text goes on.
-        OnScreen on;
+        // text goes on. The screen is selected for the writing only: a
+        // write into a file may sleep, and meanwhile others select theirs.
         uint64_t text = regs->rdi;
         for (;;)
         {
@@ -56,7 +56,10 @@ namespace
             uint64_t n = len >= 0 ? (uint64_t)len : TEXT_MAX - 1;
             if (!process::output_to_file(buf, n))
             {
-                tty::write(buf, n);
+                {
+                    OnScreen on;
+                    tty::write(buf, n);
+                }
                 process::log_output(buf, n);    // in the background: its log
             }
             if (len >= 0)

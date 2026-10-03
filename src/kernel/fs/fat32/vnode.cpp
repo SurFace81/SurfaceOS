@@ -23,6 +23,7 @@
 #include "../../../include/drivers/uart.h"
 #include "../../../include/drivers/screen.h"
 #include "../../../include/errno.h"
+#include "../../../include/dev/blkdev.h"
 #include "../../../include/fs/stat.h"
 #include "../../../include/fs/dirent.h"
 #include "../../../include/fs/openflags.h"
@@ -49,15 +50,91 @@ static sint64_t fat_setattr(vnode* v, uint32_t mode);
 static sint64_t fat_fsync(vnode* v);
 static void     fat_release(vnode* v);
 
+// Every way into the filesystem holds the disks' lock (blkdev.h): a disk
+// read may sleep, and meanwhile nobody else may find the FAT, a directory
+// or the block cache half changed.
+static sint64_t locked_lookup(vnode* d, const char* n, vnode** o)
+    { block::guard g; return fat_lookup(d, n, o); }
+static sint64_t locked_create(vnode* d, const char* n, uint32_t m, vnode** o)
+    { block::guard g; return fat_create(d, n, m, o); }
+static sint64_t locked_mkdir(vnode* d, const char* n, uint32_t m)
+    { block::guard g; return fat_mkdir(d, n, m); }
+static sint64_t locked_unlink(vnode* d, const char* n)
+    { block::guard g; return fat_unlink(d, n); }
+static sint64_t locked_rmdir(vnode* d, const char* n)
+    { block::guard g; return fat_rmdir(d, n); }
+static sint64_t locked_rename(vnode* od, const char* on, vnode* nd, const char* nn, uint32_t f)
+    { block::guard g; return fat_rename(od, on, nd, nn, f); }
+static sint64_t locked_getparent(vnode* v, vnode** p, char* n)
+    { block::guard g; return fat_getparent(v, p, n); }
+
+// A big read or write goes a piece at a time, and between the pieces -
+// where the filesystem is whole - whoever else waits for the disks has
+// a turn: one call no longer holds them to its end.
+static const uint64_t PIECE = 256 * 1024;
+
+static sint64_t locked_read(vnode* v, uint64_t off, void* buf, uint64_t len, uint64_t* done)
+{
+    block::guard g;
+    uint64_t total = 0;
+    sint64_t rc = 0;
+    while (total < len)
+    {
+        uint64_t n = len - total < PIECE ? len - total : PIECE;
+        uint64_t got = 0;
+        rc = fat_read(v, off + total, (uint8_t*)buf + total, n, &got);
+        total += got;
+        if (rc != 0 || got < n)
+            break;
+        if (total < len)
+            block::pass_turn();
+    }
+    *done = total;
+    return total ? 0 : rc;
+}
+
+static sint64_t locked_write(vnode* v, uint64_t off, const void* buf, uint64_t len,
+                             uint64_t* done)
+{
+    block::guard g;
+    uint64_t total = 0;
+    sint64_t rc = 0;
+    while (total < len)
+    {
+        uint64_t n = len - total < PIECE ? len - total : PIECE;
+        uint64_t put = 0;
+        rc = fat_write(v, off + total, (const uint8_t*)buf + total, n, &put);
+        total += put;
+        if (rc != 0 || put < n)
+            break;
+        if (total < len)
+            block::pass_turn();
+    }
+    *done = total;
+    return total ? 0 : rc;
+}
+static sint64_t locked_truncate(vnode* v, uint64_t size)
+    { block::guard g; return fat_truncate(v, size); }
+static sint64_t locked_readdir(vnode* d, uint64_t* c, dirent_out* o, bool* eof)
+    { block::guard g; return fat_readdir(d, c, o, eof); }
+static sint64_t locked_getattr(vnode* v, struct stat* st)
+    { block::guard g; return fat_getattr(v, st); }
+static sint64_t locked_setattr(vnode* v, uint32_t mode)
+    { block::guard g; return fat_setattr(v, mode); }
+static sint64_t locked_fsync(vnode* v)
+    { block::guard g; return fat_fsync(v); }
+static void     locked_release(vnode* v)
+    { block::guard g; fat_release(v); }
+
 static vnode_ops fat_vnode_ops =
 {
-    fat_lookup, fat_create, fat_mkdir, fat_unlink, fat_rmdir,
-    fat_rename, fat_getparent,
-    fat_read, fat_write, fat_truncate, fat_readdir,
-    fat_getattr, fat_setattr, fat_fsync,
+    locked_lookup, locked_create, locked_mkdir, locked_unlink, locked_rmdir,
+    locked_rename, locked_getparent,
+    locked_read, locked_write, locked_truncate, locked_readdir,
+    locked_getattr, locked_setattr, locked_fsync,
     nullptr,            // ioctl: files have none
     nullptr,            // poll_ready: regular files are always ready
-    fat_release,
+    locked_release,
 };
 
 namespace

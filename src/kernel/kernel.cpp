@@ -491,6 +491,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
     process::start_cmdkeeper();
     usb::start_hotplug();
     shot::start();
+    vfs::start_reaper();
     uart::printf("boot: console ready\n");
 
     // From here on the boot task is the idle task: the consoles and the

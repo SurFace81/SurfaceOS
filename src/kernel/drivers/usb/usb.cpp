@@ -3,6 +3,7 @@
 
 #include "../../../include/drivers/usb/usb.h"
 #include "../../../include/drivers/pit.h"
+#include "../../../include/dev/blkdev.h"
 #include "../../../include/cpu/process.h"
 #include "../../../include/cpu/wait.h"
 
@@ -519,6 +520,8 @@ static void hotplug_main(void*)
     for (;;)
     {
         wait::wait_event(&hotplug_wq, hotplug_pending, nullptr, 0);
+        // A disk going or coming changes what the filesystems stand on.
+        block::guard g;
         handle_changes(false);
     }
 }
