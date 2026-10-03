@@ -70,6 +70,12 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   Down bring back the last lines typed;
   `sudo <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)
+- explorer (`sudo explorer`): a file manager of two panels - copy, move,
+  rename and delete files and whole folders, also between volumes; an
+  editor that shows a file as text (lines numbered) or as hex (rows under
+  their offsets), with undo, a selection and a clipboard, and finding;
+  volumes mounted and unmounted from a menu, files found by name and
+  content, quick view, bookmarks, the folders compared; F1 lists the keys
 - Programs: taskmgr (`sudo taskmgr`: memory, the load of every CPU and
   the running programs with their CPU share, CPU time, memory and threads,
   live; Del ends the chosen one), hello (Console Print and ReadLine), sdkcheck (the SDK
