@@ -359,6 +359,7 @@ lead above it.
 | `FreePages(void* Address, uint64_t Count)` | Gives back pages as `AllocatePages` returned them. |
 | `Allocate(uint64_t Size, void** Buffer)` | `Size` bytes from the heap, zeroed and 16-byte aligned; *out* `Buffer`. |
 | `Free(void* Buffer)` | Gives a block from `Allocate` back; `SF_INVALID_PARAMETER` for anything else. |
+| `Reallocate(void* Buffer, uint64_t Size, void** NewBuffer)` | Gives `Buffer` (or null: a new block) `Size` bytes; *out* `NewBuffer`, which may have moved. Its bytes stay up to `Size`, added ones are zeroed; on failure `Buffer` is left as it was. |
 
 ### SfTime - `Sys->Time`, `sfos/time.h`
 
@@ -473,9 +474,10 @@ needs more.
 | Header | Functions |
 |--------|-----------|
 | `<string.h>` | `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcmp`, `strncmp`, `strcpy`, `strcat`, `strchr`, `strrchr`, `strstr` |
-| `<stdlib.h>` | `strtol`, `strtoul`, `strtoull`, `strtod`, `strtof`, `strtold`, `qsort` |
+| `<stdlib.h>` | `strtol`, `atoi`, `strtoul`, `strtoull`, `strtod`, `strtof`, `strtold`, `qsort` |
 | `<stdio.h>` | `vsnprintf`, `snprintf`, `sprintf`: `d i u x X o c s p f %`, flags `- 0 + space #`, width and precision (also `*`), sizes `hh h l ll z j t`, `L` |
 | `<math.h>` | `ldexp` |
+| `<stddef.h>`, `<stdint.h>` | `ptrdiff_t`, `offsetof`; `int8_t`..`int64_t`, `intptr_t` and the limits - the SDK's own types under their C names |
 
 `src/apps/libctest.c` checks them.
 

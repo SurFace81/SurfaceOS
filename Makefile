@@ -262,6 +262,25 @@ bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld $$(LI
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
 
+# Ports: programs from elsewhere, changed to run on the SDK (ports/<name>/,
+# README.md there), into /apps like any other program.
+#   tcc: tinycc/tcc.c is all of tcc in one unit (ONE_SOURCE); sfport.c is
+#   what it calls of the system.
+PORT_BINS  = bin/ports/tcc.bin
+TCC_OBJS   = bin/ports/tcc/tcc.o bin/ports/tcc/sfport.o
+TCC_CFLAGS = $(SDK_CFLAGS) -std=gnu11 -O2 -DONE_SOURCE=1 -Iports/tcc
+
+bin/ports/tcc/tcc.o: ports/tcc/tinycc/tcc.c
+	mkdir -p $(dir $@)
+	$(GCC) $(TCC_CFLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/ports/tcc/sfport.o: ports/tcc/sfport.c
+	mkdir -p $(dir $@)
+	$(GCC) $(TCC_CFLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/ports/tcc.bin: $(TCC_OBJS) src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $(TCC_OBJS) $(LIBC)
+
 # The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
 # out of /apps.
 CMD_BIN = bin/sfos/cmd.bin
@@ -275,7 +294,7 @@ $(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld $(LIBC)
 
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
-.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o
+.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o $(TCC_OBJS)
 
 
 # Generating version
@@ -301,13 +320,14 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # Disk image: GPT with one FAT32 EFI System Partition, built by
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS)
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
 		bin/kernel/data/stdfont.fnt \
 		$(CMD_BIN) \
 		$(APP_BINS) \
+		$(PORT_BINS) \
 		--size=$(IMG_SIZE_MIB)
 
 run: $(DISK_IMG)
@@ -331,9 +351,9 @@ clean:
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
 	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin bin/sdk/libc bin/sdk/libc.a
-	@rm -rf bin/apps/*
+	@rm -rf bin/apps/* bin/ports
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) bin/boot/efi/main_efi.d

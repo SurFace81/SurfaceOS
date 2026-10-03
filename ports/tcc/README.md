@@ -21,6 +21,29 @@ cut down to what x86_64 needs:
 It was added unchanged in one commit; the changes for SurfaceOS come in
 the commits after it, so `git diff` against that commit shows them all.
 
+## On SurfaceOS
+
+tcc is an SDK program like any other: `sfport.c` has its `SfMain`, which
+calls tcc's `main` with the command line, and the few helpers through which
+tcc reaches the system (`sfport.h`). The plain C functions come from the
+SDK's libc. Built by the Makefile into `/apps/tcc`.
+
+What changed in `tinycc/`:
+
+- files are `SfFile`s (`Sys->Files`): reading sources, objects and
+  archives, writing the output and `-E`;
+- a path with a root (`data:/x`) is used as it is; a path from the command
+  line goes through the `argN:` root the console opened for it; any other
+  path is below tcc's data folder `data:/`, where its `include/` and `lib/`
+  are too. Lists of paths are split at `;`, since every root has a `:`;
+- memory is the SDK heap (`Sys->Memory`, `Reallocate` for `tcc_realloc`);
+- messages go to the console; an error ends tcc at once
+  (`Process->Exit`) instead of `longjmp`;
+- `__DATE__` and `__TIME__` from `Sys->Time`;
+- left out: `-run` and everything else that runs code in tcc's process,
+  shared libraries, `-ar`, `-impdef`, `-m32`, `-MD` (`tcctools.c` is gone),
+  stdin as `-`, environment variables.
+
 ## License
 
 TinyCC is under the GNU Lesser General Public License 2.1 (`tinycc/COPYING`).

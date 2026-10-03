@@ -617,7 +617,7 @@ ST_FUNC void squeeze_multi_relocs(Section *s, size_t oldrelocoffset)
 {
     Section *sr = s->reloc;
     ElfW_Rel *r, *dest;
-    ssize_t a;
+    long a;
     ElfW(Addr) addr;
 
     if (oldrelocoffset + sizeof(*r) >= sr->data_offset)
@@ -627,9 +627,9 @@ ST_FUNC void squeeze_multi_relocs(Section *s, size_t oldrelocoffset)
        Secondly we need a stable sort (which qsort isn't).  We use
        a simple insertion sort.  */
     for (a = oldrelocoffset + sizeof(*r); a < sr->data_offset; a += sizeof(*r)) {
-	ssize_t i = a - sizeof(*r);
+	long i = a - sizeof(*r);
 	addr = ((ElfW_Rel*)(sr->data + a))->r_offset;
-	for (; i >= (ssize_t)oldrelocoffset &&
+	for (; i >= (long)oldrelocoffset &&
 	       ((ElfW_Rel*)(sr->data + i))->r_offset > addr; i -= sizeof(*r)) {
 	    ElfW_Rel tmp = *(ElfW_Rel*)(sr->data + a);
 	    *(ElfW_Rel*)(sr->data + a) = *(ElfW_Rel*)(sr->data + i);
@@ -1287,7 +1287,7 @@ ST_FUNC void resolve_common_syms(TCCState *s1)
     tcc_add_linker_symbols(s1);
 }
 
-static void tcc_output_binary(TCCState *s1, FILE *f,
+static void tcc_output_binary(TCCState *s1, SfFile *f,
                               const int *sec_order)
 {
     Section *s;
@@ -1298,12 +1298,10 @@ static void tcc_output_binary(TCCState *s1, FILE *f,
         s = s1->sections[sec_order[i]];
         if (s->sh_type != SHT_NOBITS &&
             (s->sh_flags & SHF_ALLOC)) {
-            while (offset < s->sh_offset) {
-                fputc(0, f);
-                offset++;
-            }
+            if (offset < s->sh_offset)
+                sf_write_zeros(f, s->sh_offset - offset), offset = s->sh_offset;
             size = s->sh_size;
-            fwrite(s->data, 1, size, f);
+            sf_write(f, s->data, size);
             offset += size;
         }
     }
@@ -1857,7 +1855,7 @@ static int final_sections_reloc(TCCState *s1)
 
 /* Create an ELF file on disk.
    This function handle ELF specific layout requirements */
-static void tcc_output_elf(TCCState *s1, FILE *f, int phnum, ElfW(Phdr) *phdr,
+static void tcc_output_elf(TCCState *s1, SfFile *f, int phnum, ElfW(Phdr) *phdr,
                            int file_offset, int *sec_order)
 {
     int i, shnum, offset, size, file_type;
@@ -1927,30 +1925,26 @@ static void tcc_output_elf(TCCState *s1, FILE *f, int phnum, ElfW(Phdr) *phdr,
     ehdr.e_shnum = shnum;
     ehdr.e_shstrndx = shnum - 1;
 
-    fwrite(&ehdr, 1, sizeof(ElfW(Ehdr)), f);
-    fwrite(phdr, 1, phnum * sizeof(ElfW(Phdr)), f);
+    sf_write(f, &ehdr, sizeof(ElfW(Ehdr)));
+    sf_write(f, phdr, phnum * sizeof(ElfW(Phdr)));
     offset = sizeof(ElfW(Ehdr)) + phnum * sizeof(ElfW(Phdr));
 
     sort_syms(s1, symtab_section);
     for(i = 1; i < s1->nb_sections; i++) {
         s = s1->sections[sec_order[i]];
         if (s->sh_type != SHT_NOBITS) {
-            while (offset < s->sh_offset) {
-                fputc(0, f);
-                offset++;
-            }
+            if (offset < s->sh_offset)
+                sf_write_zeros(f, s->sh_offset - offset), offset = s->sh_offset;
             size = s->sh_size;
             if (size)
-                fwrite(s->data, 1, size, f);
+                sf_write(f, s->data, size);
             offset += size;
         }
     }
 
     /* output section headers */
-    while (offset < ehdr.e_shoff) {
-        fputc(0, f);
-        offset++;
-    }
+    if (offset < ehdr.e_shoff)
+        sf_write_zeros(f, ehdr.e_shoff - offset), offset = ehdr.e_shoff;
 
     for(i = 0; i < s1->nb_sections; i++) {
         sh = &shdr;
@@ -1969,7 +1963,7 @@ static void tcc_output_elf(TCCState *s1, FILE *f, int phnum, ElfW(Phdr) *phdr,
             sh->sh_offset = s->sh_offset;
             sh->sh_size = s->sh_size;
         }
-        fwrite(sh, 1, sizeof(ElfW(Shdr)), f);
+        sf_write(f, sh, sizeof(ElfW(Shdr)));
     }
 }
 
@@ -1977,23 +1971,15 @@ static void tcc_output_elf(TCCState *s1, FILE *f, int phnum, ElfW(Phdr) *phdr,
 static int tcc_write_elf_file(TCCState *s1, const char *filename, int phnum,
                               ElfW(Phdr) *phdr, int file_offset, int *sec_order)
 {
-    int fd, mode, file_type;
-    FILE *f;
+    SfFile *f;
 
-    file_type = s1->output_type;
-    if (file_type == TCC_OUTPUT_OBJ)
-        mode = 0666;
-    else
-        mode = 0777;
-    unlink(filename);
-    fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, mode);
-    if (fd < 0) {
+    f = sf_open(filename, SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE);
+    if (!f) {
         tcc_error_noabort("could not write '%s'", filename);
         return -1;
     }
-    f = fdopen(fd, "wb");
     if (s1->verbose)
-        printf("<- %s\n", filename);
+        sf_printf(NULL, "<- %s\n", filename);
 
 #ifdef TCC_TARGET_COFF
     if (s1->output_format == TCC_OUTPUT_FORMAT_COFF)
@@ -2004,7 +1990,7 @@ static int tcc_write_elf_file(TCCState *s1, const char *filename, int phnum,
         tcc_output_elf(s1, f, phnum, phdr, file_offset, sec_order);
     else
         tcc_output_binary(s1, f, sec_order);
-    fclose(f);
+    f->Close(f);
 
     return 0;
 }
@@ -2082,10 +2068,7 @@ static int elf_output_file(TCCState *s1, const char *filename)
         if (!s1->static_link) {
             if (file_type == TCC_OUTPUT_EXE) {
                 char *ptr;
-                /* allow override the dynamic loader */
-                const char *elfint = getenv("LD_SO");
-                if (elfint == NULL)
-                    elfint = DEFAULT_ELFINTERP(s1);
+                const char *elfint = DEFAULT_ELFINTERP(s1);
                 /* add interpreter section only if executable */
                 interp = new_section(s1, ".interp", SHT_PROGBITS, SHF_ALLOC);
                 interp->sh_addralign = 1;
@@ -2242,13 +2225,13 @@ LIBTCCAPI int tcc_output_file(TCCState *s, const char *filename)
     return ret;
 }
 
-static void *load_data(int fd, unsigned long file_offset, unsigned long size)
+static void *load_data(SfFile *fh, unsigned long file_offset, unsigned long size)
 {
     void *data;
 
     data = tcc_malloc(size);
-    lseek(fd, file_offset, SEEK_SET);
-    read(fd, data, size);
+    fh->SetPosition(fh, file_offset);
+    sf_read(fh, data, size);
     return data;
 }
 
@@ -2259,9 +2242,9 @@ typedef struct SectionMergeInfo {
     uint8_t link_once;         /* true if link once section */
 } SectionMergeInfo;
 
-ST_FUNC int tcc_object_type(int fd, ElfW(Ehdr) *h)
+ST_FUNC int tcc_object_type(SfFile *fh, ElfW(Ehdr) *h)
 {
-    int size = read(fd, h, sizeof *h);
+    int size = sf_read(fh, h, sizeof *h);
     if (size == sizeof *h && 0 == memcmp(h, ELFMAG, 4)) {
         if (h->e_type == ET_REL)
             return AFF_BINTYPE_REL;
@@ -2281,7 +2264,7 @@ ST_FUNC int tcc_object_type(int fd, ElfW(Ehdr) *h)
 /* load an object file and merge it with current files */
 /* XXX: handle correctly stab (debug) info */
 ST_FUNC int tcc_load_object_file(TCCState *s1,
-                                int fd, unsigned long file_offset)
+                                SfFile *fh, unsigned long file_offset)
 {
     ElfW(Ehdr) ehdr;
     ElfW(Shdr) *shdr, *sh;
@@ -2299,8 +2282,8 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
 
     stab_index = stabstr_index = 0;
 
-    lseek(fd, file_offset, SEEK_SET);
-    if (tcc_object_type(fd, &ehdr) != AFF_BINTYPE_REL)
+    fh->SetPosition(fh, file_offset);
+    if (tcc_object_type(fh, &ehdr) != AFF_BINTYPE_REL)
         goto fail1;
     /* test CPU specific stuff */
     if (ehdr.e_ident[5] != ELFDATA2LSB ||
@@ -2310,13 +2293,13 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
         return -1;
     }
     /* read sections */
-    shdr = load_data(fd, file_offset + ehdr.e_shoff,
+    shdr = load_data(fh, file_offset + ehdr.e_shoff,
                      sizeof(ElfW(Shdr)) * ehdr.e_shnum);
     sm_table = tcc_mallocz(sizeof(SectionMergeInfo) * ehdr.e_shnum);
 
     /* load section names */
     sh = &shdr[ehdr.e_shstrndx];
-    strsec = load_data(fd, file_offset + sh->sh_offset, sh->sh_size);
+    strsec = load_data(fh, file_offset + sh->sh_offset, sh->sh_size);
 
     /* load symtab and strtab */
     old_to_new_syms = NULL;
@@ -2334,12 +2317,12 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
                 goto the_end;
             }
             nb_syms = sh->sh_size / sizeof(ElfW(Sym));
-            symtab = load_data(fd, file_offset + sh->sh_offset, sh->sh_size);
+            symtab = load_data(fh, file_offset + sh->sh_offset, sh->sh_size);
             sm_table[i].s = symtab_section;
 
             /* now load strtab */
             sh = &shdr[sh->sh_link];
-            strtab = load_data(fd, file_offset + sh->sh_offset, sh->sh_size);
+            strtab = load_data(fh, file_offset + sh->sh_offset, sh->sh_size);
         }
 	if (sh->sh_flags & SHF_COMPRESSED)
 	    seencompressed = 1;
@@ -2428,9 +2411,9 @@ ST_FUNC int tcc_load_object_file(TCCState *s1,
         size = sh->sh_size;
         if (sh->sh_type != SHT_NOBITS) {
             unsigned char *ptr;
-            lseek(fd, file_offset + sh->sh_offset, SEEK_SET);
+            fh->SetPosition(fh, file_offset + sh->sh_offset);
             ptr = section_ptr_add(s, size);
-            read(fd, ptr, size);
+            sf_read(fh, ptr, size);
         } else {
             s->data_offset += size;
         }
@@ -2590,7 +2573,7 @@ static long get_be64(const uint8_t *b)
 }
 
 /* load only the objects which resolve undefined symbols */
-static int tcc_load_alacarte(TCCState *s1, int fd, int size, int entrysize)
+static int tcc_load_alacarte(TCCState *s1, SfFile *fh, int size, int entrysize)
 {
     long i, bound, nsyms, sym_index, off, ret;
     uint8_t *data;
@@ -2599,7 +2582,7 @@ static int tcc_load_alacarte(TCCState *s1, int fd, int size, int entrysize)
     ElfW(Sym) *sym;
 
     data = tcc_malloc(size);
-    if (read(fd, data, size) != size)
+    if (sf_read(fh, data, size) != size)
         goto fail;
     nsyms = entrysize == 4 ? get_be32(data) : get_be64(data);
     ar_index = data + entrysize;
@@ -2617,7 +2600,7 @@ static int tcc_load_alacarte(TCCState *s1, int fd, int size, int entrysize)
 			   : get_be64(ar_index + i * 8))
 			  + sizeof(ArchiveHeader);
                     ++bound;
-                    if(tcc_load_object_file(s1, fd, off) < 0) {
+                    if(tcc_load_object_file(s1, fh, off) < 0) {
                     fail:
                         ret = -1;
                         goto the_end;
@@ -2633,7 +2616,7 @@ static int tcc_load_alacarte(TCCState *s1, int fd, int size, int entrysize)
 }
 
 /* load a '.a' file */
-ST_FUNC int tcc_load_archive(TCCState *s1, int fd)
+ST_FUNC int tcc_load_archive(TCCState *s1, SfFile *fh)
 {
     ArchiveHeader hdr;
     char ar_size[11];
@@ -2641,12 +2624,13 @@ ST_FUNC int tcc_load_archive(TCCState *s1, int fd)
     char magic[8];
     int size, len, i;
     unsigned long file_offset;
+    uint64_t pos;
 
     /* skip magic which was already checked */
-    read(fd, magic, sizeof(magic));
+    sf_read(fh, magic, sizeof(magic));
 
     for(;;) {
-        len = read(fd, &hdr, sizeof(hdr));
+        len = sf_read(fh, &hdr, sizeof(hdr));
         if (len == 0)
             break;
         if (len != sizeof(hdr)) {
@@ -2662,142 +2646,30 @@ ST_FUNC int tcc_load_archive(TCCState *s1, int fd)
                 break;
         }
         ar_name[i + 1] = '\0';
-        file_offset = lseek(fd, 0, SEEK_CUR);
+        fh->GetPosition(fh, &pos), file_offset = pos;
         /* align to even */
         size = (size + 1) & ~1;
         if (!strcmp(ar_name, "/")) {
             /* coff symbol table : we handle it */
             if(s1->alacarte_link)
-                return tcc_load_alacarte(s1, fd, size, 4);
+                return tcc_load_alacarte(s1, fh, size, 4);
 	} else if (!strcmp(ar_name, "/SYM64/")) {
             if(s1->alacarte_link)
-                return tcc_load_alacarte(s1, fd, size, 8);
+                return tcc_load_alacarte(s1, fh, size, 8);
         } else {
             ElfW(Ehdr) ehdr;
-            if (tcc_object_type(fd, &ehdr) == AFF_BINTYPE_REL) {
-                if (tcc_load_object_file(s1, fd, file_offset) < 0)
+            if (tcc_object_type(fh, &ehdr) == AFF_BINTYPE_REL) {
+                if (tcc_load_object_file(s1, fh, file_offset) < 0)
                     return -1;
             }
         }
-        lseek(fd, file_offset + size, SEEK_SET);
+        fh->SetPosition(fh, file_offset + size);
     }
     return 0;
 }
 
 #ifndef TCC_TARGET_PE
-/* load a DLL and all referenced DLLs. 'level = 0' means that the DLL
-   is referenced by the user (so it should be added as DT_NEEDED in
-   the generated ELF file) */
-ST_FUNC int tcc_load_dll(TCCState *s1, int fd, const char *filename, int level)
-{
-    ElfW(Ehdr) ehdr;
-    ElfW(Shdr) *shdr, *sh, *sh1;
-    int i, j, nb_syms, nb_dts, sym_bind, ret;
-    ElfW(Sym) *sym, *dynsym;
-    ElfW(Dyn) *dt, *dynamic;
-    unsigned char *dynstr;
-    const char *name, *soname;
-    DLLReference *dllref;
-
-    read(fd, &ehdr, sizeof(ehdr));
-
-    /* test CPU specific stuff */
-    if (ehdr.e_ident[5] != ELFDATA2LSB ||
-        ehdr.e_machine != EM_TCC_TARGET) {
-        tcc_error_noabort("bad architecture");
-        return -1;
-    }
-
-    /* read sections */
-    shdr = load_data(fd, ehdr.e_shoff, sizeof(ElfW(Shdr)) * ehdr.e_shnum);
-
-    /* load dynamic section and dynamic symbols */
-    nb_syms = 0;
-    nb_dts = 0;
-    dynamic = NULL;
-    dynsym = NULL; /* avoid warning */
-    dynstr = NULL; /* avoid warning */
-    for(i = 0, sh = shdr; i < ehdr.e_shnum; i++, sh++) {
-        switch(sh->sh_type) {
-        case SHT_DYNAMIC:
-            nb_dts = sh->sh_size / sizeof(ElfW(Dyn));
-            dynamic = load_data(fd, sh->sh_offset, sh->sh_size);
-            break;
-        case SHT_DYNSYM:
-            nb_syms = sh->sh_size / sizeof(ElfW(Sym));
-            dynsym = load_data(fd, sh->sh_offset, sh->sh_size);
-            sh1 = &shdr[sh->sh_link];
-            dynstr = load_data(fd, sh1->sh_offset, sh1->sh_size);
-            break;
-        default:
-            break;
-        }
-    }
-
-    /* compute the real library name */
-    soname = tcc_basename(filename);
-
-    for(i = 0, dt = dynamic; i < nb_dts; i++, dt++) {
-        if (dt->d_tag == DT_SONAME) {
-            soname = (char *) dynstr + dt->d_un.d_val;
-        }
-    }
-
-    /* if the dll is already loaded, do not load it */
-    for(i = 0; i < s1->nb_loaded_dlls; i++) {
-        dllref = s1->loaded_dlls[i];
-        if (!strcmp(soname, dllref->name)) {
-            /* but update level if needed */
-            if (level < dllref->level)
-                dllref->level = level;
-            ret = 0;
-            goto the_end;
-        }
-    }
-
-    /* add the dll and its level */
-    dllref = tcc_mallocz(sizeof(DLLReference) + strlen(soname));
-    dllref->level = level;
-    strcpy(dllref->name, soname);
-    dynarray_add(&s1->loaded_dlls, &s1->nb_loaded_dlls, dllref);
-
-    /* add dynamic symbols in dynsym_section */
-    for(i = 1, sym = dynsym + 1; i < nb_syms; i++, sym++) {
-        sym_bind = ELFW(ST_BIND)(sym->st_info);
-        if (sym_bind == STB_LOCAL)
-            continue;
-        name = (char *) dynstr + sym->st_name;
-        set_elf_sym(s1->dynsymtab_section, sym->st_value, sym->st_size,
-                    sym->st_info, sym->st_other, sym->st_shndx, name);
-    }
-
-    /* load all referenced DLLs */
-    for(i = 0, dt = dynamic; i < nb_dts; i++, dt++) {
-        switch(dt->d_tag) {
-        case DT_NEEDED:
-            name = (char *) dynstr + dt->d_un.d_val;
-            for(j = 0; j < s1->nb_loaded_dlls; j++) {
-                dllref = s1->loaded_dlls[j];
-                if (!strcmp(name, dllref->name))
-                    goto already_loaded;
-            }
-            if (tcc_add_dll(s1, name, AFF_REFERENCED_DLL) < 0) {
-                tcc_error_noabort("referenced dll '%s' not found", name);
-                ret = -1;
-                goto the_end;
-            }
-        already_loaded:
-            break;
-        }
-    }
-    ret = 0;
- the_end:
-    tcc_free(dynstr);
-    tcc_free(dynsym);
-    tcc_free(dynamic);
-    tcc_free(shdr);
-    return ret;
-}
+/* SurfaceOS: no tcc_load_dll - static programs only */
 
 #define LD_TOK_NAME 256
 #define LD_TOK_EOF  (-1)

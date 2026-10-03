@@ -22,7 +22,6 @@
 #if ONE_SOURCE
 # include "libtcc.c"
 #endif
-#include "tcctools.c"
 
 static const char help[] =
     "Tiny C Compiler "TCC_VERSION" - Copyright (C) 2001-2006 Fabrice Bellard\n"
@@ -163,7 +162,7 @@ static const char version[] =
 #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
         " FreeBSD"
 #else
-        " Linux"
+        " SurfaceOS"
 #endif
     ")\n"
     ;
@@ -171,40 +170,22 @@ static const char version[] =
 static void print_dirs(const char *msg, char **paths, int nb_paths)
 {
     int i;
-    printf("%s:\n%s", msg, nb_paths ? "" : "  -\n");
+    sf_printf(NULL, "%s:\n%s", msg, nb_paths ? "" : "  -\n");
     for(i = 0; i < nb_paths; i++)
-        printf("  %s\n", paths[i]);
+        sf_printf(NULL, "  %s\n", paths[i]);
 }
 
 static void print_search_dirs(TCCState *s)
 {
-    printf("install: %s\n", s->tcc_lib_path);
+    sf_printf(NULL, "install: %s\n", s->tcc_lib_path);
     /* print_dirs("programs", NULL, 0); */
     print_dirs("include", s->sysinclude_paths, s->nb_sysinclude_paths);
     print_dirs("libraries", s->library_paths, s->nb_library_paths);
-    printf("libtcc1:\n  %s/"TCC_LIBTCC1"\n", s->tcc_lib_path);
+    sf_printf(NULL, "libtcc1:\n  %s/"TCC_LIBTCC1"\n", s->tcc_lib_path);
 #ifndef TCC_TARGET_PE
     print_dirs("crt", s->crt_paths, s->nb_crt_paths);
-    printf("elfinterp:\n  %s\n",  DEFAULT_ELFINTERP(s));
+    sf_printf(NULL, "elfinterp:\n  %s\n",  DEFAULT_ELFINTERP(s));
 #endif
-}
-
-static void set_environment(TCCState *s)
-{
-    char * path;
-
-    path = getenv("C_INCLUDE_PATH");
-    if(path != NULL) {
-        tcc_add_sysinclude_path(s, path);
-    }
-    path = getenv("CPATH");
-    if(path != NULL) {
-        tcc_add_include_path(s, path);
-    }
-    path = getenv("LIBRARY_PATH");
-    if(path != NULL) {
-        tcc_add_library_path(s, path);
-    }
 }
 
 static char *default_outputfile(TCCState *s, const char *first_file)
@@ -234,13 +215,9 @@ static char *default_outputfile(TCCState *s, const char *first_file)
 
 static unsigned getclock_ms(void)
 {
-#ifdef _WIN32
-    return GetTickCount();
-#else
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return tv.tv_sec*1000 + (tv.tv_usec+500)/1000;
-#endif
+    uint64_t ms = 0;
+    Sys->Time->GetUptime(Sys->Time, &ms);
+    return (unsigned)ms;
 }
 
 int main(int argc0, char **argv0)
@@ -250,7 +227,7 @@ int main(int argc0, char **argv0)
     unsigned start_time = 0;
     const char *first_file;
     int argc; char **argv;
-    FILE *ppfp = stdout;
+    SfFile *ppfp = NULL; /* the console */
 
 redo:
     argc = argc0, argv = argv0;
@@ -259,24 +236,20 @@ redo:
 
     if ((n | t) == 0) {
         if (opt == OPT_HELP)
-            return printf(help), 1;
+            return sf_printf(NULL, help), 1;
         if (opt == OPT_HELP2)
-            return printf(help2), 1;
+            return sf_printf(NULL, help2), 1;
+        /* SurfaceOS: no tcctools.c - no other tcc to run, no ar */
         if (opt == OPT_M32 || opt == OPT_M64)
-            tcc_tool_cross(s, argv, opt); /* never returns */
+            tcc_error("only 64-bit programs are supported");
         if (s->verbose)
-            printf(version);
-        if (opt == OPT_AR)
-            return tcc_tool_ar(s, argc, argv);
-#ifdef TCC_TARGET_PE
-        if (opt == OPT_IMPDEF)
-            return tcc_tool_impdef(s, argc, argv);
-#endif
+            sf_printf(NULL, version);
+        if (opt == OPT_AR || opt == OPT_IMPDEF)
+            tcc_error("-ar and -impdef are not supported");
         if (opt == OPT_V)
             return 0;
         if (opt == OPT_PRINT_DIRS) {
             /* initialize search dirs */
-            set_environment(s);
             tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
             print_search_dirs(s);
             return 0;
@@ -288,7 +261,7 @@ redo:
 
         if (s->output_type == TCC_OUTPUT_PREPROCESS) {
             if (s->outfile) {
-                ppfp = fopen(s->outfile, "w");
+                ppfp = sf_open(s->outfile, SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE);
                 if (!ppfp)
                     tcc_error("could not write '%s'", s->outfile);
             }
@@ -306,7 +279,6 @@ redo:
             start_time = getclock_ms();
     }
 
-    set_environment(s);
     if (s->output_type == 0)
         s->output_type = TCC_OUTPUT_EXE;
     tcc_set_output_type(s, s->output_type);
@@ -326,7 +298,7 @@ redo:
                 ret = 1;
         } else {
             if (1 == s->verbose)
-                printf("-> %s\n", f->name);
+                sf_printf(NULL, "-> %s\n", f->name);
             if (!first_file)
                 first_file = f->name;
             if (tcc_add_file(s, f->name) < 0)
@@ -353,8 +325,6 @@ redo:
                 s->outfile = default_outputfile(s, first_file);
             if (tcc_output_file(s, s->outfile))
                 ret = 1;
-            else if (s->gen_deps)
-                gen_makedeps(s, s->outfile, s->deps_outfile);
         }
     }
 
@@ -365,7 +335,7 @@ redo:
         goto redo; /* compile more files with -c */
     if (t)
         goto redo; /* run more tests with -dt -run */
-    if (ppfp && ppfp != stdout)
-        fclose(ppfp);
+    if (ppfp)
+        ppfp->Close(ppfp);
     return ret;
 }

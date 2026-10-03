@@ -106,7 +106,9 @@ enum {
 #else /* ! TARGET_DEFS_ONLY */
 /******************************************************/
 #include "tcc.h"
-#include <assert.h>
+/* SurfaceOS: no assert.h - a failed check is an error of tcc itself */
+#define assert(x) ((x) ? (void)0 : \
+    tcc_error("internal compiler error at %s:%d", __FILE__, __LINE__))
 
 ST_DATA const int reg_classes[NB_REGS] = {
     /* eax */ RC_INT | RC_RAX,
@@ -604,7 +606,7 @@ void store(int r, SValue *v)
             gen_modrm64(op64, r, v->r, v->sym, fc);
         } else if (fr != r) {
             /* XXX: don't we really come here? */
-            abort();
+            tcc_error("internal compiler error at %s:%d", __FILE__, __LINE__);
             o(0xc0 + fr + r * 8); /* mov r, fr */
         }
     } else {
@@ -612,7 +614,7 @@ void store(int r, SValue *v)
             gen_modrm(r, v->r, v->sym, fc);
         } else if (fr != r) {
             /* XXX: don't we really come here? */
-            abort();
+            tcc_error("internal compiler error at %s:%d", __FILE__, __LINE__);
             o(0xc0 + fr + r * 8); /* mov r, fr */
         }
     }

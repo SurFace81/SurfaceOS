@@ -12,6 +12,8 @@ extern "C" {
 /// not null, gets where reading stopped - Text when there was no number.
 /// Too large a number gives the largest value of the type.
 long               strtol(const char* Text, char** End, int Base);
+/// strtol(Text, NULL, 10) as an int.
+int                atoi(const char* Text);
 /// strtol for unsigned long; a '-' negates the result as unsigned.
 unsigned long      strtoul(const char* Text, char** End, int Base);
 /// strtol for unsigned long long; a '-' negates the result as unsigned.

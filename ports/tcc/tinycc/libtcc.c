@@ -196,33 +196,30 @@ PUB_FUNC char *tcc_fileextension (const char *name)
 
 #ifndef MEM_DEBUG
 
+/* SurfaceOS: the program's heap, Sys->Memory */
 PUB_FUNC void tcc_free(void *ptr)
 {
-    free(ptr);
+    if (ptr)
+        Sys->Memory->Free(Sys->Memory, ptr);
 }
 
 PUB_FUNC void *tcc_malloc(unsigned long size)
 {
-    void *ptr;
-    ptr = malloc(size);
-    if (!ptr && size)
+    void *ptr = NULL;
+    if (SF_ERROR(Sys->Memory->Allocate(Sys->Memory, size, &ptr)))
         tcc_error("memory full (malloc)");
     return ptr;
 }
 
 PUB_FUNC void *tcc_mallocz(unsigned long size)
 {
-    void *ptr;
-    ptr = tcc_malloc(size);
-    memset(ptr, 0, size);
-    return ptr;
+    return tcc_malloc(size); /* Allocate zeroes the block already */
 }
 
 PUB_FUNC void *tcc_realloc(void *ptr, unsigned long size)
 {
-    void *ptr1;
-    ptr1 = realloc(ptr, size);
-    if (!ptr1 && size)
+    void *ptr1 = NULL;
+    if (SF_ERROR(Sys->Memory->Reallocate(Sys->Memory, ptr, size, &ptr1)))
         tcc_error("memory full (realloc)");
     return ptr1;
 }
@@ -503,13 +500,11 @@ static void error1(TCCState *s1, int is_warning, const char *fmt, va_list ap)
     strcat_vprintf(buf, sizeof(buf), fmt, ap);
 
     if (!s1->error_func) {
-        /* default case: stderr */
-        if (s1->output_type == TCC_OUTPUT_PREPROCESS && s1->ppfp == stdout)
+        /* default case: the console */
+        if (s1->output_type == TCC_OUTPUT_PREPROCESS && !s1->ppfp)
             /* print a newline during tcc -E */
-            printf("\n"), fflush(stdout);
-        fflush(stdout); /* flush -v output */
-        fprintf(stderr, "%s\n", buf);
-        fflush(stderr); /* print error/warning now (win32) */
+            sf_printf(NULL, "\n");
+        sf_printf(NULL, "%s\n", buf);
     } else {
         s1->error_func(s1->error_opaque, buf);
     }
@@ -543,13 +538,8 @@ PUB_FUNC void tcc_error(const char *fmt, ...)
     va_start(ap, fmt);
     error1(s1, 0, fmt, ap);
     va_end(ap);
-    /* better than nothing: in some cases, we accept to handle errors */
-    if (s1->error_set_jmp_enabled) {
-        longjmp(s1->error_jmp_buf, 1);
-    } else {
-        /* XXX: eliminate this someday */
-        exit(1);
-    }
+    /* SurfaceOS: an error ends tcc, nothing goes on after it */
+    sf_exit(1);
 }
 
 PUB_FUNC void tcc_warning(const char *fmt, ...)
@@ -581,7 +571,7 @@ ST_FUNC void tcc_open_bf(TCCState *s1, const char *filename, int initlen)
     bf->true_filename = bf->filename;
     bf->line_num = 1;
     bf->ifdef_stack_ptr = s1->ifdef_stack_ptr;
-    bf->fd = -1;
+    bf->fh = NULL;
     bf->prev = file;
     file = bf;
     tok_flags = TOK_FLAG_BOL | TOK_FLAG_BOF;
@@ -590,8 +580,8 @@ ST_FUNC void tcc_open_bf(TCCState *s1, const char *filename, int initlen)
 ST_FUNC void tcc_close(void)
 {
     BufferedFile *bf = file;
-    if (bf->fd > 0) {
-        close(bf->fd);
+    if (bf->fh) {
+        bf->fh->Close(bf->fh);
         total_lines += bf->line_num;
     }
     if (bf->true_filename != bf->filename)
@@ -600,24 +590,18 @@ ST_FUNC void tcc_close(void)
     tcc_free(bf);
 }
 
+/* SurfaceOS: 0 when it opened, -1 if not; no "-" for stdin */
 ST_FUNC int tcc_open(TCCState *s1, const char *filename)
 {
-    int fd;
-    if (strcmp(filename, "-") == 0)
-        fd = 0, filename = "<stdin>";
-    else
-        fd = open(filename, O_RDONLY | O_BINARY);
-    if ((s1->verbose == 2 && fd >= 0) || s1->verbose == 3)
-        printf("%s %*s%s\n", fd < 0 ? "nf":"->",
+    SfFile *fh = sf_open(filename, SF_FILE_READ);
+    if ((s1->verbose == 2 && fh) || s1->verbose == 3)
+        sf_printf(NULL, "%s %*s%s\n", fh ? "->" : "nf",
                (int)(s1->include_stack_ptr - s1->include_stack), "", filename);
-    if (fd < 0)
+    if (!fh)
         return -1;
     tcc_open_bf(s1, filename, 0);
-#ifdef _WIN32
-    normalize_slashes(file->filename);
-#endif
-    file->fd = fd;
-    return fd;
+    file->fh = fh;
+    return 0;
 }
 
 /* compile the file opened in 'file'. Return non zero if errors. */
@@ -631,22 +615,21 @@ static int tcc_compile(TCCState *s1)
     is_asm = filetype == AFF_TYPE_ASM || filetype == AFF_TYPE_ASMPP;
     tccelf_begin_file(s1);
 
-    if (setjmp(s1->error_jmp_buf) == 0) {
-        s1->nb_errors = 0;
-        s1->error_set_jmp_enabled = 1;
+    /* SurfaceOS: no setjmp - tcc_error ends tcc */
+    s1->nb_errors = 0;
+    s1->error_set_jmp_enabled = 1;
 
-        preprocess_start(s1, is_asm);
-        if (s1->output_type == TCC_OUTPUT_PREPROCESS) {
-            tcc_preprocess(s1);
-        } else if (is_asm) {
+    preprocess_start(s1, is_asm);
+    if (s1->output_type == TCC_OUTPUT_PREPROCESS) {
+        tcc_preprocess(s1);
+    } else if (is_asm) {
 #ifdef CONFIG_TCC_ASM
-            tcc_assemble(s1, filetype == AFF_TYPE_ASMPP);
+        tcc_assemble(s1, filetype == AFF_TYPE_ASMPP);
 #else
-            tcc_error_noabort("asm not supported");
+        tcc_error_noabort("asm not supported");
 #endif
-        } else {
-            tccgen_compile(s1);
-        }
+    } else {
+        tccgen_compile(s1);
     }
     s1->error_set_jmp_enabled = 0;
 
@@ -765,8 +748,10 @@ LIBTCCAPI TCCState *tcc_new(void)
     define_push(TOK___COUNTER__, MACRO_OBJ, NULL, NULL);
     {
         /* define __TINYC__ 92X  */
-        char buffer[32]; int a,b,c;
-        sscanf(TCC_VERSION, "%d.%d.%d", &a, &b, &c);
+        char buffer[32], *p; int a,b,c;
+        a = strtol(TCC_VERSION, &p, 10);
+        b = strtol(p + 1, &p, 10);
+        c = strtol(p + 1, &p, 10);
         sprintf(buffer, "%d", a*10000 + b*100 + c);
         tcc_define_symbol(s, "__TINYC__", buffer);
     }
@@ -1012,11 +997,12 @@ ST_FUNC int tcc_add_file_internal(TCCState *s1, const char *filename, int flags)
 
     if (flags & AFF_TYPE_BIN) {
         ElfW(Ehdr) ehdr;
-        int fd, obj_type;
+        int obj_type;
+        SfFile *fh;
 
-        fd = file->fd;
-        obj_type = tcc_object_type(fd, &ehdr);
-        lseek(fd, 0, SEEK_SET);
+        fh = file->fh;
+        obj_type = tcc_object_type(fh, &ehdr);
+        fh->SetPosition(fh, 0);
 
 #ifdef TCC_TARGET_MACHO
         if (0 == obj_type && 0 == strcmp(tcc_fileextension(filename), ".dylib"))
@@ -1025,24 +1011,15 @@ ST_FUNC int tcc_add_file_internal(TCCState *s1, const char *filename, int flags)
 
         switch (obj_type) {
         case AFF_BINTYPE_REL:
-            ret = tcc_load_object_file(s1, fd, 0);
+            ret = tcc_load_object_file(s1, fh, 0);
             break;
-#ifndef TCC_TARGET_PE
         case AFF_BINTYPE_DYN:
-            if (s1->output_type == TCC_OUTPUT_MEMORY) {
-                ret = 0;
-#ifdef TCC_IS_NATIVE
-                if (NULL == dlopen(filename, RTLD_GLOBAL | RTLD_LAZY))
-                    ret = -1;
-#endif
-            } else {
-                ret = tcc_load_dll(s1, fd, filename,
-                                   (flags & AFF_REFERENCED_DLL) != 0);
-            }
+            /* SurfaceOS: static programs only */
+            tcc_error_noabort("%s: shared libraries are not supported", filename);
+            ret = -1;
             break;
-#endif
         case AFF_BINTYPE_AR:
-            ret = tcc_load_archive(s1, fd);
+            ret = tcc_load_archive(s1, fh);
             break;
 #ifdef TCC_TARGET_COFF
         case AFF_BINTYPE_C67:
@@ -1636,19 +1613,20 @@ static int args_parser_make_argv(const char *r, int *argc, char ***argv)
 static void args_parser_listfile(TCCState *s,
     const char *filename, int optind, int *pargc, char ***pargv)
 {
-    int fd, i;
+    int i;
     size_t len;
     char *p;
     int argc = 0;
     char **argv = NULL;
+    SfFile *fh;
 
-    fd = open(filename, O_RDONLY | O_BINARY);
-    if (fd < 0)
+    fh = sf_open(filename, SF_FILE_READ);
+    if (!fh)
         tcc_error("listfile '%s' not found", filename);
 
-    len = lseek(fd, 0, SEEK_END);
+    len = sf_size(fh);
     p = tcc_malloc(len + 1), p[len] = 0;
-    lseek(fd, 0, SEEK_SET), read(fd, p, len), close(fd);
+    sf_read(fh, p, len), fh->Close(fh);
 
     for (i = 0; i < *pargc; ++i)
         if (i == optind)
@@ -1825,7 +1803,7 @@ reparse:
             break;
         case TCC_OPTION_run:
 #ifndef TCC_IS_NATIVE
-            tcc_error("-run is not available in a cross compiler");
+            tcc_error("-run is not supported");
 #endif
             run = optarg;
             x = TCC_OUTPUT_MEMORY;
@@ -1886,14 +1864,13 @@ reparse:
             s->Pflag = atoi(optarg) + 1;
             break;
         case TCC_OPTION_MD:
-            s->gen_deps = 1;
-            break;
         case TCC_OPTION_MF:
-            s->deps_outfile = tcc_strdup(optarg);
+            /* SurfaceOS: no dependency files (tcctools.c) */
+            tcc_error("-MD and -MF are not supported");
             break;
         case TCC_OPTION_dumpversion:
-            printf ("%s\n", TCC_VERSION);
-            exit(0);
+            sf_printf(NULL, "%s\n", TCC_VERSION);
+            sf_exit(0);
             break;
         case TCC_OPTION_x:
             if (*optarg == 'c')
@@ -1969,7 +1946,7 @@ PUB_FUNC void tcc_print_stats(TCCState *s, unsigned total_time)
         total_time = 1;
     if (total_bytes < 1)
         total_bytes = 1;
-    fprintf(stderr, "* %d idents, %d lines, %d bytes\n"
+    sf_printf(NULL, "* %d idents, %d lines, %d bytes\n"
                     "* %0.3f s, %u lines/s, %0.1f MB/s\n",
            tok_ident - TOK_IDENT, total_lines, total_bytes,
            (double)total_time/1000,

@@ -667,9 +667,9 @@ static void maybe_print_stats (void)
         for(i=0;i<nb_op_vals;i++) {
             int v = op_vals[i];
             //if ((v & (v - 1)) != 0)
-                printf("%3d: %08x\n", i, v);
+                sf_printf(NULL, "%3d: %08x\n", i, v);
         }
-        printf("size=%d nb=%d f0=%d f1=%d f2=%d f3=%d\n",
+        sf_printf(NULL, "size=%d nb=%d f0=%d f1=%d f2=%d f3=%d\n",
                (int)sizeof(asm_instrs),
 	       (int)sizeof(asm_instrs) / (int)sizeof(ASMInstr),
                freq[0], freq[1], freq[2], freq[3]);

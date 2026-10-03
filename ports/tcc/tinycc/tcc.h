@@ -24,26 +24,15 @@
 #define _GNU_SOURCE
 #include "config.h"
 
+/* SurfaceOS: the SDK's libc and tables (sfport.h) */
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <string.h>
-#include <errno.h>
 #include <math.h>
-#include <fcntl.h>
-#include <setjmp.h>
-#include <time.h>
-
-#ifndef _WIN32
-# include <unistd.h>
-# include <sys/time.h>
-# ifndef CONFIG_TCC_STATIC
-#  include <dlfcn.h>
-# endif
-/* XXX: need to define this to use them in non ISOC99 context */
-extern float strtof (const char *__nptr, char **__endptr);
-extern long double strtold (const char *__nptr, char **__endptr);
-#endif
+#include "sfport.h"
 
 #ifdef _WIN32
 # include <windows.h>
@@ -103,10 +92,12 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # define PATHCMP stricmp
 # define PATHSEP ";"
 #else
+/* SurfaceOS: a path from the root is "root:/..."; ':' is in every one of
+   them, so lists of paths are split at ';' */
 # define IS_DIRSEP(c) (c == '/')
-# define IS_ABSPATH(p) IS_DIRSEP(p[0])
+# define IS_ABSPATH(p) sf_has_root(p)
 # define PATHCMP strcmp
-# define PATHSEP ":"
+# define PATHSEP ";"
 #endif
 
 /* -------------------------------------------- */
@@ -149,18 +140,8 @@ extern long double strtold (const char *__nptr, char **__endptr);
 # endif
 #endif
 
-/* only native compiler supports -run */
-#if defined _WIN32 == defined TCC_TARGET_PE
-# if (defined __i386__ || defined _X86_) && defined TCC_TARGET_I386
-#  define TCC_IS_NATIVE
-# elif (defined __x86_64__ || defined _AMD64_) && defined TCC_TARGET_X86_64
-#  define TCC_IS_NATIVE
-# elif defined __arm__ && defined TCC_TARGET_ARM
-#  define TCC_IS_NATIVE
-# elif defined __aarch64__ && defined TCC_TARGET_ARM64
-#  define TCC_IS_NATIVE
-# endif
-#endif
+/* SurfaceOS: never TCC_IS_NATIVE - tcc does not run what it builds in
+   its own process (-run), and has no backtrace or bound checking */
 
 #if defined TCC_IS_NATIVE && !defined CONFIG_TCCBOOT
 # define CONFIG_TCC_BACKTRACE
@@ -554,7 +535,7 @@ typedef struct DLLReference {
 typedef struct BufferedFile {
     uint8_t *buf_ptr;
     uint8_t *buf_end;
-    int fd;
+    SfFile *fh; /* SurfaceOS: the file it reads, NULL for none */
     struct BufferedFile *prev;
     int line_num;    /* current line number - here to simplify code */
     int line_ref;    /* tcc -E: last printed line */
@@ -726,11 +707,10 @@ struct TCCState {
     void *error_opaque;
     void (*error_func)(void *opaque, const char *msg);
     int error_set_jmp_enabled;
-    jmp_buf error_jmp_buf;
     int nb_errors;
 
-    /* output file for preprocessing (-E) */
-    FILE *ppfp;
+    /* output file for preprocessing (-E); NULL: the console */
+    SfFile *ppfp;
     enum {
 	LINE_MACRO_OUTPUT_FORMAT_GCC,
 	LINE_MACRO_OUTPUT_FORMAT_NONE,
@@ -1421,9 +1401,9 @@ ST_FUNC void resolve_common_syms(TCCState *s1);
 ST_FUNC void relocate_syms(TCCState *s1, Section *symtab, int do_resolve);
 ST_FUNC void relocate_section(TCCState *s1, Section *s);
 
-ST_FUNC int tcc_object_type(int fd, ElfW(Ehdr) *h);
-ST_FUNC int tcc_load_object_file(TCCState *s1, int fd, unsigned long file_offset);
-ST_FUNC int tcc_load_archive(TCCState *s1, int fd);
+ST_FUNC int tcc_object_type(SfFile *fh, ElfW(Ehdr) *h);
+ST_FUNC int tcc_load_object_file(TCCState *s1, SfFile *fh, unsigned long file_offset);
+ST_FUNC int tcc_load_archive(TCCState *s1, SfFile *fh);
 ST_FUNC void tcc_add_bcheck(TCCState *s1);
 ST_FUNC void tcc_add_runtime(TCCState *s1);
 
@@ -1437,7 +1417,6 @@ ST_FUNC void *tcc_get_symbol_err(TCCState *s, const char *name);
 #endif
 
 #ifndef TCC_TARGET_PE
-ST_FUNC int tcc_load_dll(TCCState *s1, int fd, const char *filename, int level);
 ST_FUNC int tcc_load_ldscript(TCCState *s1);
 ST_FUNC uint8_t *parse_comment(uint8_t *p);
 ST_FUNC void minp(void);

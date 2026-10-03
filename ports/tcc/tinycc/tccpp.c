@@ -591,13 +591,13 @@ ST_FUNC int handle_eob(void)
 
     /* only tries to read if really end of buffer */
     if (bf->buf_ptr >= bf->buf_end) {
-        if (bf->fd >= 0) {
+        if (bf->fh) {
 #if defined(PARSE_DEBUG)
             len = 1;
 #else
             len = IO_BUF_SIZE;
 #endif
-            len = read(bf->fd, bf->buffer, len);
+            len = sf_read(bf->fh, bf->buffer, len);
             if (len < 0)
                 len = 0;
         } else {
@@ -1418,7 +1418,7 @@ static void maybe_run_test(TCCState *s)
         return;
     if (0 != --s->run_test)
         return;
-    fprintf(s->ppfp, "\n[%s]\n" + !(s->dflag & 32), p), fflush(s->ppfp);
+    sf_printf(s->ppfp, "\n[%s]\n" + !(s->dflag & 32), p);
     define_push(tok, MACRO_OBJ, NULL, NULL);
 }
 
@@ -1960,7 +1960,7 @@ include_done:
                 goto _line_err;
             --n;
         }
-        if (file->fd > 0)
+        if (file->fh)
             total_lines += file->line_num - n;
         file->line_num = n;
         if (s1->do_debug)
@@ -2434,7 +2434,6 @@ static void parse_number(const char *p)
             }
             *q = '\0';
             t = toup(ch);
-            errno = 0;
             if (t == 'F') {
                 ch = *p++;
                 tok = TOK_CFLOAT;
@@ -3304,17 +3303,15 @@ static int macro_subst_tok(
         cstrval = file->filename;
         goto add_cstr;
     } else if (tok == TOK___DATE__ || tok == TOK___TIME__) {
-        time_t ti;
-        struct tm *tm;
+        SfDateTime tm = { 2000, 1, 1 };
 
-        time(&ti);
-        tm = localtime(&ti);
+        Sys->Time->GetTime(Sys->Time, &tm);
         if (tok == TOK___DATE__) {
             snprintf(buf, sizeof(buf), "%s %2d %d", 
-                     ab_month_name[tm->tm_mon], tm->tm_mday, tm->tm_year + 1900);
+                     ab_month_name[tm.Month - 1], tm.Day, tm.Year);
         } else {
             snprintf(buf, sizeof(buf), "%02d:%02d:%02d", 
-                     tm->tm_hour, tm->tm_min, tm->tm_sec);
+                     tm.Hour, tm.Minute, tm.Second);
         }
         cstrval = buf;
     add_cstr:
@@ -3638,7 +3635,7 @@ ST_FUNC void tccpp_new(TCCState *s)
 
     /* might be used in error() before preprocess_start() */
     s->include_stack_ptr = s->include_stack;
-    s->ppfp = stdout;
+    s->ppfp = NULL; /* the console */
 
     /* init isid table */
     for(i = CH_EOF; i<128; i++)
@@ -3710,19 +3707,19 @@ ST_FUNC void tccpp_delete(TCCState *s)
 
 static void tok_print(const char *msg, const int *str)
 {
-    FILE *fp;
+    SfFile *fp;
     int t, s = 0;
     CValue cval;
 
     fp = tcc_state->ppfp;
-    fprintf(fp, "%s", msg);
+    sf_printf(fp, "%s", msg);
     while (str) {
 	TOK_GET(&t, &str, &cval);
 	if (!t)
 	    break;
-	fprintf(fp, " %s" + s, get_tok_str(t, &cval)), s = 1;
+	sf_printf(fp, " %s" + s, get_tok_str(t, &cval)), s = 1;
     }
-    fprintf(fp, "\n");
+    sf_printf(fp, "\n");
 }
 
 static void pp_line(TCCState *s1, BufferedFile *f, int level)
@@ -3736,11 +3733,11 @@ static void pp_line(TCCState *s1, BufferedFile *f, int level)
         ;
     } else if (level == 0 && f->line_ref && d < 8) {
 	while (d > 0)
-	    fputs("\n", s1->ppfp), --d;
+	    sf_printf(s1->ppfp, "\n"), --d;
     } else if (s1->Pflag == LINE_MACRO_OUTPUT_FORMAT_STD) {
-	fprintf(s1->ppfp, "#line %d \"%s\"\n", f->line_num, f->filename);
+	sf_printf(s1->ppfp, "#line %d \"%s\"\n", f->line_num, f->filename);
     } else {
-	fprintf(s1->ppfp, "# %d \"%s\"%s\n", f->line_num, f->filename,
+	sf_printf(s1->ppfp, "# %d \"%s\"%s\n", f->line_num, f->filename,
 	    level > 0 ? " 1" : level < 0 ? " 2" : "");
     }
     f->line_ref = f->line_num;
@@ -3748,7 +3745,7 @@ static void pp_line(TCCState *s1, BufferedFile *f, int level)
 
 static void define_print(TCCState *s1, int v)
 {
-    FILE *fp;
+    SfFile *fp;
     Sym *s;
 
     s = define_find(v);
@@ -3756,18 +3753,18 @@ static void define_print(TCCState *s1, int v)
         return;
 
     fp = s1->ppfp;
-    fprintf(fp, "#define %s", get_tok_str(v, NULL));
+    sf_printf(fp, "#define %s", get_tok_str(v, NULL));
     if (s->type.t == MACRO_FUNC) {
         Sym *a = s->next;
-        fprintf(fp,"(");
+        sf_printf(fp,"(");
         if (a)
             for (;;) {
-                fprintf(fp,"%s", get_tok_str(a->v & ~SYM_FIELD, NULL));
+                sf_printf(fp,"%s", get_tok_str(a->v & ~SYM_FIELD, NULL));
                 if (!(a = a->next))
                     break;
-                fprintf(fp,",");
+                sf_printf(fp,",");
             }
-        fprintf(fp,")");
+        sf_printf(fp,")");
     }
     tok_print("", s->d);
 }
@@ -3776,7 +3773,7 @@ static void pp_debug_defines(TCCState *s1)
 {
     int v, t;
     const char *vs;
-    FILE *fp;
+    SfFile *fp;
 
     t = pp_debug_tok;
     if (t == 0)
@@ -3792,11 +3789,11 @@ static void pp_debug_defines(TCCState *s1)
     if (t == TOK_DEFINE) {
         define_print(s1, v);
     } else if (t == TOK_UNDEF) {
-        fprintf(fp, "#undef %s\n", vs);
+        sf_printf(fp, "#undef %s\n", vs);
     } else if (t == TOK_push_macro) {
-        fprintf(fp, "#pragma push_macro(\"%s\")\n", vs);
+        sf_printf(fp, "#pragma push_macro(\"%s\")\n", vs);
     } else if (t == TOK_pop_macro) {
-        fprintf(fp, "#pragma pop_macro(\"%s\")\n", vs);
+        sf_printf(fp, "#pragma pop_macro(\"%s\")\n", vs);
     }
     pp_debug_tok = 0;
 }
@@ -3893,8 +3890,8 @@ ST_FUNC int tcc_preprocess(TCCState *s1)
             white[spcs++] = ' ';
         }
 
-        white[spcs] = 0, fputs(white, s1->ppfp), spcs = 0;
-        fputs(p = get_tok_str(tok, &tokc), s1->ppfp);
+        white[spcs] = 0, sf_printf(s1->ppfp, "%s", white), spcs = 0;
+        sf_printf(s1->ppfp, "%s", p = get_tok_str(tok, &tokc));
         token_seen = pp_check_he0xE(tok, p);
     }
     return 0;

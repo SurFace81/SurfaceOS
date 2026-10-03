@@ -887,6 +887,19 @@ static void CheckMemory(SfMemory* Memory)
     Check("a second Free of a block is SF_INVALID_PARAMETER",
           Memory->Free(Memory, Blocks[0]) == SF_INVALID_PARAMETER);
 
+    // Reallocate: the bytes stay, added ones are zero, null is a new block.
+    uint8_t* Grown = nullptr;
+    Ok = Memory->Reallocate(Memory, nullptr, 40, (void**)&Grown) == SF_SUCCESS && Grown;
+    for (int i = 0; Ok && i < 40; i++)
+        Grown[i] = (uint8_t)(i + 1);
+    Ok = Ok && Memory->Reallocate(Memory, Grown, 8, (void**)&Grown) == SF_SUCCESS &&
+         Memory->Reallocate(Memory, Grown, 5000, (void**)&Grown) == SF_SUCCESS;
+    for (int i = 0; Ok && i < 5000; i++)
+        Ok = Grown[i] == (i < 8 ? i + 1 : 0);
+    Check("Reallocate keeps the bytes, zeroes the new ones", Ok);
+    if (Grown)
+        Memory->Free(Memory, Grown);
+
     // After everything merged back, a block larger than the heap has grown
     // by so far still fits.
     uint8_t* Big = nullptr;

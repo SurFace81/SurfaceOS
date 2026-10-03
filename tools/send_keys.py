@@ -20,6 +20,7 @@ CHAR_TO_KEY = {
     '(': 'shift-9', ')': 'shift-0', '_': 'shift-minus', '+': 'shift-equal',
     ':': 'shift-semicolon', '"': 'shift-apostrophe', '<': 'shift-comma',
     '>': 'shift-dot', '?': 'shift-slash', '|': 'shift-backslash',
+    '{': 'shift-bracket_left', '}': 'shift-bracket_right', '~': 'shift-grave_accent',
 }
 
 

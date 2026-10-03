@@ -160,10 +160,7 @@ ST_FUNC void tcc_debug_start(TCCState *s1)
         section_sym = put_elf_sym(symtab_section, 0, 0,
                                   ELFW(ST_INFO)(STB_LOCAL, STT_SECTION), 0,
                                   text_section->sh_num, NULL);
-        getcwd(buf, sizeof(buf));
-#ifdef _WIN32
-        normalize_slashes(buf);
-#endif
+        buf[0] = '\0'; /* SurfaceOS: no working directory */
         pstrcat(buf, sizeof(buf), "/");
         put_stabs_r(buf, N_SO, 0, 0,
                     text_section->data_offset, text_section, section_sym);

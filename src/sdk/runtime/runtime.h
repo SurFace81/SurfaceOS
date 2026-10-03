@@ -56,6 +56,7 @@ SfStatus MemoryAllocatePages(SfMemory* This, uint64_t Count, void** Address);
 SfStatus MemoryFreePages(SfMemory* This, void* Address, uint64_t Count);
 SfStatus MemoryAllocate(SfMemory* This, uint64_t Size, void** Buffer);
 SfStatus MemoryFree(SfMemory* This, void* Buffer);
+SfStatus MemoryReallocate(SfMemory* This, void* Buffer, uint64_t Size, void** NewBuffer);
 
 // file.cpp
 SfStatus FilesOpen(SfFiles* This, const char* Path, uint64_t Mode, SfFile** Out);

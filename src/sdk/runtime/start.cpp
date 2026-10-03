@@ -237,6 +237,7 @@ const SfMemory SdkMemory =
     MemoryFreePages,
     MemoryAllocate,
     MemoryFree,
+    MemoryReallocate,
 };
 
 static const SfTime SdkTime =

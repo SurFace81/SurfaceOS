@@ -1,5 +1,5 @@
-// libc: numbers from text - strtol, strtoul, strtoull, strtod, strtof,
-// strtold.
+// libc: numbers from text - strtol, atoi, strtoul, strtoull, strtod,
+// strtof, strtold.
 
 #include <stdlib.h>
 
@@ -64,6 +64,11 @@ long strtol(const char* Text, char** End, int Base)
     if (!Negative && Value > 0x7FFFFFFFFFFFFFFFULL)
         return 0x7FFFFFFFFFFFFFFFL;
     return Negative ? (long)(0 - Value) : (long)Value;
+}
+
+int atoi(const char* Text)
+{
+    return (int)strtol(Text, NULL, 10);
 }
 
 unsigned long long strtoull(const char* Text, char** End, int Base)

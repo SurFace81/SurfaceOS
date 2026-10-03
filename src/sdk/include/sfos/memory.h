@@ -27,6 +27,14 @@ struct SfMemory
     ///
     /// SF_INVALID_PARAMETER for anything else.
     SfStatus (*Free)(SfMemory* This, void* Buffer);
+
+    /// Gives Buffer (from Allocate, or null for a new block) Size bytes;
+    /// *NewBuffer gets the block, which may have moved.
+    ///
+    /// What it held stays, up to Size; bytes added are zeroed. On failure
+    /// Buffer is left as it was. SF_INVALID_PARAMETER for a Buffer not from
+    /// Allocate.
+    SfStatus (*Reallocate)(SfMemory* This, void* Buffer, uint64_t Size, void** NewBuffer);
 };
 
 /// The size of a page (AllocatePages).
@@ -36,6 +44,7 @@ struct SfMemory
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfMemory, AllocatePages) == 16, "SfMemory layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfMemory, Free) == 40, "SfMemory layout");
-SF_STATIC_ASSERT(sizeof(SfMemory) == 48, "SfMemory layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfMemory, Reallocate) == 48, "SfMemory layout");
+SF_STATIC_ASSERT(sizeof(SfMemory) == 56, "SfMemory layout");
 
 #endif // SFOS_MEMORY_H
