@@ -30,6 +30,7 @@
 #include "../include/mm/heap.h"
 #include "../include/mm/pmm.h"
 #include "../include/drivers/usb/usb.h"
+#include "../include/drivers/shot.h"
 #include "../include/stdlib/string.h"
 #include "../include/errno.h"
 #include "../include/fs/dirent.h"
@@ -489,6 +490,7 @@ extern "C" void kmain(uint64_t boot_header_phys)
     uart::printf("boot: SurfaceOS v%s\n", VERSION_STRING);
     process::start_cmdkeeper();
     usb::start_hotplug();
+    shot::start();
     uart::printf("boot: console ready\n");
 
     // From here on the boot task is the idle task: the consoles and the

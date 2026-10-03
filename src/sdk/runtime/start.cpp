@@ -87,6 +87,11 @@ static SfStatus ConsoleWaitInput(SfConsole*)
     return SfCall(SFCALL_CONSOLE_WAIT_INPUT);
 }
 
+static SfStatus ConsoleSetHints(SfConsole*, const char* Commands, const char* Names)
+{
+    return SfCall(SFCALL_CONSOLE_SET_HINTS, (uint64_t)Commands, (uint64_t)Names);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -123,13 +128,17 @@ static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
                              const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
                              uint64_t* Handle)
 {
+    // SF_START_OUTPUT: the output file follows the arguments' files.
     const uint64_t MaxArgFiles = 32;
-    uint64_t Handles[MaxArgFiles];
+    uint64_t Handles[MaxArgFiles + 1];
+    if ((Flags & SF_START_OUTPUT) && (!ArgFiles || !ArgFiles[ArgCount]))
+        return SF_INVALID_PARAMETER;
     if (ArgFiles)
     {
         if (ArgCount > MaxArgFiles)
             return SF_INVALID_PARAMETER;
-        for (uint64_t i = 0; i < ArgCount; i++)
+        uint64_t Files = ArgCount + ((Flags & SF_START_OUTPUT) ? 1 : 0);
+        for (uint64_t i = 0; i < Files; i++)
             Handles[i] = ArgFiles[i] ? FileHandle(ArgFiles[i]) : ~0ULL;
     }
     return SfCall(SFCALL_PROCESS_START, (uint64_t)Name, ArgCount, (uint64_t)Args,
@@ -188,6 +197,7 @@ static const SfConsole SdkConsole =
     ConsoleSetTitle,
     ConsoleClear,
     ConsoleWaitInput,
+    ConsoleSetHints,
 };
 
 const SfFiles SdkFiles =

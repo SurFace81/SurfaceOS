@@ -128,6 +128,10 @@ namespace process
     // in the background (sfconsole.cpp).
     void log_output(const char* s, uint64_t len);
 
+    // What a program started with SF_START_OUTPUT prints in SF_CONSOLE_LINE
+    // goes to its file, not to the screen: true when it went there.
+    bool output_to_file(const char* s, uint64_t len);
+
     // --- Hooks from the trap entry points --------------------------------
 
     // The process calls of the SDK (sfcall.cpp). Arguments come from regs

@@ -9,6 +9,7 @@
 #include "../../include/drivers/term.h"
 #include "../../include/drivers/tty.h"
 #include "../../include/cpu/process.h"
+#include "../../include/drivers/shot.h"
 
 namespace kbd {
     namespace {
@@ -75,13 +76,19 @@ namespace kbd {
         //   Alt+F1..F9   show screen 1..9;
         //   Ctrl+Alt+C   end every program on the shown screen, whatever it is
         //                doing - nothing a program does can keep it alive;
-        //   Ctrl+Alt+Z   pause them, and pressed again, let them go on.
+        //   Ctrl+Alt+Z   pause them, and pressed again, let them go on;
+        //   Print Screen save the panel as a BMP (shot.h).
         const uint8_t KEY_C = 46;
         uint8_t system_held = 0;        // the key whose release to swallow
 
         bool system_key(uint8_t code, bool pressed) {
             if (code == system_held && !pressed) {
                 system_held = 0;
+                return true;
+            }
+            if (code == KEY_PRINT_SCREEN && pressed && !alt_held()) {
+                system_held = code;
+                shot::request();
                 return true;
             }
             if (!pressed || !alt_held())

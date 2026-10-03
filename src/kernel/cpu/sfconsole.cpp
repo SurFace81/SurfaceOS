@@ -54,8 +54,11 @@ namespace
                 break;
             }
             uint64_t n = len >= 0 ? (uint64_t)len : TEXT_MAX - 1;
-            tty::write(buf, n);
-            process::log_output(buf, n);        // in the background: its log
+            if (!process::output_to_file(buf, n))
+            {
+                tty::write(buf, n);
+                process::log_output(buf, n);    // in the background: its log
+            }
             if (len >= 0)
             {
                 regs->rax = SF_SUCCESS;
@@ -111,6 +114,8 @@ namespace
         uint32_t cur;               // edit position
         uint32_t start_x;
         sint32_t start_y;           // above the screen once it scrolled away
+        const char* hint;           // the rest of the word suggested (SetHints)
+        uint32_t hint_len;          // shown after the line, dimmed; 0: none
     };
 
     void place(Line* l, uint32_t i)
@@ -145,11 +150,100 @@ namespace
     // Kept per process (process::line_history), made at its first ReadLine.
     const uint32_t HISTORY_LINES = 16;
 
+    // SetHints' lists, one after the other: the commands, a NUL, the names,
+    // a NUL; each a word a line.
+    const uint32_t HINTS_MAX = 8192;
+
     struct History
     {
         char     text[HISTORY_LINES][TEXT_MAX];
         uint32_t count;
+        char     hints[HINTS_MAX];
     };
+
+    // The hint for the word being typed at the end of the line: the rest of
+    // the first word of the right list that starts with it (letters in
+    // either case), in l->hint and l->hint_len.
+    void find_hint(Line* l, const History* h)
+    {
+        l->hint_len = 0;
+        if (!h || l->cur != l->len)
+            return;
+        uint32_t start = l->len;
+        while (start && l->text[start - 1] != ' ')
+            start--;
+        uint32_t wlen = l->len - start;
+        if (!wlen)
+            return;
+        for (uint32_t i = start; i < l->len; i++)
+            if (l->text[i] == '/' || l->text[i] == '"')
+                return;
+
+        // A command starts the line, or comes after | or &.
+        uint32_t p = start;
+        while (p && l->text[p - 1] == ' ')
+            p--;
+        bool command = p == 0 || l->text[p - 1] == '|' || l->text[p - 1] == '&';
+        if (l->text[start] == '&')
+        {
+            start++;                    // "&prog": the word after it
+            wlen--;
+            command = true;
+            if (!wlen)
+                return;
+        }
+        const char* list = h->hints;
+        if (!command)
+            list += strlen(list) + 1;
+
+        auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c; };
+        for (const char* w = list; *w;)
+        {
+            uint32_t n = 0;
+            while (w[n] && w[n] != '\n')
+                n++;
+            bool match = n > wlen;
+            for (uint32_t i = 0; match && i < wlen; i++)
+                match = lower(w[i]) == lower(l->text[start + i]);
+            if (match)
+            {
+                l->hint = w + wlen;
+                l->hint_len = n - wlen;
+                return;
+            }
+            w += n;
+            if (*w)
+                w++;
+        }
+    }
+
+    // Draw the hint after the line (`show`), or blank where it was. Cell by
+    // cell, so the cursor stays and nothing scrolls: what would go below
+    // the screen is left out.
+    void draw_hint(const Line* l, bool show)
+    {
+        uint32_t cols = term::cols(), rows = term::rows();
+        for (uint32_t i = 0; i < l->hint_len; i++)
+        {
+            uint32_t pos = l->start_x + l->len + i;
+            sint32_t y = l->start_y + (sint32_t)(pos / cols);
+            if (y < 0 || y >= (sint32_t)rows)
+                continue;
+            term::put_cell(pos % cols, (uint32_t)y, show ? l->hint[i] : ' ',
+                           show ? TERM_BLACK + 8 : TERM_DEFAULT_FG, TERM_DEFAULT_BG);
+        }
+    }
+
+    // Take the hint into the line.
+    void take_hint(Line* l)
+    {
+        uint32_t at = l->len;
+        for (uint32_t i = 0; i < l->hint_len && l->len + 1 < TEXT_MAX; i++)
+            l->text[l->len++] = l->hint[i];
+        l->cur = l->len;
+        l->hint_len = 0;
+        redraw(l, at, 0);
+    }
 
     void remember(History* h, const Line* l)
     {
@@ -184,6 +278,7 @@ namespace
         {
             OnScreen on;
             l->len = l->cur = 0;
+            l->hint_len = 0;
             l->start_x = term::cursor_x();
             l->start_y = (sint32_t)term::cursor_y();
             term::show_cursor();
@@ -193,11 +288,34 @@ namespace
         {
             keyboard_event_t e;
             if (!next_key(&e))
+            {
+                OnScreen on;
+                draw_hint(l, false);
                 return SF_ABORTED;
+            }
             OnScreen on;
+
+            // The hint goes while the key acts, and comes back for the line
+            // as the key left it.
+            draw_hint(l, false);
+            bool had_hint = l->hint_len != 0;
+            struct Rehint
+            {
+                Line* l;
+                const History* h;
+                bool on;
+                ~Rehint() { if (on) { find_hint(l, h); draw_hint(l, true); } }
+            } rehint = { l, h, true };
+            if ((e.KeyCode == KEY_TAB || (e.KeyCode == KEY_ARROW_RIGHT && l->cur == l->len)) &&
+                had_hint)
+            {
+                take_hint(l);
+                continue;
+            }
 
             if (is_ctrl_c(e))
             {
+                rehint.on = false;
                 l->cur = l->len;
                 redraw(l, l->len, 0);
                 tty::write("^C\n", 3);
@@ -205,6 +323,7 @@ namespace
             }
             if (e.Control && e.KeyChar == 4 && l->len == 0)     // Ctrl+D
             {
+                rehint.on = false;
                 tty::write("\n", 1);
                 return SF_END_OF_FILE;
             }
@@ -213,6 +332,7 @@ namespace
             {
                 case KEY_ENTER:
                 case KEY_KP_ENTER:
+                    rehint.on = false;
                     l->cur = l->len;
                     place(l, l->len);
                     tty::write("\n", 1);
@@ -260,6 +380,34 @@ namespace
                     break;
             }
         }
+    }
+
+    // (const char* Commands, const char* Names)
+    void set_hints(user_regs* regs, iret_frame*)
+    {
+        History* h = (History*)process::line_history(sizeof(History));
+        if (!h)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        // Both lists into one buffer; a list cut short loses its tail.
+        uint64_t n = 0;
+        const uint64_t lists[2] = { regs->rdi, regs->rsi };
+        for (uint64_t list : lists)
+        {
+            sint64_t len = list ? uaccess::strncpy_from_user(h->hints + n, list, HINTS_MAX / 2)
+                                : 0;
+            if (len == -1)
+            {
+                h->hints[0] = h->hints[1] = '\0';
+                regs->rax = SF_INVALID_PARAMETER;
+                return;
+            }
+            n += len >= 0 ? (uint64_t)len : HINTS_MAX / 2 - 1;
+            h->hints[n++] = '\0';
+        }
+        regs->rax = SF_SUCCESS;
     }
 
     // (char* Buffer, uint64_t Size, uint64_t* Length)
@@ -510,5 +658,6 @@ namespace sfconsole
         sfcall::set_handler(SFCALL_CONSOLE_SET_TITLE, set_title);
         sfcall::set_handler(SFCALL_CONSOLE_CLEAR, clear);
         sfcall::set_handler(SFCALL_CONSOLE_WAIT_INPUT, wait_input);
+        sfcall::set_handler(SFCALL_CONSOLE_SET_HINTS, set_hints);
     }
 }

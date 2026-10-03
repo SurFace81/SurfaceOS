@@ -133,6 +133,8 @@ namespace process
         pid_t       input_giver;
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
         void*       line_history;   // ReadLine's earlier lines (sfconsole.cpp), kmalloc'ed
+        vnode*      out;            // SF_START_OUTPUT: where its printing goes, referenced
+        uint64_t    out_off;
         bool        admin;          // the admin right (sfos/admin.h)
         bool        from_console;   // started by its screen's console (the log says so)
         uint64_t    cpu_ticks;      // timer ticks its threads ran (account_tick)
@@ -543,12 +545,21 @@ namespace process
         vfs::unref(v);
     }
 
-    // Release the roots, the command line and ReadLine's history.
+    // Release the roots, the command line, ReadLine's history and the
+    // output file.
     static void drop_roots(Process* p)
     {
         if (p->line_history)
             kfree(p->line_history);
         p->line_history = nullptr;
+        if (p->out)
+        {
+            if (p->out->ops->fsync)
+                p->out->ops->fsync(p->out);
+            vfs::unref(p->out);
+        }
+        p->out = nullptr;
+        p->out_off = 0;
         for (uint32_t i = 0; i < MAX_ROOTS; i++)
         {
             if (p->roots[i].v)
@@ -784,6 +795,16 @@ namespace process
         uint64_t done = 0;
         if (l->v && len && l->v->ops->write(l->v, l->off, s, len, &done) == 0)
             l->off += done;
+    }
+
+    bool output_to_file(const char* s, uint64_t len)
+    {
+        if (!current || !current->out || current->console_raw)
+            return false;
+        uint64_t done = 0;
+        if (len && current->out->ops->write(current->out, current->out_off, s, len, &done) == 0)
+            current->out_off += done;
+        return true;
     }
 
     // Hidden screen s, with its log, goes: nothing runs there any more.
@@ -2369,7 +2390,26 @@ namespace process
 
         // ArgHandles (r9): argument i's file or folder, ~0 for none - the
         // new program's root arg<i+1>:. The caller keeps them open meanwhile.
+        // SF_START_OUTPUT: one more, the file its printing goes to, from
+        // that handle's position on.
         vnode* arg_roots[257] = {};
+        vnode* out = nullptr;
+        uint64_t out_off = 0;
+        if (flags & SF_START_OUTPUT)
+        {
+            uint64_t h = ~0ULL;
+            sint64_t frc = 0;
+            file* f = regs->r9 && uaccess::copy_from_user(&h, regs->r9 + argc * 8, 8) &&
+                      h < HANDLE_TABLE_SIZE
+                    ? filesys::fd_get(&current->handles, (sint32_t)h, &frc) : nullptr;
+            if (!f || f->vn->type != vtype::REG)
+            {
+                regs->rax = SF_BAD_HANDLE;
+                return;
+            }
+            out = f->vn;
+            out_off = f->offset;
+        }
         for (uint64_t i = 0; regs->r9 && i < argc; i++)
         {
             uint64_t h = ~0ULL;
@@ -2426,6 +2466,12 @@ namespace process
         }
 
         p->screen = current->screen;
+        if (out)
+        {
+            vfs::ref(out);
+            p->out = out;
+            p->out_off = out_off;
+        }
         char log_name[128];
         if (background)
             to_background(p, (uint32_t)hidden, log_name);

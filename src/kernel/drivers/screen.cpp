@@ -290,6 +290,22 @@ namespace screen
     // term::render() now, which runs on the same tick as the flush.
     void update_cursor() {}
 
+    uint32_t shot_width()  { return scr.vp_width; }
+    uint32_t shot_height() { return scr.vp_y + scr.vp_height - scr.bar_y; }
+
+    void shot_row(uint32_t y, uint8_t* bgr)
+    {
+        const uint8_t* px = scr.buffer +
+                            (scr.vp_x + (scr.bar_y + y) * scr.pixels_per_scanline) * BBP;
+        bool rgb = scr.pixel_format == 0;       // RGBX in memory, else BGRX
+        for (uint32_t x = 0; x < scr.vp_width; x++, px += BBP, bgr += 3)
+        {
+            bgr[0] = rgb ? px[2] : px[0];
+            bgr[1] = px[1];
+            bgr[2] = rgb ? px[0] : px[2];
+        }
+    }
+
     void flush()
     {
         // rep movsq: ~15 MB per flush at 2K resolution, a naive 64-bit

@@ -88,6 +88,7 @@
 #define SFCALL_PROCESS_ID_OF         53  // (uint64_t Handle, uint64_t* Id)
 #define SFCALL_ADMIN_GET_SYSTEM_INFO 54  // (SfSystemInfo* Info)
 #define SFCALL_ADMIN_GET_PROCESS_INFO 55 // (uint64_t Id, SfProcessStats* Info)
-#define SFCALL_COUNT                 56
+#define SFCALL_CONSOLE_SET_HINTS     56  // (const char* Commands, const char* Names)
+#define SFCALL_COUNT                 57
 
 #endif // ABI_SFCALL_H

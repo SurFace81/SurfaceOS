@@ -7,6 +7,10 @@
 // paused (Ctrl+Alt+Z) or sent elsewhere; an `&` before it runs it in the
 // background instead. A word with spaces goes in quotes ("my file.txt").
 // What a command prints longer than the screen is shown a page at a time.
+// `> file` puts what the line prints into a file instead (`>>` adds it at
+// the end), and `a | b` gives what a prints to b - the filters grep,
+// head, tail and wc read it. While a word is typed, the rest of a command,
+// program or name here that starts with it shows dimmed; Tab takes it.
 //
 // Paths: the current folder is an absolute path of the whole disk
 // ("/apps"), and every path typed is taken from there; the files are
@@ -32,6 +36,14 @@ static char     Out[OUT_SIZE];
 static uint64_t OutLength;
 static uint64_t OutColumn;              // tabs become spaces up to a stop of 8
 static bool     Gather;
+
+// A pipe (a | b) hands the output of one part to the next: In holds it,
+// Piped says there is some. Output: the file a program Run starts prints
+// into instead of the screen (`>`, or a part before a `|`), or null.
+static char     In[OUT_SIZE];
+static uint64_t InLength;
+static bool     Piped;
+static SfFile*  Output;
 
 static void Put(char C)
 {
@@ -965,7 +977,7 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
         }
 
     const uint64_t MaxArgs = 32;
-    SfFile* Files[MaxArgs] = {};
+    SfFile* Files[MaxArgs + 1] = {};
     uint64_t ArgCount = Count - 1 < MaxArgs ? Count - 1 : MaxArgs;
     for (uint64_t i = 0; i < ArgCount; i++)
         Files[i] = OpenArg(Words[i + 1]);
@@ -980,7 +992,12 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
 
     uint64_t Flags = (Background ? SF_START_BACKGROUND : SF_START_GIVE_INPUT) |
                      (AsAdmin ? SF_START_ADMIN : 0);
-    if (!Background)
+    if (Output)
+    {
+        Files[ArgCount] = Output;       // the kernel takes it after the arguments
+        Flags |= SF_START_OUTPUT;
+    }
+    else if (!Background)
         Con->Clear(Con);                // the screen is the program's now
     uint64_t Handle = 0;
     SfStatus Status = Sys->Process->Start(Sys->Process, Program, ArgCount, Words + 1, Files,
@@ -1151,6 +1168,170 @@ static void Sudo(const char** Args, uint64_t Count)
     Run(Args + 1, Count - 1, true, Background);
 }
 
+// --- filters ---------------------------------------------------------------
+//
+// They read what comes through a pipe (In) - or the file named - a line at
+// a time: the lines end at '\n', the last one may not.
+
+// Len characters of Text.
+static void PrintPart(const char* Text, uint64_t Len)
+{
+    char Chunk[129];
+    while (Len)
+    {
+        uint64_t n = Len < 128 ? Len : 128;
+        for (uint64_t i = 0; i < n; i++)
+            Chunk[i] = Text[i] ? Text[i] : ' ';
+        Chunk[n] = '\0';
+        Print(Chunk);
+        Text += n;
+        Len  -= n;
+    }
+}
+
+// The filter's input into In: the file, when one is named, else the pipe.
+static bool FilterInput(const char* Name, const char* File)
+{
+    if (File)
+    {
+        sint64_t n = ReadStart(Name, File, (uint8_t*)In, OUT_SIZE);
+        if (n < 0)
+            return false;
+        InLength = (uint64_t)n;
+        return true;
+    }
+    if (!Piped)
+    {
+        Print(Name);
+        Print(" reads a file, or what comes through |: ls | ");
+        PrintPart(Name, Length(Name) - 1);
+        Print(" ...\n");
+        return false;
+    }
+    return true;
+}
+
+// The next line of In from *At: where it starts, and its length without
+// the '\n'. False at the end.
+static bool NextLine(uint64_t* At, const char** Line, uint64_t* Len)
+{
+    if (*At >= InLength)
+        return false;
+    *Line = In + *At;
+    uint64_t n = 0;
+    while (*At + n < InLength && In[*At + n] != '\n')
+        n++;
+    *Len = n;
+    *At += n + 1;
+    return true;
+}
+
+static char Lower(char C)
+{
+    return C >= 'A' && C <= 'Z' ? (char)(C - 'A' + 'a') : C;
+}
+
+static bool Contains(const char* Line, uint64_t Len, const char* Word)
+{
+    uint64_t WordLen = Length(Word);
+    for (uint64_t i = 0; i + WordLen <= Len; i++)
+    {
+        uint64_t j = 0;
+        while (j < WordLen && Lower(Line[i + j]) == Lower(Word[j]))
+            j++;
+        if (j == WordLen)
+            return true;
+    }
+    return false;
+}
+
+static void Grep(const char** Args, uint64_t Count)
+{
+    if (Count < 2)
+        return Print("Usage: grep <text> [file]\n");
+    if (!FilterInput("grep:", Count > 2 ? Args[2] : nullptr))
+        return;
+    uint64_t At = 0, Len;
+    const char* Line;
+    while (NextLine(&At, &Line, &Len))
+        if (Contains(Line, Len, Args[1]))
+        {
+            PrintPart(Line, Len);
+            Print("\n");
+        }
+}
+
+// head and tail: [lines] [file], 10 lines unless said.
+static bool LinesAndFile(const char* Name, const char** Args, uint64_t Count, uint64_t* Lines)
+{
+    *Lines = 10;
+    const char* File = nullptr;
+    for (uint64_t i = 1; i < Count; i++)
+    {
+        bool Ok;
+        uint64_t n = ParseNumber(Args[i], &Ok);
+        if (Ok)
+            *Lines = n;
+        else
+            File = Args[i];
+    }
+    return FilterInput(Name, File);
+}
+
+static void Head(const char** Args, uint64_t Count)
+{
+    uint64_t Lines;
+    if (!LinesAndFile("head:", Args, Count, &Lines))
+        return;
+    uint64_t At = 0, Len;
+    const char* Line;
+    for (uint64_t i = 0; i < Lines && NextLine(&At, &Line, &Len); i++)
+    {
+        PrintPart(Line, Len);
+        Print("\n");
+    }
+}
+
+static void Tail(const char** Args, uint64_t Count)
+{
+    uint64_t Lines;
+    if (!LinesAndFile("tail:", Args, Count, &Lines))
+        return;
+    uint64_t Total = 0, At = 0, Len;
+    const char* Line;
+    while (NextLine(&At, &Line, &Len))
+        Total++;
+    At = 0;
+    for (uint64_t i = 0; NextLine(&At, &Line, &Len); i++)
+        if (i + Lines >= Total)
+        {
+            PrintPart(Line, Len);
+            Print("\n");
+        }
+}
+
+static void Wc(const char** Args, uint64_t Count)
+{
+    if (!FilterInput("wc:", Count > 1 ? Args[1] : nullptr))
+        return;
+    uint64_t Lines = 0, Words = 0, At = 0, Len;
+    const char* Line;
+    while (NextLine(&At, &Line, &Len))
+    {
+        Lines++;
+        for (uint64_t i = 0; i < Len; i++)
+            if (Line[i] != ' ' && Line[i] != '\t' && (i == 0 || Line[i - 1] == ' ' ||
+                                                     Line[i - 1] == '\t'))
+                Words++;
+    }
+    PrintNumber(Lines);
+    Print(" lines, ");
+    PrintNumber(Words);
+    Print(" words, ");
+    PrintNumber(InLength);
+    Print(" bytes\n");
+}
+
 static const struct
 {
     const char* Name;
@@ -1184,6 +1365,10 @@ static const struct
     { "usbinfo",  Usbinfo,  "<index>  one USB device" },
     { "acpi",     Acpi,     "ACPI tables" },
     { "dmesg",    Dmesg,    "the kernel's log" },
+    { "grep",     Grep,     "<text> [file]  the lines with the text in them" },
+    { "head",     Head,     "[n] [file]  the first n lines (10)" },
+    { "tail",     Tail,     "[n] [file]  the last n lines (10)" },
+    { "wc",       Wc,       "[file]  count lines, words and bytes" },
     { "ps",       Ps,       "the running programs" },
     { "kill",     Kill,     "<id...>  end programs at once" },
     { "fg",       Fg,       "[id]  go on with a paused program here, or bring one here" },
@@ -1207,6 +1392,9 @@ static void Help(const char**, uint64_t)
     Print("  [&] <program> [args]   run a program from /apps, or by its path;\n"
           "                         & runs it in the background\n"
           "  \"a b\"                  a name or path with spaces\n"
+          "  a > file, a >> file    what a prints into the file (>> adds at the end)\n"
+          "  a | b                  what a prints goes to b: grep, head, tail, wc\n"
+          "  Tab                    take the dimmed rest of the word\n"
           "  Up/Down                the lines typed before\n"
           "  Ctrl+Alt+C ends the programs on this screen, Ctrl+Alt+Z pauses them\n"
           "  Longer output: PageUp/PageDown or the arrows move it, q leaves\n");
@@ -1243,6 +1431,240 @@ static uint64_t Split(char* Line, const char** Words, uint64_t Max)
     return Count;
 }
 
+// The line with |, > and >> standing apart as words of their own, but
+// inside quotes: "ls>a" is "ls > a".
+static void SpaceOperators(const char* Line, char* Spaced, uint64_t Size)
+{
+    uint64_t n = 0;
+    bool Quoted = false;
+    for (const char* c = Line; *c && n + 5 < Size; c++)
+    {
+        if (*c == '"')
+            Quoted = !Quoted;
+        if (Quoted || (*c != '|' && *c != '>'))
+        {
+            Spaced[n++] = *c;
+            continue;
+        }
+        Spaced[n++] = ' ';
+        Spaced[n++] = *c;
+        if (*c == '>' && c[1] == '>')
+            Spaced[n++] = *++c;
+        Spaced[n++] = ' ';
+    }
+    Spaced[n] = '\0';
+}
+
+static bool IsOperator(const char* Word)
+{
+    return Same(Word, "|") || Same(Word, ">") || Same(Word, ">>");
+}
+
+// Write what was printed (Out) into File, and start Out afresh.
+static void OutputTo(SfFile* File)
+{
+    uint64_t n = OutLength;
+    if (n && SF_ERROR(File->Write(File, Out, &n)))
+    {
+        OutLength = OutColumn = 0;
+        return Print("cmd: cannot write the file\n");
+    }
+    OutLength = OutColumn = 0;
+}
+
+// One part of a pipe: a command of the console, or a program. What it
+// prints ends up in Out, or - Dest given - in Dest. False when the pipe
+// cannot go on.
+static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, bool First)
+{
+    for (const auto& c : Commands)
+        if (Same(Word[0], c.Name))
+        {
+            if (Background && c.Run != Sudo)
+                Print("& runs programs, not console commands\n");
+            else
+            {
+                Output = Dest;          // sudo starts a program
+                c.Run(Word, Count);
+                Output = nullptr;
+            }
+            if (Dest)
+                OutputTo(Dest);
+            return true;
+        }
+
+    // A program: it reads the keys, never a pipe.
+    if (!First)
+    {
+        Print(Word[0]);
+        Print(": only grep, head, tail and wc read what comes through |\n");
+        return false;
+    }
+    if (Last)
+    {
+        Output = Dest;
+        Run(Word, Count, false, Background);
+        Output = nullptr;
+        return true;
+    }
+    if (Background)
+    {
+        Print("cmd: & and | do not go together\n");
+        return false;
+    }
+
+    // Before a |: it prints into a file in /tmp, read back once it ended.
+    char Pipe[24] = "/tmp/pipe";
+    uint64_t n = Length(Pipe);
+    Pipe[n++] = (char)('0' + MyScreen % 10);
+    Pipe[n] = '\0';
+    SfFile* File = nullptr;
+    SfStatus Status = Open(Pipe, SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE, &File);
+    if (SF_ERROR(Status))
+    {
+        Fail("cmd:", Pipe, Status);
+        return false;
+    }
+    Output = File;
+    Run(Word, Count, false, false);
+    Output = nullptr;
+    File->Close(File);
+
+    Gather = false;                     // how it ended goes to the screen
+    WaitHere();
+    Gather = true;
+    bool Stopped = Here.Id != 0;
+    sint64_t Got = Stopped ? -1 : ReadStart("cmd:", Pipe, (uint8_t*)Out, OUT_SIZE - 1);
+    char Full[PATH_SIZE + 8];
+    DiskPath(Pipe, Full);
+    Sys->Files->Delete(Sys->Files, Full);
+    if (Stopped)
+    {
+        Print("cmd: the pipe stops: ");
+        Print(Word[0]);
+        Print(" did not end\n");
+        return false;
+    }
+    OutLength = Got > 0 ? (uint64_t)Got : 0;
+    return Got >= 0;
+}
+
+// Do what Line says: a | b | c > file, any part of it.
+static void DoLine(char* Line)
+{
+    static char Spaced[512];
+    SpaceOperators(Line, Spaced, sizeof(Spaced));
+    const char* Words[32];
+    const char** Word = Words;
+    uint64_t Count = Split(Spaced, Words, 32);
+    // "& program" or "&program": in the background.
+    Background = Count && Word[0][0] == '&';
+    if (Background && !Word[0][1])
+        Word++, Count--;
+    else if (Background)
+        Word[0]++;
+    if (Count == 0)
+        return;
+
+    // > file or >> file, at the end.
+    const char* Target = nullptr;
+    bool Append = false;
+    if (Count >= 2 && (Same(Word[Count - 2], ">") || Same(Word[Count - 2], ">>")))
+    {
+        Append = Same(Word[Count - 2], ">>");
+        Target = Word[Count - 1];
+        Count -= 2;
+    }
+    bool Bad = Count == 0 || IsOperator(Word[0]) || IsOperator(Word[Count - 1]) ||
+               (Target && IsOperator(Target));
+    for (uint64_t i = 1; i < Count; i++)
+        Bad |= (Same(Word[i], ">") || Same(Word[i], ">>")) ||
+               (Same(Word[i], "|") && Same(Word[i - 1], "|"));
+    if (Bad)
+        return Print("Usage: a | b | c > file (or >> file); > comes last\n");
+
+    SfFile* File = nullptr;
+    if (Target)
+    {
+        SfStatus Status = Open(Target, SF_FILE_WRITE | SF_FILE_CREATE |
+                                       (Append ? 0 : SF_FILE_TRUNCATE), &File);
+        if (!SF_ERROR(Status) && IsFolder(File))
+            Status = SF_INVALID_PARAMETER;
+        if (SF_ERROR(Status))
+        {
+            if (File)
+                File->Close(File);
+            return Fail(Append ? ">>" : ">", Target, Status);
+        }
+        SfDirEntry Info;
+        if (Append && File->GetInfo(File, &Info) == SF_SUCCESS)
+            File->SetPosition(File, Info.Size);
+    }
+
+    Piped = false;
+    InLength = 0;
+    for (uint64_t Start = 0; Start < Count;)
+    {
+        uint64_t End = Start;
+        while (End < Count && !Same(Word[End], "|"))
+            End++;
+        bool Last = End == Count;
+        if (!RunPart(Word + Start, End - Start, Last ? File : nullptr, Last, Start == 0))
+            break;
+        if (Last)
+            break;
+        // What it printed is the next part's input.
+        for (uint64_t i = 0; i < OutLength; i++)
+            In[i] = Out[i];
+        InLength = OutLength;
+        OutLength = OutColumn = 0;
+        Piped = true;
+        Start = End + 1;
+    }
+    if (File)
+        File->Close(File);
+    Piped = false;
+}
+
+// The words ReadLine suggests (SetHints): the commands and the programs in
+// /apps, and the names in the current folder - a folder's with a '/'.
+static void SetHints()
+{
+    static char Commands_[4096], Names[4096];
+    uint64_t c = 0, n = 0;
+    auto Add = [](char* List, uint64_t* At, const char* Word, bool Slash) {
+        uint64_t Len = Length(Word);
+        if (*At + Len + 3 >= 4096)
+            return;
+        for (uint64_t i = 0; i < Len; i++)
+            List[(*At)++] = Word[i];
+        if (Slash)
+            List[(*At)++] = '/';
+        List[(*At)++] = '\n';
+    };
+    for (const auto& Cmd : Commands)
+        Add(Commands_, &c, Cmd.Name, false);
+
+    SfDirEntry Entry;
+    SfFile* Dir = nullptr;
+    if (Open("/apps", SF_FILE_READ, &Dir) == SF_SUCCESS)
+    {
+        while (Dir->ReadDir(Dir, &Entry) == SF_SUCCESS)
+            if (!(Entry.Flags & SF_DIR_ENTRY_FOLDER))
+                Add(Commands_, &c, Entry.Name, false);
+        Dir->Close(Dir);
+    }
+    if (Open(".", SF_FILE_READ, &Dir) == SF_SUCCESS)
+    {
+        while (Dir->ReadDir(Dir, &Entry) == SF_SUCCESS)
+            if (!Same(Entry.Name, ".") && !Same(Entry.Name, ".."))
+                Add(Names, &n, Entry.Name, Entry.Flags & SF_DIR_ENTRY_FOLDER);
+        Dir->Close(Dir);
+    }
+    Commands_[c] = Names[n] = '\0';
+    Con->SetHints(Con, Commands_, Names);
+}
+
 extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
@@ -1264,6 +1686,7 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
     {
         WaitHere();
         CheckAway();
+        SetHints();
         Print(Cwd);
         Print("> ");
         char Line[256];
@@ -1278,31 +1701,8 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
         }
 
         WaitHere();                     // a paused one may have been ended
-        const char* Words[32];
-        const char** Word = Words;
-        uint64_t Count = Split(Line, Words, 32);
-        // "& program" or "&program": in the background.
-        Background = Count && Word[0][0] == '&';
-        if (Background && !Word[0][1])
-            Word++, Count--;
-        else if (Background)
-            Word[0]++;
-        if (Count == 0)
-            continue;
-        bool Done = false;
         Gather = true;
-        for (const auto& c : Commands)
-            if (Same(Word[0], c.Name))
-            {
-                if (Background && c.Run != Sudo)
-                    Print("& runs programs, not console commands\n");
-                else
-                    c.Run(Word, Count);
-                Done = true;
-                break;
-            }
-        if (!Done)
-            Run(Word, Count, false, Background);
+        DoLine(Line);
         ShowOutput();
     }
 }

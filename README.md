@@ -51,7 +51,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   Programs draw through the console protocol (cells, colours, cursor,
   keys, line or raw mode); Ctrl+C is a key like any other, Ctrl+Alt+C
   ends every program on the shown screen, Ctrl+Alt+Z pauses them and
-  hands the keys to the console (again: they go on). A program that
+  hands the keys to the console (again: they go on); Print Screen
+  saves the panel as a BMP in /files/screenshots. A program that
   crashes (a CPU exception) ends with a line saying why and where, on
   its screen and in its log. A program on the shown screen gets twice the CPU time of
   one elsewhere
@@ -67,7 +68,11 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   output longer than the screen stops at a ";" line: PageUp/PageDown move
   a page, the arrows a line, q leaves;
   a name or path with spaces goes in quotes ("my file.txt"); Up and
-  Down bring back the last lines typed;
+  Down bring back the last lines typed; `a > file` (`>>` adds at the
+  end) puts what a prints into the file - a program's too - and
+  `a | b` hands it to the filters grep, head, tail and wc; while a word
+  is typed, the rest of a command, program or name that starts with it
+  shows dimmed, and Tab takes it;
   `sudo <program>` runs it with the admin right (Sys->Admin: processes,
   mount/unmount, restart, power off; roots disk:/ and mount:/)
 - explorer (`sudo explorer`): a file manager of two panels - copy, move,

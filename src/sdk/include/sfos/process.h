@@ -32,6 +32,10 @@
 //            its data folder (as the console's `&`). Handle may be null
 //            when nobody is going to Wait for it. SF_START_ADMIN: with the
 //            admin right (sfos/admin.h) - for a program that has it.
+//            SF_START_OUTPUT: ArgFiles is not null and has one entry more,
+//            a file open for writing: what the program prints in
+//            SF_CONSOLE_LINE goes there, from that file's position on,
+//            instead of to the screen (the console's `>`).
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
 //            was stopped short (Ctrl+Alt+C, EndProcess), SF_CRASHED when a
@@ -58,6 +62,7 @@ struct SfProcess
 #define SF_START_GIVE_INPUT     0x1
 #define SF_START_BACKGROUND     0x2
 #define SF_START_ADMIN          0x4
+#define SF_START_OUTPUT         0x8
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)
 #define SF_PROCESS_REVISION     SF_REVISION(1, 0)

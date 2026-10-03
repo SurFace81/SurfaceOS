@@ -4,8 +4,11 @@
 Usage:
   mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> <cmd.bin> [apps...] [--size MiB]
 
-The image is GPT with one EFI System Partition (EF00) filling the disk,
-formatted FAT32 with mkfs.fat --offset - how a real USB stick is laid out.
+The image is GPT with one FAT32 partition filling the disk, formatted with
+mkfs.fat --offset. Its type is Microsoft Basic Data (0700), not an EFI
+System Partition (EF00): Windows gives an ESP no drive letter, so the
+stick's files could not be reached there. Firmware boots
+/EFI/Boot/BOOTX64.EFI from a removable disk's FAT partition either way.
 The firmware boots /EFI/Boot/BOOTX64.EFI; the loader and the kernel expect
 /sfos/KERNEL.BIN and /sfos/FONT.FNT, and the kernel starts the console of
 every screen from /sfos/CMD.BIN. Programs land in /apps/<lowercase
@@ -31,7 +34,7 @@ def build_gpt(image, size_mib):
     """Create the disk and its FAT32 partition; the partition's byte offset."""
     run(["dd", "if=/dev/zero", "of=" + image, "bs=1M",
          "count=%d" % size_mib, "status=none"])
-    run(["sgdisk", "-o", "-n", "1:0:0", "-t", "1:ef00", image])
+    run(["sgdisk", "-o", "-n", "1:0:0", "-t", "1:0700", image])
 
     out = subprocess.run(["sfdisk", "-J", image], check=True,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)

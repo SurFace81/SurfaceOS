@@ -78,6 +78,13 @@ namespace screen
     
     void flush();
 
+    // The picture the panel shows - title bar and text - for a screenshot
+    // (shot.cpp): its size, and row y from the top as 3 bytes a pixel in
+    // blue, green, red order (what a BMP holds).
+    uint32_t shot_width();
+    uint32_t shot_height();
+    void     shot_row(uint32_t y, uint8_t* bgr);
+
     // Virtual address the framebuffer is mapped at (kernel device window).
     uint64_t vram_base();
 

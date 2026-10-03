@@ -49,6 +49,13 @@
 //              be paused (Ctrl+Alt+Z hands the keys back to the console),
 //              or to move away (fg, bg). SF_ABORTED when the
 //              program is being ended instead.
+//   SetHints   words ReadLine suggests while a word is typed: the rest of
+//              the first one that starts with it shows dimmed after the
+//              cursor, and Tab (or Right at the end of the line) takes it.
+//              Commands (for the first word, and one after `|` or `&`)
+//              and Names (for the others) are lists of words, one a line;
+//              a word with '/' in it gets none. Kept until the next call;
+//              null or "" for none.
 //
 // ReadLine and ReadKey also end with SF_ABORTED when another program on the
 // screen takes the input while they wait for a key (Ctrl+Alt+Z letting a
@@ -103,10 +110,11 @@ struct SfConsole
     SfStatus (*SetTitle)(SfConsole* This, const char* Text);
     SfStatus (*Clear)(SfConsole* This);
     SfStatus (*WaitInput)(SfConsole* This);
+    SfStatus (*SetHints)(SfConsole* This, const char* Commands, const char* Names);
 };
 
 #define SF_CONSOLE_SIGNATURE    SF_SIGNATURE('S', 'F', 'C', 'O', 'N', 'S', 'O', 'L')
-#define SF_CONSOLE_REVISION     SF_REVISION(1, 0)
+#define SF_CONSOLE_REVISION     SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(sizeof(SfCell) == 2, "SfCell layout");
 SF_STATIC_ASSERT(sizeof(SfKey) == 4, "SfKey layout");
@@ -116,6 +124,7 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, GetSize) == 32, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetTitle) == 88, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, Clear) == 96, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, WaitInput) == 104, "SfConsole layout");
-SF_STATIC_ASSERT(sizeof(SfConsole) == 112, "SfConsole layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetHints) == 112, "SfConsole layout");
+SF_STATIC_ASSERT(sizeof(SfConsole) == 120, "SfConsole layout");
 
 #endif // SFOS_CONSOLE_H

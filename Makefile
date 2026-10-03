@@ -52,6 +52,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/keyboard.o \
 				bin/kernel/drivers/kbd.o \
 				bin/kernel/drivers/reports.o \
+				bin/kernel/drivers/shot.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
 				bin/kernel/cpu/pci_ids.o \
