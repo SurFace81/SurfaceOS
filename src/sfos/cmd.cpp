@@ -9,8 +9,9 @@
 // What a command prints longer than the screen is shown a page at a time.
 // `> file` puts what the line prints into a file instead (`>>` adds it at
 // the end), and `a | b` gives what a prints to b - the filters grep,
-// head, tail and wc read it. While a word is typed, the rest of a command,
-// program or name here that starts with it shows dimmed; Tab takes it.
+// head, tail and wc read it, a program through its ReadLine. While a word
+// is typed, the rest of a command, program or name here that starts with
+// it shows dimmed; Tab takes it.
 //
 // Paths: the current folder is an absolute path of the whole disk
 // ("/apps"), and every path typed is taken from there; the files are
@@ -40,10 +41,13 @@ static bool     Gather;
 // A pipe (a | b) hands the output of one part to the next: In holds it,
 // Piped says there is some. Output: the file a program Run starts prints
 // into instead of the screen (`>`, or a part before a `|`), or null.
+// Input: the file it reads its lines from instead of the keys (a part
+// after a `|`), or null.
 static char     In[OUT_SIZE];
 static uint64_t InLength;
 static bool     Piped;
 static SfFile*  Output;
+static SfFile*  Input;
 
 static void Put(char C)
 {
@@ -977,7 +981,7 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
         }
 
     const uint64_t MaxArgs = 32;
-    SfFile* Files[MaxArgs + 1] = {};
+    SfFile* Files[MaxArgs + 2] = {};
     uint64_t ArgCount = Count - 1 < MaxArgs ? Count - 1 : MaxArgs;
     for (uint64_t i = 0; i < ArgCount; i++)
         Files[i] = OpenArg(Words[i + 1]);
@@ -992,13 +996,20 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
 
     uint64_t Flags = (Background ? SF_START_BACKGROUND : SF_START_GIVE_INPUT) |
                      (AsAdmin ? SF_START_ADMIN : 0);
+    // The kernel takes them after the arguments, the output first.
+    uint64_t At = ArgCount;
     if (Output)
     {
-        Files[ArgCount] = Output;       // the kernel takes it after the arguments
+        Files[At++] = Output;
         Flags |= SF_START_OUTPUT;
     }
     else if (!Background)
         Con->Clear(Con);                // the screen is the program's now
+    if (Input)
+    {
+        Files[At++] = Input;
+        Flags |= SF_START_INPUT;
+    }
     uint64_t Handle = 0;
     SfStatus Status = Sys->Process->Start(Sys->Process, Program, ArgCount, Words + 1, Files,
                                           Flags, &Handle);
@@ -1393,9 +1404,12 @@ static void Help(const char**, uint64_t)
           "                         & runs it in the background\n"
           "  \"a b\"                  a name or path with spaces\n"
           "  a > file, a >> file    what a prints into the file (>> adds at the end)\n"
-          "  a | b                  what a prints goes to b: grep, head, tail, wc\n"
+          "  a | b                  what a prints goes to b: grep, head, tail, wc,\n"
+          "                         or a program, which reads it line by line\n"
           "  Tab                    take the dimmed rest of the word\n"
           "  Up/Down                the lines typed before\n"
+          "  Ctrl+arrows            select on the screen; Ctrl+C copies, Esc drops it\n"
+          "  Ctrl+V                 type what was copied\n"
           "  Ctrl+Alt+C ends the programs on this screen, Ctrl+Alt+Z pauses them\n"
           "  Longer output: PageUp/PageDown or the arrows move it, q leaves\n");
 }
@@ -1472,6 +1486,30 @@ static void OutputTo(SfFile* File)
     OutLength = OutColumn = 0;
 }
 
+// The name of this screen's pipe file of a kind: /tmp/<kind><screen>.
+static void PipeName(char* Name, const char* Kind)
+{
+    Copy(Name, "/tmp/", 24);
+    uint64_t n = Length(Name);
+    for (; *Kind; Kind++)
+        Name[n++] = *Kind;
+    Name[n++] = (char)('0' + MyScreen % 10);
+    Name[n] = '\0';
+}
+
+// The input file Run handed on (Input), when there is one: closed, and its
+// name gone - the program keeps what it has open.
+static void DropInput(const char* Name)
+{
+    if (!Input)
+        return;
+    Input->Close(Input);
+    Input = nullptr;
+    char Full[PATH_SIZE + 8];
+    DiskPath(Name, Full);
+    Sys->Files->Delete(Sys->Files, Full);
+}
+
 // One part of a pipe: a command of the console, or a program. What it
 // prints ends up in Out, or - Dest given - in Dest. False when the pipe
 // cannot go on.
@@ -1493,42 +1531,59 @@ static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, 
             return true;
         }
 
-    // A program: it reads the keys, never a pipe.
-    if (!First)
-    {
-        Print(Word[0]);
-        Print(": only grep, head, tail and wc read what comes through |\n");
-        return false;
-    }
-    if (Last)
-    {
-        Output = Dest;
-        Run(Word, Count, false, Background);
-        Output = nullptr;
-        return true;
-    }
-    if (Background)
+    // A program.
+    if (Background && !(First && Last))
     {
         Print("cmd: & and | do not go together\n");
         return false;
     }
 
+    // After a |: what came through is its input, a file in /tmp it reads
+    // its lines from. Its name goes once the program has it open.
+    char InPipe[24];
+    PipeName(InPipe, "pipein");
+    if (!First)
+    {
+        SfStatus Status = Open(InPipe, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE |
+                                       SF_FILE_TRUNCATE, &Input);
+        uint64_t n = InLength;
+        if (!SF_ERROR(Status) && n)
+            Status = Input->Write(Input, In, &n);
+        if (!SF_ERROR(Status))
+            Status = Input->SetPosition(Input, 0);
+        if (SF_ERROR(Status))
+        {
+            Fail("cmd:", InPipe, Status);
+            DropInput(InPipe);
+            return false;
+        }
+    }
+
+    if (Last)
+    {
+        Output = Dest;
+        Run(Word, Count, false, Background);
+        Output = nullptr;
+        DropInput(InPipe);
+        return true;
+    }
+
     // Before a |: it prints into a file in /tmp, read back once it ended.
-    char Pipe[24] = "/tmp/pipe";
-    uint64_t n = Length(Pipe);
-    Pipe[n++] = (char)('0' + MyScreen % 10);
-    Pipe[n] = '\0';
+    char Pipe[24];
+    PipeName(Pipe, "pipe");
     SfFile* File = nullptr;
     SfStatus Status = Open(Pipe, SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE, &File);
     if (SF_ERROR(Status))
     {
         Fail("cmd:", Pipe, Status);
+        DropInput(InPipe);
         return false;
     }
     Output = File;
     Run(Word, Count, false, false);
     Output = nullptr;
     File->Close(File);
+    DropInput(InPipe);
 
     Gather = false;                     // how it ended goes to the screen
     WaitHere();
@@ -1665,7 +1720,7 @@ static void SetHints()
     Con->SetHints(Con, Commands_, Names);
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
     Con   = System->Console;

@@ -18,6 +18,8 @@ namespace tty
 
     // Pop one event queued for `screen`. Returns false when there is none.
     bool pop_key(keyboard_event_t* out, uint32_t screen = 0);
+    // The same, leaving it queued.
+    bool peek_key(keyboard_event_t* out, uint32_t screen);
 
     // Sleep until `screen` has an event, or stop(screen), when given, is
     // true; whoever changes what it answers calls wake_key_waiters. False

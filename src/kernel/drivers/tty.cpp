@@ -75,6 +75,17 @@ namespace tty
         return true;
     }
 
+    bool peek_key(keyboard_event_t* out, uint32_t screen)
+    {
+        if (screen >= TERM_ALL_SCREENS)
+            return false;
+        KeyRing* r = &rings[screen];
+        if (r->head == r->tail)
+            return false;
+        *out = r->ev[r->tail];
+        return true;
+    }
+
     bool wait_key(uint32_t screen, bool (*stop)(uint32_t))
     {
         if (screen >= TERM_ALL_SCREENS)

@@ -5,9 +5,9 @@
 // share, CPU time, memory and threads - and ends the chosen one.
 //
 // How it is built, as an example of the console protocol: the whole screen
-// is put together in Cells and drawn with one Draw call. Keys come from a
-// second thread, blocked in ReadKey; it hands them over through a mutex
-// and an event, which the main thread waits on with a timeout - its tick.
+// is put together in Cells and drawn with one Draw call. It waits for a
+// key with WaitAny, with a timeout - its tick - and ReadKey takes the key
+// once one is there.
 
 #include <sfos.h>
 
@@ -17,8 +17,8 @@ static SfAdmin*   Admin;
 
 // --- the screen ------------------------------------------------------------
 
-static const uint32_t MAX_COLUMNS = 256;
-static const uint32_t MAX_ROWS    = 128;
+static const uint32_t MAX_COLUMNS = 512;
+static const uint32_t MAX_ROWS    = 256;
 static SfCell   Cells[MAX_COLUMNS * MAX_ROWS];
 static uint32_t Columns, Rows;
 
@@ -432,44 +432,12 @@ static void Draw()
 
 // --- keys ------------------------------------------------------------------
 
-// The input thread's keys, for the main thread.
-static SfMutex* Lock;
-static SfEvent* KeyReady;
-static SfKey    Keys[16];
-static uint32_t KeyHead, KeyTail;
-
-static SfStatus ReadKeys(void*)
+// The next key, when one comes within TimeoutMs milliseconds.
+static bool NextKey(SfKey* Key, uint64_t TimeoutMs)
 {
-    for (;;)
-    {
-        SfKey Key;
-        if (SF_ERROR(Con->ReadKey(Con, &Key)))
-        {
-            Sys->Time->Sleep(Sys->Time, 100);
-            continue;
-        }
-        Lock->Lock(Lock);
-        if ((KeyHead + 1) % 16 != KeyTail)
-        {
-            Keys[KeyHead] = Key;
-            KeyHead = (KeyHead + 1) % 16;
-        }
-        Lock->Unlock(Lock);
-        KeyReady->Set(KeyReady);
-    }
-}
-
-static bool NextKey(SfKey* Key)
-{
-    Lock->Lock(Lock);
-    bool Got = KeyTail != KeyHead;
-    if (Got)
-    {
-        *Key = Keys[KeyTail];
-        KeyTail = (KeyTail + 1) % 16;
-    }
-    Lock->Unlock(Lock);
-    return Got;
+    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
+    return Sys->Sync->WaitAny(Sys->Sync, 1, &Item, TimeoutMs, nullptr) == SF_SUCCESS &&
+           Con->ReadKey(Con, Key) == SF_SUCCESS;
 }
 
 static void Say(const char* Text, uint8_t Color)
@@ -555,7 +523,7 @@ static bool OnKey(const SfKey& Key)
     return true;
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
     Con   = System->Console;
@@ -565,34 +533,29 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
         Con->Print(Con, "taskmgr needs the admin right: run it as  sudo taskmgr\n");
         return SF_ACCESS_DENIED;
     }
-    if (SF_ERROR(Sys->Sync->CreateMutex(Sys->Sync, &Lock)) ||
-        SF_ERROR(Sys->Sync->CreateEvent(Sys->Sync, SF_EVENT_AUTO_RESET, &KeyReady)))
-        return SF_OUT_OF_RESOURCES;
+    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny))
+        return SF_UNSUPPORTED;
 
     Con->SetMode(Con, SF_CONSOLE_RAW);
     Con->GetSize(Con, &Columns, &Rows);
     if (Columns > MAX_COLUMNS) Columns = MAX_COLUMNS;
     if (Rows > MAX_ROWS)       Rows    = MAX_ROWS;
 
-    uint64_t Reader;
-    Sys->Thread->Create(Sys->Thread, ReadKeys, nullptr, &Reader);
-
     Sample();
     Sys->Process->GetId(Sys->Process, &Chosen);     // start on itself
     for (;;)
     {
         Draw();
-        // Until a key, or the next sample a second after the last one.
+        // Until a key, or the next sample a second after the last one;
+        // then every key that is there.
         uint64_t T;
         Sys->Time->GetUptime(Sys->Time, &T);
-        if (T - Now < 1000)
-            KeyReady->Wait(KeyReady, 1000 - (T - Now));
         SfKey Key;
-        while (NextKey(&Key))
+        for (uint64_t Wait = T - Now < 1000 ? 1000 - (T - Now) : 0; NextKey(&Key, Wait); Wait = 0)
             if (!OnKey(Key))
             {
                 Con->SetMode(Con, SF_CONSOLE_LINE);
-                return SF_SUCCESS;          // the reader ends with the program
+                return SF_SUCCESS;
             }
         Sys->Time->GetUptime(Sys->Time, &T);
         if (T - Now >= 1000)

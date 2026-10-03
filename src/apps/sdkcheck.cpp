@@ -1,10 +1,10 @@
 // sdkcheck: the SDK tables a SurfaceOS program is started with.
 //
-// Checks what the kernel hands SfMain - signatures, revisions and sizes of
+// Checks what the kernel hands SfMain - signatures and sizes of
 // SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime, SfProcess,
-// SfThread and SfSync - that Console->Print works, pages and the heap, the
-// clock and sleeping, the command line, threads, mutexes and events. Files
-// are sfstest's.
+// SfThread and SfSync - that Console->Print works, the clipboard, pages and
+// the heap, the clock and sleeping, the command line, threads, mutexes,
+// events and WaitAny. Files are sfstest's.
 //
 // It leaves one thread asleep for good when SfMain returns: ending the
 // program has to end that thread too. And it starts itself as a child that
@@ -14,6 +14,9 @@
 //   sdkcheck child <word> <two words>  returns SF_ERROR_BIT | 5 when it got
 //                                      exactly those arguments, | 6 if not
 //   sdkcheck late                      prints a line after 300 ms
+//   sdkcheck exit                      ends itself with Process->Exit(
+//                                      SF_ERROR_BIT | 7) from a second
+//                                      thread while the first sleeps
 //   sdkcheck reader                    reads a line, says what it got
 //                                      ("... aborted" after Ctrl+C)
 //
@@ -91,11 +94,10 @@ static bool SameText(const char* A, const char* B)
 }
 
 // The table the system filled in is the one this program was built with:
-// its signature, revision and size.
-static bool HeaderOk(const SfTableHeader* Hdr, uint64_t Signature, uint32_t Revision,
-                     uint32_t Size)
+// its signature and size.
+static bool HeaderOk(const SfTableHeader* Hdr, uint64_t Signature, uint64_t Size)
 {
-    return Hdr->Signature == Signature && Hdr->Revision == Revision && Hdr->Size == Size;
+    return Hdr->Signature == Signature && Hdr->Size == Size;
 }
 
 static bool SameBytes(const char* A, const char* B, uint64_t Size)
@@ -168,7 +170,7 @@ static void CheckArgs(SfApp* App, SfProcess* Process, SfFiles* Files)
     if (File)
     {
         Check("SfFile header",
-              HeaderOk(&File->Hdr, SF_FILE_SIGNATURE, SF_FILE_REVISION, sizeof(SfFile)));
+              HeaderOk(&File->Hdr, SF_FILE_SIGNATURE, sizeof(SfFile)));
         Size = sizeof(Buffer);
         Check("... which the console created empty",
               File->Read(File, Buffer, &Size) == SF_SUCCESS && Size == 0);
@@ -327,7 +329,7 @@ static SfStatus PongEntry(void*)
 static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
 {
     Check("CreateMutex", Sync->CreateMutex(Sync, &CountMutex) == SF_SUCCESS && CountMutex &&
-                         HeaderOk(&CountMutex->Hdr, SF_MUTEX_SIGNATURE, SF_MUTEX_REVISION, sizeof(SfMutex)));
+                         HeaderOk(&CountMutex->Hdr, SF_MUTEX_SIGNATURE, sizeof(SfMutex)));
     if (!CountMutex)
         return;
     uint64_t Ids[4] = {};
@@ -342,7 +344,7 @@ static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
     // A manual-reset event stays set until Reset.
     SfEvent* Event = nullptr;
     Check("CreateEvent", Sync->CreateEvent(Sync, 0, &Event) == SF_SUCCESS && Event &&
-                         HeaderOk(&Event->Hdr, SF_EVENT_SIGNATURE, SF_EVENT_REVISION, sizeof(SfEvent)));
+                         HeaderOk(&Event->Hdr, SF_EVENT_SIGNATURE, sizeof(SfEvent)));
     if (!Event)
         return;
     Check("Wait(0) on an event not set is SF_TIMEOUT", Event->Wait(Event, 0) == SF_TIMEOUT);
@@ -375,6 +377,58 @@ static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
         Ping->Close(Ping);
     if (Pong)
         Pong->Close(Pong);
+
+    // WaitAny: the first ready of events, a thread, a program.
+    SfEvent* A = nullptr;
+    SfEvent* B = nullptr;
+    Ok = Sync->CreateEvent(Sync, 0, &A) == SF_SUCCESS &&
+         Sync->CreateEvent(Sync, SF_EVENT_AUTO_RESET, &B) == SF_SUCCESS;
+    SfWaitItem Items[2] = { { SF_WAIT_EVENT, 0, A }, { SF_WAIT_EVENT, 0, B } };
+    uint64_t Index = 9;
+    Check("WaitAny(0) of events not set is SF_TIMEOUT",
+          Ok && Sync->WaitAny(Sync, 2, Items, 0, &Index) == SF_TIMEOUT);
+    Time->GetUptime(Time, &Before);
+    Status = Sync->WaitAny(Sync, 0, nullptr, 100, nullptr);
+    Time->GetUptime(Time, &After);
+    Check("WaitAny of nothing sleeps 100 ms",
+          Status == SF_TIMEOUT && After - Before >= 100 && After - Before <= 200);
+    Check("WaitAny gives the set one and uses up an auto-reset event",
+          Ok && B->Set(B) == SF_SUCCESS && Sync->WaitAny(Sync, 2, Items, 1000, &Index) == SF_SUCCESS &&
+          Index == 1 && B->Wait(B, 0) == SF_TIMEOUT);
+    Check("WaitAny gives the first of two set",
+          Ok && A->Set(A) == SF_SUCCESS && B->Set(B) == SF_SUCCESS &&
+          Sync->WaitAny(Sync, 2, Items, 0, &Index) == SF_SUCCESS && Index == 0 &&
+          B->Wait(B, 0) == SF_SUCCESS);
+    if (A)
+        A->Reset(A);
+
+    Ok = Ok && Thread->Create(Thread, SleepEntry, (void*)100, &Id) == SF_SUCCESS;
+    Items[1] = { SF_WAIT_THREAD, Id, nullptr };
+    Check("WaitAny waits for a thread to end, Join still gets it",
+          Ok && Sync->WaitAny(Sync, 2, Items, 2000, &Index) == SF_SUCCESS && Index == 1 &&
+          Thread->Join(Thread, Id, nullptr) == SF_SUCCESS);
+
+    const char* Args[] = { "child", "word", "two words" };
+    uint64_t Handle = 0;
+    Items[1] = { SF_WAIT_PROCESS, 0, nullptr };
+    Ok = System->Process->Start(System->Process, "sdkcheck", 3, Args, nullptr, 0, &Handle) ==
+         SF_SUCCESS;
+    Items[1].Handle = Handle;
+    Check("WaitAny waits for a program to end, Wait still gets it",
+          Ok && Sync->WaitAny(Sync, 2, Items, 5000, &Index) == SF_SUCCESS && Index == 1 &&
+          System->Process->Wait(System->Process, Handle, &Status) == SF_SUCCESS &&
+          Status == (SF_ERROR_BIT | 5));
+
+    Items[1] = { 77, 0, nullptr };
+    Check("WaitAny of an unknown kind is SF_INVALID_PARAMETER",
+          Sync->WaitAny(Sync, 2, Items, 0, nullptr) == SF_INVALID_PARAMETER);
+    Items[1] = { SF_WAIT_THREAD, 63, nullptr };
+    Check("WaitAny of no such thread is SF_BAD_HANDLE",
+          Sync->WaitAny(Sync, 2, Items, 0, nullptr) == SF_BAD_HANDLE);
+    if (A)
+        A->Close(A);
+    if (B)
+        B->Close(B);
 }
 
 // --- Processes -------------------------------------------------------------
@@ -399,6 +453,11 @@ static void CheckStart(SfProcess* Process)
         Ok = Ok && Process->Wait(Process, Handles[i], &Status) == SF_SUCCESS &&
              Status == (SF_ERROR_BIT | 5);
     Check("three programs side by side", Ok);
+
+    const char* Exit[] = { "exit" };
+    Check("Exit from a second thread ends the program, Wait gets its status",
+          Process->Start(Process, "sdkcheck", 1, Exit, nullptr, 0, &Handle) == SF_SUCCESS &&
+          Process->Wait(Process, Handle, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 7));
 
     Check("Start of no such program is SF_NOT_FOUND",
           Process->Start(Process, "nosuch", 0, nullptr, nullptr, 0, &Handle) == SF_NOT_FOUND);
@@ -508,8 +567,8 @@ static SfStatus RunAdmin(SfSystem* Sys)
 {
     Print("sdkcheck admin - what the admin right gives\n");
     SfAdmin* Admin = SF_HAS_FIELD(Sys, SfSystem, Admin) ? Sys->Admin : nullptr;
-    Check("Sys->Admin is there: signature, revision 1.x, size",
-          Admin && HeaderOk(&Admin->Hdr, SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin)));
+    Check("Sys->Admin is there: signature and size",
+          Admin && HeaderOk(&Admin->Hdr, SF_ADMIN_SIGNATURE, sizeof(SfAdmin)));
     if (!Admin)
         return SF_ERROR_BIT | Failed;
 
@@ -704,6 +763,21 @@ static void CheckConsole(SfConsole* Console)
     Check("SetTitle works", Console->SetTitle(Console, "checking") == SF_SUCCESS);
     Check("SetMode of 7 is SF_INVALID_PARAMETER",
           Console->SetMode(Console, 7) == SF_INVALID_PARAMETER);
+    char Clip[16];
+    uint64_t Size = 2;
+    Check("SetClipboard, then GetClipboard into too small a buffer gives the size",
+          Console->SetClipboard(Console, "clip\nboard", 10) == SF_SUCCESS &&
+          Console->GetClipboard(Console, Clip, &Size) == SF_BUFFER_TOO_SMALL && Size == 10);
+    Size = sizeof(Clip);
+    Check("GetClipboard gives what was put there",
+          Console->GetClipboard(Console, Clip, &Size) == SF_SUCCESS && Size == 10 &&
+          SameBytes(Clip, "clip\nboard", 10));
+    Check("SetClipboard of more than SF_CLIPBOARD_SIZE is SF_BUFFER_TOO_SMALL",
+          Console->SetClipboard(Console, Clip, SF_CLIPBOARD_SIZE + 1) == SF_BUFFER_TOO_SMALL);
+    Size = sizeof(Clip);
+    Check("SetClipboard of nothing empties it",
+          Console->SetClipboard(Console, nullptr, 0) == SF_SUCCESS &&
+          Console->GetClipboard(Console, Clip, &Size) == SF_SUCCESS && Size == 0);
     char Line[8];
     Check("in SF_CONSOLE_RAW, ReadLine is SF_UNSUPPORTED",
           Console->SetMode(Console, SF_CONSOLE_RAW) == SF_SUCCESS &&
@@ -728,9 +802,26 @@ static SfStatus RunInput(SfSystem* Sys)
     return ReadAndReport(Sys->Console, "parent");
 }
 
-// sdkcheck child|late|reader: see the top of the file.
+static SfProcess* ExitingProcess;
+
+static SfStatus ProcessExitEntry(void*)
+{
+    ExitingProcess->Exit(ExitingProcess, SF_ERROR_BIT | 7);
+    return SF_ERROR_BIT | 8;            // not reached
+}
+
+// sdkcheck child|late|reader|exit: see the top of the file.
 static SfStatus RunAsChild(SfApp* App, SfSystem* Sys)
 {
+    if (SameText(App->Args[1], "exit"))
+    {
+        uint64_t Id = 0;
+        ExitingProcess = Sys->Process;
+        if (SF_ERROR(Sys->Thread->Create(Sys->Thread, ProcessExitEntry, nullptr, &Id)))
+            return SF_ERROR_BIT | 9;
+        Sys->Time->Sleep(Sys->Time, 5000);
+        return SF_ERROR_BIT | 8;
+    }
     if (SameText(App->Args[1], "reader"))
         return ReadAndReport(Sys->Console, "child");
     if (SameText(App->Args[1], "late"))
@@ -796,6 +887,19 @@ static void CheckMemory(SfMemory* Memory)
     Check("a second Free of a block is SF_INVALID_PARAMETER",
           Memory->Free(Memory, Blocks[0]) == SF_INVALID_PARAMETER);
 
+    // Reallocate: the bytes stay, added ones are zero, null is a new block.
+    uint8_t* Grown = nullptr;
+    Ok = Memory->Reallocate(Memory, nullptr, 40, (void**)&Grown) == SF_SUCCESS && Grown;
+    for (int i = 0; Ok && i < 40; i++)
+        Grown[i] = (uint8_t)(i + 1);
+    Ok = Ok && Memory->Reallocate(Memory, Grown, 8, (void**)&Grown) == SF_SUCCESS &&
+         Memory->Reallocate(Memory, Grown, 5000, (void**)&Grown) == SF_SUCCESS;
+    for (int i = 0; Ok && i < 5000; i++)
+        Ok = Grown[i] == (i < 8 ? i + 1 : 0);
+    Check("Reallocate keeps the bytes, zeroes the new ones", Ok);
+    if (Grown)
+        Memory->Free(Memory, Grown);
+
     // After everything merged back, a block larger than the heap has grown
     // by so far still fits.
     uint8_t* Big = nullptr;
@@ -805,14 +909,14 @@ static void CheckMemory(SfMemory* Memory)
         Memory->Free(Memory, Big);
 }
 
-extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
+SfStatus SfMain(SfApp* App, SfSystem* Sys)
 {
     if (!Sys || !Sys->Console)
         return SF_INVALID_PARAMETER;        // nothing to report through
     Con = Sys->Console;
     if (App && App->ArgCount >= 2 &&
         (SameText(App->Args[1], "child") || SameText(App->Args[1], "late") ||
-         SameText(App->Args[1], "reader")))
+         SameText(App->Args[1], "reader") || SameText(App->Args[1], "exit")))
         return RunAsChild(App, Sys);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "input"))
         return RunInput(Sys);
@@ -829,16 +933,16 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
 
     Print("sdkcheck - the tables SfMain gets\n");
 
-    Check("SfSystem: signature, revision 1.x, size",
-          HeaderOk(&Sys->Hdr, SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem)));
+    Check("SfSystem: signature and size",
+          HeaderOk(&Sys->Hdr, SF_SYSTEM_SIGNATURE, sizeof(SfSystem)));
     Check("SfSystem has the Console field", SF_HAS_FIELD(Sys, SfSystem, Console));
-    Check("SfConsole: signature, revision 1.x, size",
-          HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole)));
+    Check("SfConsole: signature and size",
+          HeaderOk(&Con->Hdr, SF_CONSOLE_SIGNATURE, sizeof(SfConsole)));
     if (SF_HAS_FIELD(Con, SfConsole, SetTitle))
         CheckConsole(Con);
     CheckNoAdmin(Sys);
-    Check("SfApp: signature, revision 1.x, size",
-          App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp)));
+    Check("SfApp: signature and size",
+          App && HeaderOk(&App->Hdr, SF_APP_SIGNATURE, sizeof(SfApp)));
     Check("App->Name is the program's name", App && SameText(App->Name, "sdkcheck"));
 
     Check("Print returns SF_SUCCESS", Con->Print(Con, "") == SF_SUCCESS);
@@ -859,37 +963,37 @@ extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Check("Print of an unmapped address is SF_INVALID_PARAMETER",
           Con->Print(Con, (const char*)0x1000) == SF_INVALID_PARAMETER);
 
-    Check("SfMemory: signature, revision 1.x, size",
+    Check("SfMemory: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory &&
-          HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, SF_MEMORY_REVISION, sizeof(SfMemory)));
+          HeaderOk(&Sys->Memory->Hdr, SF_MEMORY_SIGNATURE, sizeof(SfMemory)));
     if (SF_HAS_FIELD(Sys, SfSystem, Memory) && Sys->Memory)
         CheckMemory(Sys->Memory);
 
-    Check("SfProcess: signature, revision 1.x, size",
+    Check("SfProcess: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process &&
-          HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess)));
+          HeaderOk(&Sys->Process->Hdr, SF_PROCESS_SIGNATURE, sizeof(SfProcess)));
     if (App && SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process && Sys->Files)
         CheckArgs(App, Sys->Process, Sys->Files);
     if (SF_HAS_FIELD(Sys, SfSystem, Process) && Sys->Process)
         CheckStart(Sys->Process);
 
-    Check("SfTime: signature, revision 1.x, size",
+    Check("SfTime: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time &&
-          HeaderOk(&Sys->Time->Hdr, SF_TIME_SIGNATURE, SF_TIME_REVISION, sizeof(SfTime)));
+          HeaderOk(&Sys->Time->Hdr, SF_TIME_SIGNATURE, sizeof(SfTime)));
     if (SF_HAS_FIELD(Sys, SfSystem, Time) && Sys->Time)
         CheckTime(Sys->Time);
 
-    Check("SfFiles: signature, revision 1.x, size",
+    Check("SfFiles: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Files) && Sys->Files &&
-          HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles)));
+          HeaderOk(&Sys->Files->Hdr, SF_FILES_SIGNATURE, sizeof(SfFiles)));
 
-    Check("SfThread: signature, revision 1.x, size",
+    Check("SfThread: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread &&
-          HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, SF_THREAD_REVISION, sizeof(SfThread)));
+          HeaderOk(&Sys->Thread->Hdr, SF_THREAD_SIGNATURE, sizeof(SfThread)));
     System = Sys;
-    Check("SfSync: signature, revision 1.x, size",
+    Check("SfSync: signature and size",
           SF_HAS_FIELD(Sys, SfSystem, Sync) && Sys->Sync &&
-          HeaderOk(&Sys->Sync->Hdr, SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync)));
+          HeaderOk(&Sys->Sync->Hdr, SF_SYNC_SIGNATURE, sizeof(SfSync)));
     if (SF_HAS_FIELD(Sys, SfSystem, Thread) && Sys->Thread)
     {
         CheckThreads(Sys->Thread);

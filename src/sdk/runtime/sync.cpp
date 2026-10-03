@@ -61,7 +61,7 @@ static SfStatus MutexClose(SfMutex* This)
 
 static const SfMutex MutexTable =
 {
-    { SF_MUTEX_SIGNATURE, SF_MUTEX_REVISION, sizeof(SfMutex) },
+    { SF_MUTEX_SIGNATURE, sizeof(SfMutex) },
     MutexLock,
     MutexUnlock,
     MutexClose,
@@ -123,7 +123,7 @@ static SfStatus EventClose(SfEvent* This)
 
 static const SfEvent EventTable =
 {
-    { SF_EVENT_SIGNATURE, SF_EVENT_REVISION, sizeof(SfEvent) },
+    { SF_EVENT_SIGNATURE, sizeof(SfEvent) },
     EventSet,
     EventReset,
     EventWait,
@@ -147,4 +147,29 @@ SfStatus SyncCreateEvent(SfSync*, uint64_t Flags, SfEvent** Out)
     Event->Public = EventTable;
     *Out = &Event->Public;
     return SF_SUCCESS;
+}
+
+// --- WaitAny -----------------------------------------------------------------
+
+// The kernel takes each item as its kind and a handle: an event's is the one
+// behind its SfEvent.
+SfStatus SyncWaitAny(SfSync*, uint64_t Count, const SfWaitItem* Items, uint64_t TimeoutMs,
+                     uint64_t* Index)
+{
+    if (Count > SF_WAIT_MAX_ITEMS || (Count && !Items))
+        return SF_INVALID_PARAMETER;
+    uint64_t Pairs[SF_WAIT_MAX_ITEMS * 2];
+    for (uint64_t i = 0; i < Count; i++)
+    {
+        Pairs[i * 2] = Items[i].Kind;
+        if (Items[i].Kind == SF_WAIT_EVENT)
+        {
+            if (!Items[i].Event)
+                return SF_BAD_HANDLE;
+            Pairs[i * 2 + 1] = Handle(Items[i].Event);
+        }
+        else
+            Pairs[i * 2 + 1] = Items[i].Handle;
+    }
+    return SfCall(SFCALL_WAIT_ANY, (uint64_t)Pairs, Count, TimeoutMs, (uint64_t)Index);
 }

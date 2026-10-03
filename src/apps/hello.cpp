@@ -5,7 +5,7 @@
 
 #include <sfos.h>
 
-extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
+SfStatus SfMain(SfApp* App, SfSystem* Sys)
 {
     SfConsole* Con = Sys->Console;
 

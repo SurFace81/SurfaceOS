@@ -185,8 +185,8 @@ static void OpenCell()
 
 // --- the screen ------------------------------------------------------------
 
-static const uint32_t MAX_COLUMNS = 256;
-static const uint32_t MAX_ROWS    = 128;
+static const uint32_t MAX_COLUMNS = 512;
+static const uint32_t MAX_ROWS    = 256;
 static SfCell   Cells[MAX_COLUMNS * MAX_ROWS];
 static uint32_t Columns, Rows;
 
@@ -446,45 +446,13 @@ static void Draw()
 // --- keys ------------------------------------------------------------------
 
 // ReadKey waits for a key, but the clock has to go on meanwhile: as in
-// taskmgr, a second thread waits in ReadKey and hands the keys over through
-// a mutex and an event, which the main thread waits on until the next second.
-static SfMutex* Lock;
-static SfEvent* KeyReady;
-static SfKey    Keys[16];
-static uint32_t KeyHead, KeyTail;
-
-static SfStatus ReadKeys(void*)
+// taskmgr, WaitAny waits for a key until the next second, and ReadKey
+// takes it once it is there.
+static bool NextKey(SfKey* Key, uint64_t TimeoutMs)
 {
-    for (;;)
-    {
-        SfKey Key;
-        if (SF_ERROR(Con->ReadKey(Con, &Key)))
-        {
-            Sys->Time->Sleep(Sys->Time, 100);
-            continue;
-        }
-        Lock->Lock(Lock);
-        if ((KeyHead + 1) % 16 != KeyTail)
-        {
-            Keys[KeyHead] = Key;
-            KeyHead = (KeyHead + 1) % 16;
-        }
-        Lock->Unlock(Lock);
-        KeyReady->Set(KeyReady);
-    }
-}
-
-static bool NextKey(SfKey* Key)
-{
-    Lock->Lock(Lock);
-    bool Got = KeyTail != KeyHead;
-    if (Got)
-    {
-        *Key = Keys[KeyTail];
-        KeyTail = (KeyTail + 1) % 16;
-    }
-    Lock->Unlock(Lock);
-    return Got;
+    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
+    return Sys->Sync->WaitAny(Sys->Sync, 1, &Item, TimeoutMs, nullptr) == SF_SUCCESS &&
+           Con->ReadKey(Con, Key) == SF_SUCCESS;
 }
 
 // One key; false when it is time to go.
@@ -523,21 +491,17 @@ static bool OnKey(const SfKey& Key)
     return true;
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys = System;
     Con = System->Console;
-    if (SF_ERROR(Sys->Sync->CreateMutex(Sys->Sync, &Lock)) ||
-        SF_ERROR(Sys->Sync->CreateEvent(Sys->Sync, SF_EVENT_AUTO_RESET, &KeyReady)))
-        return SF_OUT_OF_RESOURCES;
+    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny))
+        return SF_UNSUPPORTED;
 
     Con->SetMode(Con, SF_CONSOLE_RAW);         // clears the screen, hides the cursor
     Con->GetSize(Con, &Columns, &Rows);
     if (Columns > MAX_COLUMNS) Columns = MAX_COLUMNS;
     if (Rows > MAX_ROWS)       Rows    = MAX_ROWS;
-
-    uint64_t Reader;
-    Sys->Thread->Create(Sys->Thread, ReadKeys, nullptr, &Reader);
 
     for (;;)
     {
@@ -546,14 +510,12 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
         uint64_t Timeout = SF_WAIT_FOREVER;
         if (Started && !Over)
             Timeout = 1000 - (Uptime() - StartMs) % 1000;
-        KeyReady->Wait(KeyReady, Timeout);
-
         SfKey Key;
-        while (NextKey(&Key))
+        for (; NextKey(&Key, Timeout); Timeout = 0)
             if (!OnKey(Key))
             {
                 Con->SetMode(Con, SF_CONSOLE_LINE);
-                return SF_SUCCESS;          // the reader ends with the program
+                return SF_SUCCESS;
             }
     }
 }

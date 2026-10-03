@@ -475,7 +475,7 @@ static void Verify()
           OpenStatus("tmp:/sfstest.txt", SF_FILE_READ) == SF_NOT_FOUND);
 }
 
-extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
+SfStatus SfMain(SfApp* App, SfSystem* Sys)
 {
     Con    = Sys->Console;
     Files  = Sys->Files;

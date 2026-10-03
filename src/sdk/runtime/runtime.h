@@ -45,6 +45,8 @@ void     LockRelease(SdkLock* Lock);
 // sync.cpp
 SfStatus SyncCreateMutex(SfSync* This, SfMutex** Out);
 SfStatus SyncCreateEvent(SfSync* This, uint64_t Flags, SfEvent** Out);
+SfStatus SyncWaitAny(SfSync* This, uint64_t Count, const SfWaitItem* Items, uint64_t TimeoutMs,
+                     uint64_t* Index);
 
 // memory.cpp: set up the heap's lock. Before SfMain.
 SfStatus MemoryInit();
@@ -54,6 +56,7 @@ SfStatus MemoryAllocatePages(SfMemory* This, uint64_t Count, void** Address);
 SfStatus MemoryFreePages(SfMemory* This, void* Address, uint64_t Count);
 SfStatus MemoryAllocate(SfMemory* This, uint64_t Size, void** Buffer);
 SfStatus MemoryFree(SfMemory* This, void* Buffer);
+SfStatus MemoryReallocate(SfMemory* This, void* Buffer, uint64_t Size, void** NewBuffer);
 
 // file.cpp
 SfStatus FilesOpen(SfFiles* This, const char* Path, uint64_t Mode, SfFile** Out);

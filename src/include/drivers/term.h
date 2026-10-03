@@ -116,6 +116,11 @@ namespace term
     void put_cell(uint32_t x, uint32_t y, char ch, uint8_t fg, uint8_t bg);
     void write_at(uint32_t x, uint32_t y, const char* s, uint64_t len);
 
+    // The character at a place, and showing it inverted or not (a
+    // selection); writing the cell again ends the inversion too.
+    char char_at(uint32_t x, uint32_t y);
+    void set_reverse(uint32_t x, uint32_t y, bool on);
+
     // Rasterise everything dirty (title bar included) into the back buffer
     // and update the cursor's blink state. Called from the timer before
     // screen::flush().

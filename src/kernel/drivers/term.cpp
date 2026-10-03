@@ -572,6 +572,26 @@ namespace term
             put_cell(x + (uint32_t)i, y, s[i], S->fg, S->bg);
     }
 
+    char char_at(uint32_t x, uint32_t y)
+    {
+        if (!S->grid || x >= cur_cols || y >= cur_rows)
+            return ' ';
+        return (char)cell_at(x, y)->ch;
+    }
+
+    void set_reverse(uint32_t x, uint32_t y, bool on)
+    {
+        if (!S->grid || x >= cur_cols || y >= cur_rows)
+            return;
+        term_cell* c = cell_at(x, y);
+        uint8_t attr = on ? c->attr | TERM_REVERSE : c->attr & ~TERM_REVERSE;
+        if (attr != c->attr)
+        {
+            c->attr = attr;
+            mark_row(y);
+        }
+    }
+
     void invalidate()
     {
         mark_panel();

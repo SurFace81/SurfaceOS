@@ -62,7 +62,7 @@ uint64_t FileHandle(SfFile* File)
 
 static const SfFile FileTable =
 {
-    { SF_FILE_SIGNATURE, SF_FILE_REVISION, sizeof(SfFile) },
+    { SF_FILE_SIGNATURE, sizeof(SfFile) },
     FileOpen,
     FileClose,
     FileRead,

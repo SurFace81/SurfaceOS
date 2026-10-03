@@ -92,6 +92,16 @@ static SfStatus ConsoleSetHints(SfConsole*, const char* Commands, const char* Na
     return SfCall(SFCALL_CONSOLE_SET_HINTS, (uint64_t)Commands, (uint64_t)Names);
 }
 
+static SfStatus ConsoleSetClipboard(SfConsole*, const void* Data, uint64_t Size)
+{
+    return SfCall(SFCALL_CONSOLE_SET_CLIPBOARD, (uint64_t)Data, Size);
+}
+
+static SfStatus ConsoleGetClipboard(SfConsole*, void* Buffer, uint64_t* Size)
+{
+    return SfCall(SFCALL_CONSOLE_GET_CLIPBOARD, (uint64_t)Buffer, (uint64_t)Size);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -128,16 +138,18 @@ static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
                              const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
                              uint64_t* Handle)
 {
-    // SF_START_OUTPUT: the output file follows the arguments' files.
+    // SF_START_OUTPUT and SF_START_INPUT: their files follow the
+    // arguments' files, in that order.
     const uint64_t MaxArgFiles = 32;
-    uint64_t Handles[MaxArgFiles + 1];
-    if ((Flags & SF_START_OUTPUT) && (!ArgFiles || !ArgFiles[ArgCount]))
+    uint64_t Handles[MaxArgFiles + 2];
+    uint64_t Files = ArgCount + ((Flags & SF_START_OUTPUT) ? 1 : 0) +
+                     ((Flags & SF_START_INPUT) ? 1 : 0);
+    if (Files > ArgCount && (!ArgFiles || !ArgFiles[ArgCount] || !ArgFiles[Files - 1]))
         return SF_INVALID_PARAMETER;
     if (ArgFiles)
     {
         if (ArgCount > MaxArgFiles)
             return SF_INVALID_PARAMETER;
-        uint64_t Files = ArgCount + ((Flags & SF_START_OUTPUT) ? 1 : 0);
         for (uint64_t i = 0; i < Files; i++)
             Handles[i] = ArgFiles[i] ? FileHandle(ArgFiles[i]) : ~0ULL;
     }
@@ -153,6 +165,12 @@ static SfStatus ProcessWait(SfProcess*, uint64_t Handle, SfStatus* Status)
 static SfStatus ProcessIdOf(SfProcess*, uint64_t Handle, uint64_t* Id)
 {
     return SfCall(SFCALL_PROCESS_ID_OF, Handle, (uint64_t)Id);
+}
+
+static SfStatus ProcessExit(SfProcess*, SfStatus Status)
+{
+    SfCall(SFCALL_EXIT, Status);
+    __builtin_unreachable();            // SFCALL_EXIT does not return
 }
 
 // --- Threads -----------------------------------------------------------------
@@ -184,7 +202,7 @@ extern "C" void SdkThreadStart(SfThreadEntry Entry, void* Arg)
 
 static const SfConsole SdkConsole =
 {
-    { SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole) },
+    { SF_CONSOLE_SIGNATURE, sizeof(SfConsole) },
     ConsolePrint,
     ConsoleReadLine,
     ConsoleGetSize,
@@ -198,11 +216,13 @@ static const SfConsole SdkConsole =
     ConsoleClear,
     ConsoleWaitInput,
     ConsoleSetHints,
+    ConsoleSetClipboard,
+    ConsoleGetClipboard,
 };
 
 const SfFiles SdkFiles =
 {
-    { SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles) },
+    { SF_FILES_SIGNATURE, sizeof(SfFiles) },
     FilesOpen,
     FilesCreateUnique,
     FilesCreateDirectory,
@@ -212,16 +232,17 @@ const SfFiles SdkFiles =
 
 const SfMemory SdkMemory =
 {
-    { SF_MEMORY_SIGNATURE, SF_MEMORY_REVISION, sizeof(SfMemory) },
+    { SF_MEMORY_SIGNATURE, sizeof(SfMemory) },
     MemoryAllocatePages,
     MemoryFreePages,
     MemoryAllocate,
     MemoryFree,
+    MemoryReallocate,
 };
 
 static const SfTime SdkTime =
 {
-    { SF_TIME_SIGNATURE, SF_TIME_REVISION, sizeof(SfTime) },
+    { SF_TIME_SIGNATURE, sizeof(SfTime) },
     TimeGetTime,
     TimeGetUptime,
     TimeSleep,
@@ -229,17 +250,18 @@ static const SfTime SdkTime =
 
 static const SfProcess SdkProcess =
 {
-    { SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess) },
+    { SF_PROCESS_SIGNATURE, sizeof(SfProcess) },
     ProcessGetId,
     ProcessGetArgs,
     ProcessStart,
     ProcessWait,
     ProcessIdOf,
+    ProcessExit,
 };
 
 static const SfThread SdkThread =
 {
-    { SF_THREAD_SIGNATURE, SF_THREAD_REVISION, sizeof(SfThread) },
+    { SF_THREAD_SIGNATURE, sizeof(SfThread) },
     ThreadCreate,
     ThreadExit,
     ThreadJoin,
@@ -247,9 +269,10 @@ static const SfThread SdkThread =
 
 static const SfSync SdkSync =
 {
-    { SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync) },
+    { SF_SYNC_SIGNATURE, sizeof(SfSync) },
     SyncCreateMutex,
     SyncCreateEvent,
+    SyncWaitAny,
 };
 
 // --- Admin -----------------------------------------------------------------
@@ -321,7 +344,7 @@ static SfStatus AdminGetProcessInfo(SfAdmin*, uint64_t Id, SfProcessStats* Info)
 
 static const SfAdmin SdkAdmin =
 {
-    { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
+    { SF_ADMIN_SIGNATURE, sizeof(SfAdmin) },
     AdminListProcesses,
     AdminEndProcess,
     AdminMount,
@@ -344,7 +367,7 @@ static SfApp SdkApp;
 // Admin (SDK_START_ADMIN), everyone else the one without.
 const SfSystem SdkSystem =
 {
-    { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
+    { SF_SYSTEM_SIGNATURE, sizeof(SfSystem) },
     (SfConsole*)&SdkConsole,
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
@@ -357,7 +380,7 @@ const SfSystem SdkSystem =
 
 const SfSystem SdkAdminSystem =
 {
-    { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
+    { SF_SYSTEM_SIGNATURE, sizeof(SfSystem) },
     (SfConsole*)&SdkConsole,
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
@@ -371,7 +394,7 @@ const SfSystem SdkAdminSystem =
 extern "C" void SdkStart(SfMainFunction Main)
 {
     const SdkStartInfo* Info = (const SdkStartInfo*)SDK_INFO_ADDRESS;
-    SdkApp.Hdr      = { SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp) };
+    SdkApp.Hdr      = { SF_APP_SIGNATURE, sizeof(SfApp) };
     SdkApp.Name     = Info->Name;
     SdkApp.ArgCount = Info->ArgCount;
     SdkApp.Args     = Info->Args;

@@ -191,6 +191,41 @@ SfStatus MemoryFree(SfMemory*, void* Buffer)
     return SF_SUCCESS;
 }
 
+// The block stays when it is big enough already; otherwise a new one takes
+// the bytes and the old one is freed.
+SfStatus MemoryReallocate(SfMemory*, void* Buffer, uint64_t Size, void** NewBuffer)
+{
+    if (!NewBuffer)
+        return SF_INVALID_PARAMETER;
+    if (!Buffer)
+        return MemoryAllocate(nullptr, Size, NewBuffer);
+    if ((uint64_t)Buffer & 15)
+        return SF_INVALID_PARAMETER;
+
+    Block* B = (Block*)((char*)Buffer - HEADER);
+    Lock();
+    bool Used = B->Tag == TAG_USED;
+    uint64_t Have = B->Size - HEADER;
+    Unlock();
+    if (!Used)
+        return SF_INVALID_PARAMETER;
+    if (Size <= Have)
+    {
+        memset((char*)Buffer + Size, 0, Have - Size);   // bytes added later read as zero
+        *NewBuffer = Buffer;
+        return SF_SUCCESS;
+    }
+
+    void* Bigger = nullptr;
+    SfStatus Status = MemoryAllocate(nullptr, Size, &Bigger);
+    if (SF_ERROR(Status))
+        return Status;
+    memcpy(Bigger, Buffer, Have);
+    MemoryFree(nullptr, Buffer);
+    *NewBuffer = Bigger;
+    return SF_SUCCESS;
+}
+
 extern "C" void* memset(void* Dest, int Value, uint64_t Size)
 {
     uint8_t* D = (uint8_t*)Dest;

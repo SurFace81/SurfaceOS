@@ -73,8 +73,7 @@ void  DiskPath(const char* Path, char* Out);                // PATH_SIZE + 8 byt
 SfStatus Open(const char* Path, uint64_t Mode, SfFile** Out);
 bool  IsFolder(SfFile* File);
 
-// Keys: read on a thread of their own, so that Esc can stop a long job.
-bool  StartKeys();
+// Keys: looked for without waiting too, so that Esc can stop a long job.
 SfKey GetKey();                                             // waits for one
 bool  Cancelled();                                          // Esc was pressed meanwhile
 inline bool Ctrl(const SfKey& K, char Letter)

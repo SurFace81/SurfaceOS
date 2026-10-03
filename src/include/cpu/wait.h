@@ -57,6 +57,11 @@ namespace wait
     // ended.
     bool wait_event(wait_queue* q, bool (*cond)(void*), void* arg, uint64_t tick);
 
+    // wait_event for a condition with no queue of its own - any of several
+    // objects (SfSync WaitAny): every wake_up, on whatever queue, wakes it
+    // to look again.
+    bool wait_any(bool (*cond)(void*), void* arg, uint64_t tick);
+
     // May what runs now sleep? A thread with interrupts on, outside the
     // scheduler: not an interrupt handler, not the boot or idle task.
     bool can_sleep();

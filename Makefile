@@ -12,6 +12,7 @@ CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -mgeneral-regs-only -mcmodel=kernel -fno-pic \
 			  -I./src/kernel
 LD			= x86_64-elf-ld
+AR			= x86_64-elf-ar
 OBJCOPY		= x86_64-elf-objcopy
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
@@ -101,23 +102,29 @@ SOURCES		=  	bin/kernel/kernel.o \
 # SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
-			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include -Isrc/sdk/libc/include
+# Programs in C: the same, as C11.
+SDK_CFLAGS  = -c -m64 -std=c11 -ffreestanding -nostdlib \
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include -Isrc/sdk/libc/include
 
 # Header dependencies: every compile also writes a .d next to its object
 # (-MMD), with a phony target per header (-MP) so a deleted header does not
 # break the build. Without them a changed struct in a header left stale
 # objects behind that only failed at link time - or not at all.
 DEPFLAGS    = -MMD -MP
-# Programs, all built against <sfos.h> (no libc, no start-up code: the
-# kernel starts them in the SDK runtime, which calls SfMain):
-#   src/apps/<name>.cpp   a program of one file        -> bin/apps/<name>.bin
-#   src/apps/<name>/      one program of all its .cpp  -> bin/apps/<name>.bin
-APP_ONE_SRC	= $(wildcard src/apps/*.cpp)
-APP_DIR_SRC	= $(wildcard src/apps/*/*.cpp)
+# Programs, all built against <sfos.h> (no start-up code: the kernel starts
+# them in the SDK runtime, which calls SfMain) and linked with the SDK's
+# libc (only what they call of it), in C or C++:
+#   src/apps/<name>.cpp, .c  a program of one file       -> bin/apps/<name>.bin
+#   src/apps/<name>/         one program of all its .cpp
+#                            and .c files                -> bin/apps/<name>.bin
+# A .c file's object is <name>.c.o, so x.c and x.cpp never share one.
+APP_ONE_SRC	= $(wildcard src/apps/*.cpp src/apps/*.c)
+APP_DIR_SRC	= $(wildcard src/apps/*/*.cpp src/apps/*/*.c)
 APP_DIRS	= $(sort $(patsubst src/apps/%/,%,$(dir $(APP_DIR_SRC))))
-APP_BINS	= $(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC)) \
+APP_BINS	= $(patsubst src/apps/%.c,bin/apps/%.bin,$(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC))) \
 		  $(patsubst %,bin/apps/%.bin,$(APP_DIRS))
-APP_OBJS	= $(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC))
+APP_OBJS	= $(patsubst src/apps/%.c,bin/apps/%.c.o,$(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC)))
 APP_LDFLAGS	= -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib
 
 .PHONY: run clean version usb
@@ -206,6 +213,23 @@ bin/sdk/runtime.bin: bin/sdk/runtime.elf
 
 bin/kernel/cpu/sdkpage.asm.o: bin/sdk/runtime.bin
 
+# The SDK's libc: the plain C functions (strings, numbers, formatting),
+# none of them a kernel call. A library, so a program gets only what it
+# calls. Small code model, no PIC, no stack protector: tcc links it too.
+LIBC_SRC   = $(wildcard src/sdk/libc/*.c)
+LIBC_OBJS  = $(patsubst src/sdk/libc/%.c,bin/sdk/libc/%.o,$(LIBC_SRC))
+LIBC_FLAGS = $(SDK_CFLAGS) -O2 -mcmodel=small -fno-pic -fno-stack-protector -fno-builtin \
+			 -fno-tree-loop-distribute-patterns
+LIBC       = bin/sdk/libc.a
+
+bin/sdk/libc/%.o: src/sdk/libc/%.c
+	mkdir -p $(dir $@)
+	$(GCC) $(LIBC_FLAGS) $(DEPFLAGS) -o $@ $<
+
+$(LIBC): $(LIBC_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
 # The other CPUs' first code: a flat binary for its low page, built into
 # the kernel (smp.asm).
 bin/kernel/cpu/ap_trampoline.bin: src/kernel/cpu/ap_trampoline.asm
@@ -222,14 +246,67 @@ bin/apps/%.o: src/apps/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
-bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld
-	$(LD) $(APP_LDFLAGS) -o $@ $<
+bin/apps/%.c.o: src/apps/%.c
+	mkdir -p $(dir $@)
+	$(GCC) $(SDK_CFLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
+
+bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
 define APP_DIR_RULE
-bin/apps/$(1).bin: $$(patsubst src/apps/%.cpp,bin/apps/%.o,$$(wildcard src/apps/$(1)/*.cpp)) src/sdk/sfos.ld
-	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^)
+bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld $$(LIBC)
+	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^) $$(LIBC)
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
+
+# Ports: programs from elsewhere, changed to run on the SDK (ports/<name>/,
+# README.md there), into /apps like any other program.
+#   tcc: tinycc/tcc.c is all of tcc in one unit (ONE_SOURCE); sfport.c is
+#   what it calls of the system.
+PORT_BINS  = bin/ports/tcc.bin
+TCC_OBJS   = bin/ports/tcc/tcc.o bin/ports/tcc/sfport.o
+TCC_CFLAGS = $(SDK_CFLAGS) -std=gnu11 -O2 -DONE_SOURCE=1 -Iports/tcc
+
+bin/ports/tcc/tcc.o: ports/tcc/tinycc/tcc.c
+	mkdir -p $(dir $@)
+	$(GCC) $(TCC_CFLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/ports/tcc/sfport.o: ports/tcc/sfport.c
+	mkdir -p $(dir $@)
+	$(GCC) $(TCC_CFLAGS) $(DEPFLAGS) -o $@ $<
+
+bin/ports/tcc.bin: $(TCC_OBJS) src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $(TCC_OBJS) $(LIBC)
+
+# tcc's own files, in its data folder /files/tcc (data:/ to tcc). And
+# ports/tcc/demo, a project to build with it, as /demo.
+#   include/  tcc's headers (stdarg.h, ...), the SDK's libc and the SDK
+#   lib/      libtcc1.a - the helpers of the code tcc makes - and libc.a
+LIBTCC1_SRC  = ports/tcc/tinycc/lib/libtcc1.c ports/tcc/tinycc/lib/va_list.c \
+			   ports/tcc/tinycc/lib/alloca86_64.S
+LIBTCC1_OBJS = $(patsubst ports/tcc/tinycc/lib/%,bin/ports/tcc/lib/%.o,$(LIBTCC1_SRC))
+LIBTCC1      = bin/ports/tcc/lib/libtcc1.a
+TCC_HEADERS  = $(wildcard ports/tcc/tinycc/include/*.h src/sdk/libc/include/*.h \
+			   src/sdk/include/*.h src/sdk/include/*/*.h)
+TCC_FILES    = bin/ports/tcc/files
+
+bin/ports/tcc/lib/%.o: ports/tcc/tinycc/lib/%
+	mkdir -p $(dir $@)
+	$(GCC) $(LIBC_FLAGS) -std=gnu11 $(DEPFLAGS) -o $@ $<
+
+$(LIBTCC1): $(LIBTCC1_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
+$(TCC_FILES)/.stamp: $(TCC_HEADERS) $(LIBC) $(LIBTCC1)
+	rm -rf $(TCC_FILES)
+	mkdir -p $(TCC_FILES)/include $(TCC_FILES)/lib
+	cp -r ports/tcc/tinycc/include/. src/sdk/libc/include/. src/sdk/include/. $(TCC_FILES)/include/
+	cp $(LIBC) $(LIBTCC1) $(TCC_FILES)/lib/
+	touch $@
 
 # The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
 # out of /apps.
@@ -239,12 +316,12 @@ bin/sfos/cmd.o: src/sfos/cmd.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
-$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld
-	$(LD) $(APP_LDFLAGS) -o $@ $<
+$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
-.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o
+.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o $(TCC_OBJS) $(LIBTCC1_OBJS)
 
 
 # Generating version
@@ -270,13 +347,17 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # Disk image: GPT with one FAT32 EFI System Partition, built by
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS)
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS) \
+			 $(TCC_FILES)/.stamp $(wildcard ports/tcc/demo/*.* ports/tcc/demo/*/*.*)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
 		bin/kernel/data/stdfont.fnt \
 		$(CMD_BIN) \
 		$(APP_BINS) \
+		$(PORT_BINS) \
+		--tree=$(TCC_FILES):/files/tcc \
+		--tree=ports/tcc/demo:/demo \
 		--size=$(IMG_SIZE_MIB)
 
 run: $(DISK_IMG)
@@ -299,10 +380,10 @@ clean:
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
-	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin
-	@rm -rf bin/apps/*
+	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin bin/sdk/libc bin/sdk/libc.a
+	@rm -rf bin/apps/* bin/ports
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d

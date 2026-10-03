@@ -13,22 +13,38 @@
 
 // SfStatus: 0 is success, the top bit marks an error. Programs see these
 // through <sfos.h>; the kernel returns them.
+/// The top bit: set in every error SfStatus.
 #define SF_ERROR_BIT            0x8000000000000000ULL
+/// The call did what it was asked.
 #define SF_SUCCESS              0ULL
-#define SF_UNSUPPORTED          (SF_ERROR_BIT | 1)   // no such call or operation
+/// No such call or operation.
+#define SF_UNSUPPORTED          (SF_ERROR_BIT | 1)
+/// An argument is wrong: null where it may not be, out of range, malformed.
 #define SF_INVALID_PARAMETER    (SF_ERROR_BIT | 2)
+/// No such file, program, device or other thing.
 #define SF_NOT_FOUND            (SF_ERROR_BIT | 3)
+/// Not allowed: a path above its root, a call without the admin right.
 #define SF_ACCESS_DENIED        (SF_ERROR_BIT | 4)
-#define SF_OUT_OF_RESOURCES     (SF_ERROR_BIT | 5)   // memory, handles, slots
-#define SF_ABORTED              (SF_ERROR_BIT | 6)   // e.g. Ctrl+C during ReadLine
+/// Not enough memory, handles or slots.
+#define SF_OUT_OF_RESOURCES     (SF_ERROR_BIT | 5)
+/// Cut short: Ctrl+C during ReadLine, a program being ended.
+#define SF_ABORTED              (SF_ERROR_BIT | 6)
+/// The time to wait ran out.
 #define SF_TIMEOUT              (SF_ERROR_BIT | 7)
+/// Nothing more to read.
 #define SF_END_OF_FILE          (SF_ERROR_BIT | 8)
+/// A handle or id that refers to nothing of the kind.
 #define SF_BAD_HANDLE           (SF_ERROR_BIT | 9)
+/// There is something by that name already.
 #define SF_ALREADY_EXISTS       (SF_ERROR_BIT | 10)
+/// The device or the volume on it failed.
 #define SF_DEVICE_ERROR         (SF_ERROR_BIT | 11)
-#define SF_BUFFER_TOO_SMALL     (SF_ERROR_BIT | 12)  // the size needed is returned
-#define SF_IN_USE               (SF_ERROR_BIT | 13)  // e.g. a volume with files open
-#define SF_CRASHED              (SF_ERROR_BIT | 14)  // a program ended by a CPU exception
+/// The buffer does not fit the result; the size needed is returned.
+#define SF_BUFFER_TOO_SMALL     (SF_ERROR_BIT | 12)
+/// Busy: a volume with files open, a folder that is not empty.
+#define SF_IN_USE               (SF_ERROR_BIT | 13)
+/// A program ended by a CPU exception.
+#define SF_CRASHED              (SF_ERROR_BIT | 14)
 
 // Call numbers. The table grows from 0; the SDK runtime makes these calls,
 // programs never do directly. A file is its handle number.
@@ -89,6 +105,9 @@
 #define SFCALL_ADMIN_GET_SYSTEM_INFO 54  // (SfSystemInfo* Info)
 #define SFCALL_ADMIN_GET_PROCESS_INFO 55 // (uint64_t Id, SfProcessStats* Info)
 #define SFCALL_CONSOLE_SET_HINTS     56  // (const char* Commands, const char* Names)
-#define SFCALL_COUNT                 57
+#define SFCALL_WAIT_ANY              57  // (const uint64_t* Items, uint64_t Count, uint64_t TimeoutMs, uint64_t* Index): Items holds Count pairs, kind (SF_WAIT_*) and handle
+#define SFCALL_CONSOLE_SET_CLIPBOARD 58  // (const void* Data, uint64_t Size)
+#define SFCALL_CONSOLE_GET_CLIPBOARD 59  // (void* Buffer, uint64_t* Size)
+#define SFCALL_COUNT                 60
 
 #endif // ABI_SFCALL_H

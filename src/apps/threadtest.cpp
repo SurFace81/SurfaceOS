@@ -260,7 +260,7 @@ static void Start(SfThreadEntry Entry)
         Print("threadtest: Create failed\n");
 }
 
-extern "C" SfStatus SfMain(SfApp* App, SfSystem* Sys)
+SfStatus SfMain(SfApp* App, SfSystem* Sys)
 {
     System = Sys;
     const char* Mode = App->ArgCount >= 2 ? App->Args[1] : "";
