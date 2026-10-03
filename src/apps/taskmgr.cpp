@@ -17,8 +17,8 @@ static SfAdmin*   Admin;
 
 // --- the screen ------------------------------------------------------------
 
-static const uint32_t MAX_COLUMNS = 256;
-static const uint32_t MAX_ROWS    = 128;
+static const uint32_t MAX_COLUMNS = 512;
+static const uint32_t MAX_ROWS    = 256;
 static SfCell   Cells[MAX_COLUMNS * MAX_ROWS];
 static uint32_t Columns, Rows;
 
