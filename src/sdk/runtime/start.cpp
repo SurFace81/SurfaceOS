@@ -196,7 +196,7 @@ extern "C" void SdkThreadStart(SfThreadEntry Entry, void* Arg)
 
 static const SfConsole SdkConsole =
 {
-    { SF_CONSOLE_SIGNATURE, SF_CONSOLE_REVISION, sizeof(SfConsole) },
+    { SF_CONSOLE_SIGNATURE, sizeof(SfConsole) },
     ConsolePrint,
     ConsoleReadLine,
     ConsoleGetSize,
@@ -216,7 +216,7 @@ static const SfConsole SdkConsole =
 
 const SfFiles SdkFiles =
 {
-    { SF_FILES_SIGNATURE, SF_FILES_REVISION, sizeof(SfFiles) },
+    { SF_FILES_SIGNATURE, sizeof(SfFiles) },
     FilesOpen,
     FilesCreateUnique,
     FilesCreateDirectory,
@@ -226,7 +226,7 @@ const SfFiles SdkFiles =
 
 const SfMemory SdkMemory =
 {
-    { SF_MEMORY_SIGNATURE, SF_MEMORY_REVISION, sizeof(SfMemory) },
+    { SF_MEMORY_SIGNATURE, sizeof(SfMemory) },
     MemoryAllocatePages,
     MemoryFreePages,
     MemoryAllocate,
@@ -235,7 +235,7 @@ const SfMemory SdkMemory =
 
 static const SfTime SdkTime =
 {
-    { SF_TIME_SIGNATURE, SF_TIME_REVISION, sizeof(SfTime) },
+    { SF_TIME_SIGNATURE, sizeof(SfTime) },
     TimeGetTime,
     TimeGetUptime,
     TimeSleep,
@@ -243,7 +243,7 @@ static const SfTime SdkTime =
 
 static const SfProcess SdkProcess =
 {
-    { SF_PROCESS_SIGNATURE, SF_PROCESS_REVISION, sizeof(SfProcess) },
+    { SF_PROCESS_SIGNATURE, sizeof(SfProcess) },
     ProcessGetId,
     ProcessGetArgs,
     ProcessStart,
@@ -253,7 +253,7 @@ static const SfProcess SdkProcess =
 
 static const SfThread SdkThread =
 {
-    { SF_THREAD_SIGNATURE, SF_THREAD_REVISION, sizeof(SfThread) },
+    { SF_THREAD_SIGNATURE, sizeof(SfThread) },
     ThreadCreate,
     ThreadExit,
     ThreadJoin,
@@ -261,7 +261,7 @@ static const SfThread SdkThread =
 
 static const SfSync SdkSync =
 {
-    { SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync) },
+    { SF_SYNC_SIGNATURE, sizeof(SfSync) },
     SyncCreateMutex,
     SyncCreateEvent,
     SyncWaitAny,
@@ -336,7 +336,7 @@ static SfStatus AdminGetProcessInfo(SfAdmin*, uint64_t Id, SfProcessStats* Info)
 
 static const SfAdmin SdkAdmin =
 {
-    { SF_ADMIN_SIGNATURE, SF_ADMIN_REVISION, sizeof(SfAdmin) },
+    { SF_ADMIN_SIGNATURE, sizeof(SfAdmin) },
     AdminListProcesses,
     AdminEndProcess,
     AdminMount,
@@ -359,7 +359,7 @@ static SfApp SdkApp;
 // Admin (SDK_START_ADMIN), everyone else the one without.
 const SfSystem SdkSystem =
 {
-    { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
+    { SF_SYSTEM_SIGNATURE, sizeof(SfSystem) },
     (SfConsole*)&SdkConsole,
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
@@ -372,7 +372,7 @@ const SfSystem SdkSystem =
 
 const SfSystem SdkAdminSystem =
 {
-    { SF_SYSTEM_SIGNATURE, SF_SYSTEM_REVISION, sizeof(SfSystem) },
+    { SF_SYSTEM_SIGNATURE, sizeof(SfSystem) },
     (SfConsole*)&SdkConsole,
     (SfFiles*)&SdkFiles,
     (SfMemory*)&SdkMemory,
@@ -386,7 +386,7 @@ const SfSystem SdkAdminSystem =
 extern "C" void SdkStart(SfMainFunction Main)
 {
     const SdkStartInfo* Info = (const SdkStartInfo*)SDK_INFO_ADDRESS;
-    SdkApp.Hdr      = { SF_APP_SIGNATURE, SF_APP_REVISION, sizeof(SfApp) };
+    SdkApp.Hdr      = { SF_APP_SIGNATURE, sizeof(SfApp) };
     SdkApp.Name     = Info->Name;
     SdkApp.ArgCount = Info->ArgCount;
     SdkApp.Args     = Info->Args;

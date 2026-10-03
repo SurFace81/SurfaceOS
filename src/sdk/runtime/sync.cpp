@@ -61,7 +61,7 @@ static SfStatus MutexClose(SfMutex* This)
 
 static const SfMutex MutexTable =
 {
-    { SF_MUTEX_SIGNATURE, SF_MUTEX_REVISION, sizeof(SfMutex) },
+    { SF_MUTEX_SIGNATURE, sizeof(SfMutex) },
     MutexLock,
     MutexUnlock,
     MutexClose,
@@ -123,7 +123,7 @@ static SfStatus EventClose(SfEvent* This)
 
 static const SfEvent EventTable =
 {
-    { SF_EVENT_SIGNATURE, SF_EVENT_REVISION, sizeof(SfEvent) },
+    { SF_EVENT_SIGNATURE, sizeof(SfEvent) },
     EventSet,
     EventReset,
     EventWait,

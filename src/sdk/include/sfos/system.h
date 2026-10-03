@@ -12,36 +12,36 @@
 #include "sync.h"
 #include "admin.h"
 
-// The system table: everything a program can ask of the system, handed to
-// SfMain. Services are tables of their own, reached from here.
-//
-//   Console   the program's console.
-//   Files     the program's roots: data:/, tmp:/.
-//   Memory    pages and the heap.
-//   Time      the clock and sleeping.
-//   Process   processes.
-//   Thread    threads of this program.
-//   Sync      mutexes and events between them.
-//   Admin     what only a program with the admin right can do; nullptr
-//             for any other (sfos/admin.h).
-//
-// More services are added at the end in later revisions; check Hdr.Size
-// (SF_HAS_FIELD) before using one that came later than revision 1.0.
+/// The system table, handed to SfMain: everything a program can ask of
+/// the system.
+///
+/// Each service is a table of its own, reached from here. More services are
+/// added at the end later; check Hdr.Size (SF_HAS_FIELD) before using one this
+/// SDK does not have yet.
 typedef struct SfSystem
 {
     SfTableHeader Hdr;
+    /// The program's console: its screen, keyboard and the clipboard.
     SfConsole*    Console;
+    /// Files and folders under the program's roots: data:/, tmp:/,
+    /// argN:.
     SfFiles*      Files;
+    /// Pages and the heap.
     SfMemory*     Memory;
+    /// The clock, the uptime and sleeping.
     SfTime*       Time;
+    /// Starting other programs, waiting for them, command lines.
     SfProcess*    Process;
+    /// Threads of this program.
     SfThread*     Thread;
+    /// Mutexes, events and WaitAny between threads and programs.
     SfSync*       Sync;
+    /// What only a program with the admin right can do (sfos/admin.h);
+    /// null for any other program.
     SfAdmin*      Admin;
 } SfSystem;
 
 #define SF_SYSTEM_SIGNATURE SF_SIGNATURE('S', 'F', 'S', 'Y', 'S', 'T', 'E', 'M')
-#define SF_SYSTEM_REVISION  SF_REVISION(1, 0)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Console) == 16, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Files) == 24, "SfSystem layout");
@@ -53,11 +53,19 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Sync) == 64, "SfSystem layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfSystem, Admin) == 72, "SfSystem layout");
 SF_STATIC_ASSERT(sizeof(SfSystem) == 80, "SfSystem layout");
 
-// The program's entry point. What it returns becomes the exit status its
-// parent sees.
 #ifdef __cplusplus
-extern "C"
+extern "C" {
 #endif
+
+/// The program's entry point, written by the program.
+///
+/// The same in C and C++: C++ gets C linkage from this declaration, so no
+/// extern "C" is needed. What it returns ends the program and is the status
+/// its parent gets.
 SfStatus SfMain(SfApp* App, SfSystem* Sys);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SFOS_SYSTEM_H

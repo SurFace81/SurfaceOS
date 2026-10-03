@@ -14,6 +14,13 @@ typedef          char       sint8_t;
 typedef uint64_t            size_t;
 typedef uint64_t            uintptr_t;
 
+// bool, true and false in C as C++ has them (C23 has them built in).
+#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+typedef _Bool bool;
+#define true    1
+#define false   0
+#endif
+
 #ifndef NULL
 #ifdef __cplusplus
 #define NULL nullptr        // ((void*)0) does not convert to other pointers in C++

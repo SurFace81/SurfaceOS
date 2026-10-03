@@ -880,7 +880,7 @@ static void CommandMenu()
     }
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
     Con   = System->Console;

@@ -102,6 +102,9 @@ SOURCES		=  	bin/kernel/kernel.o \
 # everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
+# Programs in C: the same, as C11.
+SDK_CFLAGS  = -c -m64 -std=c11 -ffreestanding -nostdlib \
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
 
 # Header dependencies: every compile also writes a .d next to its object
 # (-MMD), with a phony target per header (-MP) so a deleted header does not
@@ -109,15 +112,17 @@ SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 # objects behind that only failed at link time - or not at all.
 DEPFLAGS    = -MMD -MP
 # Programs, all built against <sfos.h> (no libc, no start-up code: the
-# kernel starts them in the SDK runtime, which calls SfMain):
-#   src/apps/<name>.cpp   a program of one file        -> bin/apps/<name>.bin
-#   src/apps/<name>/      one program of all its .cpp  -> bin/apps/<name>.bin
-APP_ONE_SRC	= $(wildcard src/apps/*.cpp)
-APP_DIR_SRC	= $(wildcard src/apps/*/*.cpp)
+# kernel starts them in the SDK runtime, which calls SfMain), in C or C++:
+#   src/apps/<name>.cpp, .c  a program of one file       -> bin/apps/<name>.bin
+#   src/apps/<name>/         one program of all its .cpp
+#                            and .c files                -> bin/apps/<name>.bin
+# A .c file's object is <name>.c.o, so x.c and x.cpp never share one.
+APP_ONE_SRC	= $(wildcard src/apps/*.cpp src/apps/*.c)
+APP_DIR_SRC	= $(wildcard src/apps/*/*.cpp src/apps/*/*.c)
 APP_DIRS	= $(sort $(patsubst src/apps/%/,%,$(dir $(APP_DIR_SRC))))
-APP_BINS	= $(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC)) \
+APP_BINS	= $(patsubst src/apps/%.c,bin/apps/%.bin,$(patsubst src/apps/%.cpp,bin/apps/%.bin,$(APP_ONE_SRC))) \
 		  $(patsubst %,bin/apps/%.bin,$(APP_DIRS))
-APP_OBJS	= $(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC))
+APP_OBJS	= $(patsubst src/apps/%.c,bin/apps/%.c.o,$(patsubst src/apps/%.cpp,bin/apps/%.o,$(APP_ONE_SRC) $(APP_DIR_SRC)))
 APP_LDFLAGS	= -m elf_x86_64 -z max-page-size=0x1000 -T src/sdk/sfos.ld -nostdlib
 
 .PHONY: run clean version usb
@@ -222,11 +227,18 @@ bin/apps/%.o: src/apps/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
+bin/apps/%.c.o: src/apps/%.c
+	mkdir -p $(dir $@)
+	$(GCC) $(SDK_CFLAGS) $(DEPFLAGS) -o $@ $<
+
 bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld
 	$(LD) $(APP_LDFLAGS) -o $@ $<
 
+bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld
+	$(LD) $(APP_LDFLAGS) -o $@ $<
+
 define APP_DIR_RULE
-bin/apps/$(1).bin: $$(patsubst src/apps/%.cpp,bin/apps/%.o,$$(wildcard src/apps/$(1)/*.cpp)) src/sdk/sfos.ld
+bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld
 	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^)
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))

@@ -1720,7 +1720,7 @@ static void SetHints()
     Con->SetHints(Con, Commands_, Names);
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
     Con   = System->Console;

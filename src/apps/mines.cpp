@@ -491,7 +491,7 @@ static bool OnKey(const SfKey& Key)
     return true;
 }
 
-extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
+SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys = System;
     Con = System->Console;
