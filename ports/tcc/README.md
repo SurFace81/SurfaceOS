@@ -40,8 +40,16 @@ Makefile (`mkimg.py --tree`):
 | `lib/libc.a` | the SDK's libc |
 
 ```
-tcc hello.c -o hello.bin
+tcc hello.c -o hello.bin        one file
+tcc /demo                       a project: /demo/demo.bin
 ```
+
+A folder as an argument is a project: every `.c` file in it and in the
+folders in it (in path order), built into `<folder>/<name>.bin` unless
+there is an `-o`; the other arguments go to tcc as they are. Paths in the
+project are below its folder - `#include "../include/x.h"` from
+`gui/window.c` works, and messages read `gui/window.c:3: ...`.
+`ports/tcc/demo` is such a project; the image has it as `/demo`.
 
 What changed in `tinycc/`:
 

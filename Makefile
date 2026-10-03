@@ -281,7 +281,8 @@ bin/ports/tcc/sfport.o: ports/tcc/sfport.c
 bin/ports/tcc.bin: $(TCC_OBJS) src/sdk/sfos.ld $(LIBC)
 	$(LD) $(APP_LDFLAGS) -o $@ $(TCC_OBJS) $(LIBC)
 
-# tcc's own files, in its data folder /files/tcc (data:/ to tcc):
+# tcc's own files, in its data folder /files/tcc (data:/ to tcc). And
+# ports/tcc/demo, a project to build with it, as /demo.
 #   include/  tcc's headers (stdarg.h, ...), the SDK's libc and the SDK
 #   lib/      libtcc1.a - the helpers of the code tcc makes - and libc.a
 LIBTCC1_SRC  = ports/tcc/tinycc/lib/libtcc1.c ports/tcc/tinycc/lib/va_list.c \
@@ -347,7 +348,7 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
 $(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS) \
-			 $(TCC_FILES)/.stamp
+			 $(TCC_FILES)/.stamp $(wildcard ports/tcc/demo/*.* ports/tcc/demo/*/*.*)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
@@ -356,6 +357,7 @@ $(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdf
 		$(APP_BINS) \
 		$(PORT_BINS) \
 		--tree=$(TCC_FILES):/files/tcc \
+		--tree=ports/tcc/demo:/demo \
 		--size=$(IMG_SIZE_MIB)
 
 run: $(DISK_IMG)

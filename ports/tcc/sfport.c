@@ -1,8 +1,13 @@
 // tcc on SurfaceOS: the program's start and the system calls tcc makes
 // (sfport.h).
+//
+// `tcc <folder> [options]` builds a project: every .c file in the folder
+// and the folders in it, into <folder>/<name>.bin, with the folder as the
+// current one - its paths are what tcc sees, error messages included.
 
 #include "sfport.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int main(int argc, char** argv);           // tcc.c
@@ -93,20 +98,154 @@ void sf_exit(int Status)
         ;                               // Exit does not return
 }
 
+static void* Allocate(uint64_t Size)
+{
+    void* Block = NULL;
+    Sys->Memory->Allocate(Sys->Memory, Size, &Block);
+    return Block;
+}
+
+static char* Copy(const char* Text)
+{
+    char* Block = Allocate(strlen(Text) + 1);
+    return Block ? strcpy(Block, Text) : NULL;
+}
+
+// The .c files of a project, paths below its folder.
+static char** Sources;
+static int    SourceCount;
+
+static void AddSource(const char* Path)
+{
+    if (SF_ERROR(Sys->Memory->Reallocate(Sys->Memory, Sources,
+                                         (SourceCount + 1) * sizeof(char*), (void**)&Sources)))
+        return;
+    Sources[SourceCount] = Copy(Path);
+    if (Sources[SourceCount])
+        SourceCount++;
+}
+
+// Every .c file below Folder; Prefix is Folder's path ("", "gui/").
+static void FindSources(SfFile* Folder, const char* Prefix)
+{
+    SfDirEntry Entry;
+    while (!SF_ERROR(Folder->ReadDir(Folder, &Entry)))
+    {
+        char   Path[512];
+        size_t Length = strlen(Entry.Name);
+        snprintf(Path, sizeof(Path), "%s%s", Prefix, Entry.Name);
+        if (Entry.Flags & SF_DIR_ENTRY_FOLDER)
+        {
+            SfFile* Inner = NULL;
+            if (SF_ERROR(Folder->Open(Folder, Entry.Name, SF_FILE_READ, &Inner)))
+                continue;
+            strcat(Path, "/");
+            FindSources(Inner, Path);
+            Inner->Close(Inner);
+        }
+        else if (Length > 2 && Entry.Name[Length - 2] == '.' &&
+                 (Entry.Name[Length - 1] == 'c' || Entry.Name[Length - 1] == 'C'))
+            AddSource(Path);
+    }
+}
+
+static int ComparePaths(const void* A, const void* B)
+{
+    return strcmp(*(char* const*)A, *(char* const*)B);
+}
+
+// The project's name: the last part of its path ("/files/demo/" -> "demo").
+static void ProjectName(const char* Path, char* Name, size_t Size)
+{
+    const char* Start = Path;
+    size_t      Length;
+    for (const char* P = Path; *P; P++)
+        if ((*P == '/' || *P == ':') && P[1] && P[1] != '/')
+            Start = P + 1;
+    for (Length = 0; Start[Length] && Start[Length] != '/'; Length++)
+        ;
+    if (Length == 0 || Length >= Size || !strncmp(Start, ".", Length) ||
+        !strncmp(Start, "..", Length))
+    {
+        snprintf(Name, Size, "program");
+        return;
+    }
+    memcpy(Name, Start, Length);
+    Name[Length] = '\0';
+}
+
+// tcc <folder> [options]: the folder becomes the current one, and tcc gets
+// the options, -o <name>.bin unless they have an -o, and the sources.
+// Returns the new argc, or -1 when the folder has no .c file.
+static int BuildProject(int Folder, SfFile* Project, char*** Argv)
+{
+    char Name[64], Output[80];
+    ProjectName(App->Args[Folder], Name, sizeof(Name));
+    snprintf(Output, sizeof(Output), "%s.bin", Name);
+
+    FindSources(Project, "");
+    if (SourceCount == 0)
+    {
+        sf_printf(NULL, "tcc: no .c files in %s\n", App->Args[Folder]);
+        return -1;
+    }
+    qsort(Sources, SourceCount, sizeof(char*), ComparePaths);
+
+    char** Args = Allocate((App->ArgCount + 2 + SourceCount + 1) * sizeof(char*));
+    if (!Args)
+        return -1;
+    int  Count = 0;
+    bool HasOutput = false;
+    for (uint64_t i = 0; i < App->ArgCount; i++)
+        if ((int)i != Folder)
+        {
+            HasOutput |= !strcmp(App->Args[i], "-o");
+            Args[Count++] = (char*)App->Args[i];
+        }
+    if (!HasOutput)
+    {
+        Args[Count++] = "-o";
+        Args[Count++] = Copy(Output);
+    }
+    for (int i = 0; i < SourceCount; i++)
+        Args[Count++] = Sources[i];
+
+    if (Current)
+        Current->Close(Current);
+    Current = Project;
+    *Argv = Args;
+    return Count;
+}
+
 // tcc's main with the command line as C has it.
 SfStatus SfMain(SfApp* TheApp, SfSystem* TheSys)
 {
     Sys = TheSys;
     App = TheApp;
     Sys->Files->Open(Sys->Files, "data:/", SF_FILE_READ, &Current);
+    int     Folder  = 0;            // the project's argument, 0: none
+    SfFile* Project = NULL;
     for (uint64_t i = 1; i < App->ArgCount && i < 64; i++)
     {
-        char    Root[16];
-        SfFile* File = NULL;
+        char       Root[16];
+        SfFile*    File = NULL;
+        SfDirEntry Info;
         snprintf(Root, sizeof(Root), "arg%d:", (int)i);
         ArgIsFile[i] = !SF_ERROR(Sys->Files->Open(Sys->Files, Root, SF_FILE_READ, &File));
-        if (File)
+        if (File && !Folder && !SF_ERROR(File->GetInfo(File, &Info)) &&
+            (Info.Flags & SF_DIR_ENTRY_FOLDER))
+        {
+            Folder  = (int)i;
+            Project = File;
+        }
+        else if (File)
             File->Close(File);
+    }
+    if (Folder)
+    {
+        char** Args  = NULL;
+        int    Count = BuildProject(Folder, Project, &Args);
+        return Count < 0 ? (SfStatus)1 : (SfStatus)main(Count, Args);
     }
 
     char** Argv = NULL;
