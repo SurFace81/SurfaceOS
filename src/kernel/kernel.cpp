@@ -155,7 +155,7 @@ namespace
                            (hdr->DmarFlags & BOOT_DMAR_TIMEOUT) ? ", TIMEOUT" : "");
     }
 
-    void automount_root(const BOOT_HEADER* hdr)
+    bool find_root(const BOOT_HEADER* hdr)
     {
         // Pass 1: exact boot-volume match.
         for (uint32_t i = 0; block::get(i); i++)
@@ -182,7 +182,7 @@ namespace
             if (try_mount_root(d))
             {
                 uart::printf("boot: root mounted on %s (boot volume)\n", d->name);
-                return;
+                return true;
             }
         }
 
@@ -204,9 +204,42 @@ namespace
             {
                 vfs::unref(v);
                 uart::printf("boot: root mounted on %s (KERNEL.BIN found)\n", d->name);
-                return;
+                return true;
             }
             unmount_root();
+        }
+        return false;
+    }
+
+    uint32_t blkdev_count()
+    {
+        uint32_t n = 0;
+        while (block::get(n))
+            n++;
+        return n;
+    }
+
+    void automount_root(const BOOT_HEADER* hdr)
+    {
+        // The stick we booted from may not be there yet: init() enumerates
+        // once the first port answers, and on a laptop that is the webcam,
+        // long before a USB 3 stick has trained its link. Look again as new
+        // disks come, for a few seconds.
+        const uint32_t WAIT_MS = 5000, STEP_MS = 100;
+        uint32_t seen = blkdev_count();
+        if (find_root(hdr))
+            return;
+        for (uint32_t waited = 0; waited < WAIT_MS; waited += STEP_MS)
+        {
+            pit::sleep_ms(STEP_MS);
+            usb::boot_changes();
+            uint32_t now = blkdev_count();
+            if (now == seen)
+                continue;
+            seen = now;
+            uart::printf("boot: %u block device(s) after %u ms, looking again\n", now, waited);
+            if (find_root(hdr))
+                return;
         }
 
         uart::printf("boot: no mountable FAT32 volume found - running without root\n");
@@ -215,15 +248,11 @@ namespace
         // There is no serial port on most laptops, so put enough on the
         // screen to tell the three failure modes apart: no controller at
         // all, a controller with no devices, and devices with no volume.
-        uint32_t blkdevs = 0;
-        while (block::get(blkdevs))
-            blkdevs++;
-
-        // screen::printf("  xhci: %u controller(s), %u usb device(s), "
-        //                "%u block device(s)\n\r",
-        //                (uint32_t)usb::get_controller_count(),
-        //                (uint32_t)usb::get_device_count(),
-        //                blkdevs);
+        screen::printf("  xhci: %u controller(s), %u usb device(s), "
+                       "%u block device(s)\n\r",
+                       (uint32_t)usb::get_controller_count(),
+                       (uint32_t)usb::get_device_count(),
+                       seen);
     }
 
     // Look up the top-level directory /<name>, creating it on the root

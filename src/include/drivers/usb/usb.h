@@ -205,6 +205,10 @@ namespace usb
     // when no device ended up with a driver.
     bool init();
 
+    // Boot, before the usb process: enumerate what was plugged in (or
+    // finished training its link) since init() looked.
+    void boot_changes();
+
     // Start the usb kernel process, which handles devices plugged in or
     // pulled out from now on. Once processes exist.
     void start_hotplug();

@@ -21,10 +21,11 @@ namespace pit
 {
     void init();
     void init(uint32_t frequency_hz);
+    // The tick's work (USB, the screen); under the big kernel lock, on
+    // whichever CPU gets it first after the tick. Does not count the tick.
     void handler();
 
-    // Just advance the clock by one tick (what handler() does first), for
-    // a tick taken while another CPU is in the kernel.
+    // Advance the clock by one tick: on the tick itself, lock or not.
     void count_tick();
 
     // System uptime in milliseconds

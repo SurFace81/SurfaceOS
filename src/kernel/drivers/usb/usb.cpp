@@ -456,8 +456,9 @@ static uint8_t devices_on(xhci_controller* hc)
 // Hotplug: a root port whose state changed. Its device, if it had one, is
 // gone when the port is empty or saw a new connection (a quick unplug and
 // plug in); a connected port with no device gets one. Everything else -
-// the changes a port reset leaves behind - needs nothing.
-static void port_changed(xhci_controller* hc, uint8_t port)
+// the changes a port reset leaves behind - needs nothing. At boot there is
+// no process to put to sleep yet: the debounce spins on the clock instead.
+static void port_changed(xhci_controller* hc, uint8_t port, bool at_boot)
 {
     uint32_t sc = xhci::port_ack(hc, port);
     bool connected = sc & (1u << 0);            // CCS
@@ -474,7 +475,10 @@ static void port_changed(xhci_controller* hc, uint8_t port)
 
     // Contacts bounce as a plug goes in; the device is looked at once the
     // port has stayed connected for a while.
-    wait::sleep_until(pit::deadline_ms(XHCI_PORT_DEBOUNCE_MS));
+    if (at_boot)
+        xhci::delay_ms(XHCI_PORT_DEBOUNCE_MS);
+    else
+        wait::sleep_until(pit::deadline_ms(XHCI_PORT_DEBOUNCE_MS));
     if (xhci::port_connected(hc, port) && !device_on(hc, port))
         enumerate_port(hc, port);
 }
@@ -492,25 +496,30 @@ static bool hotplug_pending(void*)
 // The usb kernel process: plugging in and pulling out, handled where
 // waiting is allowed. The timer tick (root ports) and the hub driver wake
 // it.
+static void handle_changes(bool at_boot)
+{
+    for (uint8_t i = 0; xhci::controller(i); i++)
+    {
+        xhci_controller* hc = xhci::controller(i);
+        uint8_t port;
+        while (xhci::take_port_change(hc, &port))
+            port_changed(hc, port, at_boot);
+    }
+    if (driver_work)
+    {
+        driver_work = false;
+        for (const usb_class_driver* drv : class_drivers)
+            if (drv->work)
+                drv->work();
+    }
+}
+
 static void hotplug_main(void*)
 {
     for (;;)
     {
         wait::wait_event(&hotplug_wq, hotplug_pending, nullptr, 0);
-        for (uint8_t i = 0; xhci::controller(i); i++)
-        {
-            xhci_controller* hc = xhci::controller(i);
-            uint8_t port;
-            while (xhci::take_port_change(hc, &port))
-                port_changed(hc, port);
-        }
-        if (driver_work)
-        {
-            driver_work = false;
-            for (const usb_class_driver* drv : class_drivers)
-                if (drv->work)
-                    drv->work();
-        }
+        handle_changes(false);
     }
 }
 
@@ -596,6 +605,11 @@ namespace usb
     {
         driver_work = true;
         wait::wake_up(&hotplug_wq);
+    }
+
+    void boot_changes()
+    {
+        handle_changes(true);
     }
 
     void start_hotplug()

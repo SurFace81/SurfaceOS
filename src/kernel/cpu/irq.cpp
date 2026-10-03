@@ -164,16 +164,27 @@ namespace irq {
 } // namespace
 
 // ISA lines whose interrupt came while another CPU held the big kernel
-// lock: their handlers run once this CPU gets it (the next tick at the
-// latest). A device keeps its data meanwhile - the keyboard its byte.
+// lock: their handlers run on the next CPU to get it on an interrupt (any
+// CPU's next tick at the latest). A device keeps its data meanwhile - the
+// keyboard its byte. The system tick is one of them: its work (USB, the
+// screen, the sleepers) is never lost, only late. Lost, it once starved the
+// screen for seconds on a machine where the other CPUs' idle rounds kept
+// falling on the boot CPU's tick - the timers share one period, so that
+// collision repeats tick after tick.
 static volatile uint32_t deferred_lines = 0;
 
 static void run_deferred()
 {
     uint32_t lines = __atomic_exchange_n(&deferred_lines, 0, __ATOMIC_ACQ_REL);
     for (uint8_t line = 0; lines; line++, lines >>= 1)
-        if ((lines & 1) && irq_handlers[line])
+    {
+        if (!(lines & 1))
+            continue;
+        if (irq_handlers[line])
             irq_handlers[line]();
+        if (line == IRQ0_TIMER)
+            process::on_timer_tick();
+    }
 }
 
 static void end_of_interrupt(uint8_t irq_line)
@@ -209,6 +220,8 @@ void irq_handler(struct interrupt_frame *frame) {
 
     if (irq_line == IRQ0_TIMER || cpu_tick)
         process::account_tick();
+    if (irq_line == IRQ0_TIMER)
+        pit::count_tick();
 
     if (!apic::active() && irq::is_spurious_irq(irq_line)) {
         if (irq_line == 15) {
@@ -218,14 +231,15 @@ void irq_handler(struct interrupt_frame *frame) {
     }
 
     if (!bkl::try_enter()) {
-        if (irq_line == IRQ0_TIMER)
-            pit::count_tick();
-        else if (!cpu_tick)
+        if (!cpu_tick)
             __atomic_or_fetch(&deferred_lines, 1U << irq_line, __ATOMIC_ACQ_REL);
         end_of_interrupt(irq_line);
         return;
     }
 
+    // A tick still pending is done by this one.
+    if (irq_line == IRQ0_TIMER)
+        __atomic_and_fetch(&deferred_lines, ~(1U << IRQ0_TIMER), __ATOMIC_ACQ_REL);
     if (deferred_lines)
         run_deferred();
     if (!cpu_tick && irq_handlers[irq_line] != 0) {

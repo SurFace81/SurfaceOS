@@ -52,17 +52,19 @@ namespace pit
 
     void handler()
     {
-        count_tick();
-
         // USB has no interrupt of its own here: what the controllers report
         // (keyboard reports among it) is picked up every tick.
         usb::tick();
 
         // ~45 fps: rasterise whatever the terminal marked dirty (cursor
         // blink included) and push the back buffer to VRAM. Nothing else
-        // touches pixels, so this is the only place they change.
-        if (tick_count % 22 == 0)
+        // touches pixels, so this is the only place they change. Counted
+        // from the last frame, not on every 22nd tick: the tick that falls
+        // on a multiple of 22 may be one whose work ran late or not at all.
+        static uint64_t last_frame = 0;
+        if (tick_count - last_frame >= 22)
         {
+            last_frame = tick_count;
             term::render();
             screen::flush();
         }
