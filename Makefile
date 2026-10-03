@@ -281,6 +281,32 @@ bin/ports/tcc/sfport.o: ports/tcc/sfport.c
 bin/ports/tcc.bin: $(TCC_OBJS) src/sdk/sfos.ld $(LIBC)
 	$(LD) $(APP_LDFLAGS) -o $@ $(TCC_OBJS) $(LIBC)
 
+# tcc's own files, in its data folder /files/tcc (data:/ to tcc):
+#   include/  tcc's headers (stdarg.h, ...), the SDK's libc and the SDK
+#   lib/      libtcc1.a - the helpers of the code tcc makes - and libc.a
+LIBTCC1_SRC  = ports/tcc/tinycc/lib/libtcc1.c ports/tcc/tinycc/lib/va_list.c \
+			   ports/tcc/tinycc/lib/alloca86_64.S
+LIBTCC1_OBJS = $(patsubst ports/tcc/tinycc/lib/%,bin/ports/tcc/lib/%.o,$(LIBTCC1_SRC))
+LIBTCC1      = bin/ports/tcc/lib/libtcc1.a
+TCC_HEADERS  = $(wildcard ports/tcc/tinycc/include/*.h src/sdk/libc/include/*.h \
+			   src/sdk/include/*.h src/sdk/include/*/*.h)
+TCC_FILES    = bin/ports/tcc/files
+
+bin/ports/tcc/lib/%.o: ports/tcc/tinycc/lib/%
+	mkdir -p $(dir $@)
+	$(GCC) $(LIBC_FLAGS) -std=gnu11 $(DEPFLAGS) -o $@ $<
+
+$(LIBTCC1): $(LIBTCC1_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
+$(TCC_FILES)/.stamp: $(TCC_HEADERS) $(LIBC) $(LIBTCC1)
+	rm -rf $(TCC_FILES)
+	mkdir -p $(TCC_FILES)/include $(TCC_FILES)/lib
+	cp -r ports/tcc/tinycc/include/. src/sdk/libc/include/. src/sdk/include/. $(TCC_FILES)/include/
+	cp $(LIBC) $(LIBTCC1) $(TCC_FILES)/lib/
+	touch $@
+
 # The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
 # out of /apps.
 CMD_BIN = bin/sfos/cmd.bin
@@ -294,7 +320,7 @@ $(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld $(LIBC)
 
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
-.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o $(TCC_OBJS)
+.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o $(TCC_OBJS) $(LIBTCC1_OBJS)
 
 
 # Generating version
@@ -320,7 +346,8 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # Disk image: GPT with one FAT32 EFI System Partition, built by
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS)
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS) \
+			 $(TCC_FILES)/.stamp
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
@@ -328,6 +355,7 @@ $(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdf
 		$(CMD_BIN) \
 		$(APP_BINS) \
 		$(PORT_BINS) \
+		--tree=$(TCC_FILES):/files/tcc \
 		--size=$(IMG_SIZE_MIB)
 
 run: $(DISK_IMG)
@@ -356,4 +384,4 @@ clean:
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d

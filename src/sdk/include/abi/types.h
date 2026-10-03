@@ -14,8 +14,10 @@ typedef          char       sint8_t;
 typedef uint64_t            size_t;
 typedef uint64_t            uintptr_t;
 
-// bool, true and false in C as C++ has them (C23 has them built in).
-#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L)
+// bool, true and false in C as C++ has them (C23 has them built in), unless
+// <stdbool.h> gave them already.
+#if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L) && \
+    !defined(__bool_true_false_are_defined)
 typedef _Bool bool;
 #define true    1
 #define false   0

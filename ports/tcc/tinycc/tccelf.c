@@ -1079,8 +1079,12 @@ ST_FUNC void build_got_entries(TCCState *s1)
             }
 
 #ifdef TCC_TARGET_X86_64
+            /* SurfaceOS: a static program calls directly, without a
+               PLT - fill_got missed PLT slots (their relocs point at
+               the @plt symbol by then), leaving them zero */
             if ((type == R_X86_64_PLT32 || type == R_X86_64_PC32) &&
-                (ELFW(ST_VISIBILITY)(sym->st_other) != STV_DEFAULT ||
+                (s1->static_link ||
+                 ELFW(ST_VISIBILITY)(sym->st_other) != STV_DEFAULT ||
 		 ELFW(ST_BIND)(sym->st_info) == STB_LOCAL)) {
                 rel->r_info = ELFW(R_INFO)(sym_index, R_X86_64_PC32);
                 continue;
@@ -1149,7 +1153,7 @@ static void add_init_array_defines(TCCState *s1, const char *section_name)
 static int tcc_add_support(TCCState *s1, const char *filename)
 {
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s/%s", s1->tcc_lib_path, filename);
+    snprintf(buf, sizeof(buf), "%s/lib/%s", s1->tcc_lib_path, filename); /* SurfaceOS */
     return tcc_add_file(s1, buf);
 }
 
@@ -1189,21 +1193,10 @@ ST_FUNC void tcc_add_runtime(TCCState *s1)
 {
     tcc_add_bcheck(s1);
     tcc_add_pragma_libs(s1);
-    /* add libc */
+    /* SurfaceOS: libtcc1.a, then the SDK's libc, which it calls */
     if (!s1->nostdlib) {
-        tcc_add_library_err(s1, "c");
-#ifdef TCC_LIBGCC
-        if (!s1->static_link) {
-            if (TCC_LIBGCC[0] == '/')
-                tcc_add_file(s1, TCC_LIBGCC);
-            else
-                tcc_add_dll(s1, TCC_LIBGCC, 0);
-        }
-#endif
         tcc_add_support(s1, TCC_LIBTCC1);
-        /* add crt end if not memory output */
-        if (s1->output_type != TCC_OUTPUT_MEMORY)
-            tcc_add_crt(s1, "crtn.o");
+        tcc_add_support(s1, "libc.a");
     }
 }
 
@@ -1907,7 +1900,7 @@ static void tcc_output_elf(TCCState *s1, SfFile *f, int phnum, ElfW(Phdr) *phdr,
     default:
     case TCC_OUTPUT_EXE:
         ehdr.e_type = ET_EXEC;
-        ehdr.e_entry = get_elf_sym_addr(s1, "_start", 1);
+        ehdr.e_entry = get_elf_sym_addr(s1, "SfMain", 1); /* SurfaceOS */
         break;
     case TCC_OUTPUT_DLL:
         ehdr.e_type = ET_DYN;
@@ -2195,12 +2188,13 @@ static int elf_output_file(TCCState *s1, const char *filename)
         ret = final_sections_reloc(s1);
         if (ret)
             goto the_end;
-	tidy_section_headers(s1, sec_order);
-
-        /* Perform relocation to GOT or PLT entries */
+        /* Perform relocation to GOT or PLT entries. SurfaceOS: a static
+           program's before tidy_section_headers, which leaves out the
+           relocation sections fill_got reads */
         if (file_type == TCC_OUTPUT_EXE && s1->static_link)
             fill_got(s1);
-        else if (s1->got)
+	tidy_section_headers(s1, sec_order);
+        if (!(file_type == TCC_OUTPUT_EXE && s1->static_link) && s1->got)
             fill_local_got_entries(s1);
     }
 

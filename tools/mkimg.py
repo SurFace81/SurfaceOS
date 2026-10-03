@@ -3,6 +3,7 @@
 
 Usage:
   mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> <cmd.bin> [apps...] [--size MiB]
+           [--tree=<folder>:<path in image>]...
 
 The image is GPT with one FAT32 partition filling the disk, formatted with
 mkfs.fat --offset. Its type is Microsoft Basic Data (0700), not an EFI
@@ -13,7 +14,8 @@ The firmware boots /EFI/Boot/BOOTX64.EFI; the loader and the kernel expect
 /sfos/KERNEL.BIN and /sfos/FONT.FNT, and the kernel starts the console of
 every screen from /sfos/CMD.BIN. Programs land in /apps/<lowercase
 name> without an extension, through LFN. The top-level /files, /tmp and
-/mount are created too.
+/mount are created too. Each --tree copies a folder with everything in
+it to a path in the image (a program's data folder: /files/<name>).
 
 Requires: mkfs.fat, sgdisk and sfdisk on PATH; pyfatfs.
 """
@@ -47,7 +49,7 @@ def build_gpt(image, size_mib):
     return start * 512
 
 
-def populate(image, off_bytes, efi, kernel, font, cmd, apps):
+def populate(image, off_bytes, efi, kernel, font, cmd, apps, trees):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
     for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/files", "/tmp", "/mount"):
@@ -67,6 +69,16 @@ def populate(image, off_bytes, efi, kernel, font, cmd, apps):
         if base.endswith(".bin"):
             base = base[:-4]
         put("/apps/" + base.lower(), app)
+
+    # --tree=<folder>:<path>: the folder's files and folders, under path.
+    for src, dst in trees:
+        for root, dirs, files in sorted(os.walk(src)):
+            rel = os.path.relpath(root, src)
+            here = dst if rel == "." else dst + "/" + rel.replace(os.sep, "/")
+            fs.makedirs(here, recreate=True)
+            for name in sorted(files):
+                if not name.startswith("."):
+                    put(here + "/" + name, os.path.join(root, name))
 
     fs.close()
 
@@ -93,9 +105,13 @@ def fsck_repair(image, off_bytes):
 def main(argv):
     args = [a for a in argv[1:] if not a.startswith("--")]
     size_mib = 64
+    trees = []
     for a in argv[1:]:
         if a.startswith("--size="):
             size_mib = int(a.split("=", 1)[1])
+        elif a.startswith("--tree="):
+            src, dst = a.split("=", 1)[1].split(":", 1)
+            trees.append((src, dst))
         elif a.startswith("--"):
             print("mkimg: unknown option %s" % a)
             return 1
@@ -111,7 +127,7 @@ def main(argv):
         os.remove(image)
 
     off = build_gpt(image, size_mib)
-    populate(image, off, efi, kernel, font, cmd, apps)
+    populate(image, off, efi, kernel, font, cmd, apps, trees)
     fsck_repair(image, off)
 
     print("Image built: %s (GPT, FAT32 at %d bytes)" % (image, off))

@@ -7146,6 +7146,22 @@ static int decl0(int l, int is_for_loop_init, Sym *func_sym)
     AttributeDef ad;
 
     while (1) {
+        /* SurfaceOS: C11 _Static_assert(expr, "message"); */
+        if (tok == TOK_STATIC_ASSERT) {
+            int c;
+            next();
+            skip('(');
+            c = expr_const();
+            skip(',');
+            if (tok != TOK_STR)
+                expect("string");
+            if (c == 0)
+                tcc_error("static assertion failed: %s", (char *)tokc.str.data);
+            next();
+            skip(')');
+            skip(';');
+            continue;
+        }
         if (!parse_btype(&btype, &ad)) {
             if (is_for_loop_init)
                 return 0;

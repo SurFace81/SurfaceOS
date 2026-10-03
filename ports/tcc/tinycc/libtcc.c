@@ -717,6 +717,7 @@ LIBTCCAPI TCCState *tcc_new(void)
     ++nb_states;
 
     s->alacarte_link = 1;
+    s->static_link = 1; /* SurfaceOS: static programs only */
     s->nocommon = 1;
     s->warn_implicit_function_declaration = 1;
     s->ms_extensions = 1;
@@ -760,6 +761,9 @@ LIBTCCAPI TCCState *tcc_new(void)
     tcc_define_symbol(s, "__STDC__", NULL);
     tcc_define_symbol(s, "__STDC_VERSION__", "199901L");
     tcc_define_symbol(s, "__STDC_HOSTED__", NULL);
+    /* SurfaceOS: the SDK headers use it */
+    tcc_define_symbol(s, "__builtin_offsetof(type, field)",
+                      "((__SIZE_TYPE__)&((type *)0)->field)");
 
     /* target defines */
 #if defined(TCC_TARGET_I386)
@@ -799,9 +803,7 @@ LIBTCCAPI TCCState *tcc_new(void)
     tcc_define_symbol(s, "_WIN64", NULL);
 # endif
 #else
-    tcc_define_symbol(s, "__unix__", NULL);
-    tcc_define_symbol(s, "__unix", NULL);
-    tcc_define_symbol(s, "unix", NULL);
+    tcc_define_symbol(s, "__SURFACEOS__", NULL);
 # if defined(__linux__)
     tcc_define_symbol(s, "__linux__", NULL);
     tcc_define_symbol(s, "__linux", NULL);
@@ -834,9 +836,9 @@ LIBTCCAPI TCCState *tcc_new(void)
     tcc_define_symbol(s, "__PTRDIFF_TYPE__", "long long");
     tcc_define_symbol(s, "__LLP64__", NULL);
 #else
-    /* Other 64bit systems. */
-    tcc_define_symbol(s, "__SIZE_TYPE__", "unsigned long");
-    tcc_define_symbol(s, "__PTRDIFF_TYPE__", "long");
+    /* SurfaceOS: the SDK's size_t is unsigned long long (abi/types.h) */
+    tcc_define_symbol(s, "__SIZE_TYPE__", "unsigned long long");
+    tcc_define_symbol(s, "__PTRDIFF_TYPE__", "long long");
     tcc_define_symbol(s, "__LP64__", NULL);
 #endif
 
@@ -954,15 +956,7 @@ LIBTCCAPI int tcc_set_output_type(TCCState *s, int output_type)
         tcc_add_systemdir(s);
 # endif
 #else
-    /* paths for crt objects */
-    tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
-    /* add libc crt1/crti objects */
-    if ((output_type == TCC_OUTPUT_EXE || output_type == TCC_OUTPUT_DLL) &&
-        !s->nostdlib) {
-        if (output_type != TCC_OUTPUT_DLL)
-            tcc_add_crt(s, "crt1.o");
-        tcc_add_crt(s, "crti.o");
-    }
+    /* SurfaceOS: no crt objects - the system starts a program in SfMain */
 #endif
     return 0;
 }

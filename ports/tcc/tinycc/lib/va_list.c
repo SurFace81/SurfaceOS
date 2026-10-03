@@ -4,7 +4,6 @@
 
 /* Avoid include files, they may not be available when cross compiling */
 extern void *memset(void *s, int c, __SIZE_TYPE__ n);
-extern void abort(void);
 
 /* This should be in sync with our include/stdarg.h */
 enum __va_arg_type {
@@ -59,7 +58,7 @@ void *__va_arg(__va_list_struct *ap,
         return ap->overflow_arg_area - size;
 
     default: /* should never happen */
-        abort();
+        __builtin_trap(); /* SurfaceOS: no abort */
     }
 }
 #endif
