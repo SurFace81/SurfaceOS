@@ -13,6 +13,8 @@
 #                                    stress run (8 threads x 3, children)
 #   4. mount/umount a second disk -> /mount/usb1pN, EBUSY while the cwd is inside
 #   5. meminfo around a program   -> no leaked frames (kernel stacks, SDK pages)
+#   6. tcc /demo                  -> tcc builds a project in the system, and
+#                                    what it built runs
 #
 # SMP=<n> runs QEMU with n CPUs (default 1).
 set -u
@@ -28,7 +30,7 @@ DATA_IMG=test_data.img
 MON=/tmp/qmon_exec
 LOG=uart.log
 BOOT_WAIT=${BOOT_WAIT:-25}
-APPS="sdkcheck sfstest threadtest taskmgr"
+APPS="sdkcheck sfstest threadtest taskmgr tcc"
 
 bash tools/make_test_image.sh "$IMG" "$APPS"
 bash tools/make_data_disk.sh "$DATA_IMG"
@@ -397,7 +399,19 @@ echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 [ -n "$FRAMES_BEFORE" ] && [ "$FRAMES_BEFORE" = "$FRAMES_AFTER" ]
 result $? "a program leaks no physical frames"
 
-# 6. console still alive
+# 6. tcc builds a C project in SurfaceOS: /demo (main.c, gui/window.c,
+#    include/window.h) into /demo/demo.bin, which prints from both files.
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "tcc /demo"
+wait_session_end $WANT 90; result $? "tcc /demo ended"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "tcc /demo built it (SF_SUCCESS)"
+WANT=$(( $(sessions_ended) + 1 ))
+type_cmd "/demo/demo.bin"
+wait_session_end $WANT 15; result $? "/demo/demo.bin ended"
+grep -aq "demo: hello from main.c" "$LOG" && grep -aqF "| and from gui/window.c |" "$LOG"
+result $? "demo.bin printed from main.c and gui/window.c"
+
+# 7. console still alive
 monitor "screendump /tmp/scr_final.ppm"
 type_cmd "uptime"; sleep 3
 ! grep -aq "KERNEL PANIC\|kernel fault" "$LOG"; result $? "no kernel faults"

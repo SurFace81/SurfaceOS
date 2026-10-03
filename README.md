@@ -82,6 +82,9 @@ How to write a program, and every table in detail:
   - `Sys->Admin`: only with the admin right
 - `App->Args` is the command line; a path in it is opened by the console
   and reaches the program as `argN:`
+- A small libc of the plain C functions (strings, numbers, `snprintf`,
+  `qsort`), linked into every program; no system calls in it
+- Programs in C can be built in SurfaceOS itself, with tcc (Ports)
 - Files go through roots; no path leads above its root:
   - `data:/`: the program's own /files/<name>, created on first start
   - `tmp:/`: /tmp, unique names from CreateUnique
@@ -151,6 +154,8 @@ started again whenever it ends. `help` lists its commands.
   programs with their CPU share, CPU time, memory and threads, live; Del
   ends the chosen one
 - hello: Console Print and ReadLine; hello_c: the same SDK from C
+- tcc: the C compiler, built in (Ports)
+- libctest: the SDK's libc
 - sdkcheck: the SDK tables, memory, time, arguments, threads, mutexes and
   events, starting programs
   - `sdkcheck input` hands its keys to a child
@@ -164,6 +169,20 @@ started again whenever it ends. `help` lists its commands.
 - threadtest: how a program with several threads ends (fault,
   Ctrl+Alt+C, last exit; Ctrl+Alt+C ends the programs it started too);
   `threadtest stress` runs many threads over every CPU
+
+### Ports
+
+Programs from elsewhere, changed to run on the SDK: `ports/<name>/`, each
+with a README of what it is, where it comes from and what was changed.
+
+- tcc ([ports/tcc](ports/tcc/README.md)): TinyCC 0.9.27, a C compiler that
+  runs in SurfaceOS and builds SurfaceOS programs:
+  - `tcc hello.c -o hello.bin`: one file
+  - `tcc /demo`: a project - every `.c` in the folder and the folders in
+    it, into `/demo/demo.bin`
+  - its headers (tcc's, the SDK's, libc's) and `libc.a`, `libtcc1.a` are
+    in its data folder /files/tcc
+  - `/demo`: a project of three files to try it on
  
 # Project Structure
  
@@ -184,10 +203,14 @@ src/
   include/    — kernel-side headers (cpu/, dev/, fs/, drivers/, mm/)
   sdk/        — include/sfos.h + sfos/ (the SDK), abi/ (what the
                 runtime and the kernel share), runtime/ (the code behind
-                the SDK tables), sfos.ld (program link script)
+                the SDK tables), libc/ (the C functions), sfos.ld
+                (program link script)
   sfos/       — cmd.cpp: the console, /sfos/CMD.BIN
   apps/       — programs: <name>.cpp or <name>.c is one program,
                 <name>/ is one program of all the .cpp and .c files in it
+ports/
+  tcc/        — TinyCC: tinycc/ (its source, changed for SurfaceOS),
+                sfport.c (its start and system calls), demo/ (a project)
 tools/
   mkimg.py            — image builder: GPT, one FAT32 EFI System Partition
   qemu_exec_test.sh   — full QEMU regression suite
@@ -222,8 +245,8 @@ tools/
 # Tests
 
 - `bash tools/qemu_exec_test.sh` — boots QEMU, runs sdkcheck, sfstest,
-  threadtest (stress run included), mount/umount on a second disk and a leak check, asserts on the serial
-  log.
+  threadtest (stress run included), mount/umount on a second disk, a leak
+  check and `tcc /demo`, asserts on the serial log.
 - `bash tools/qemu_verify.sh` — after the suite: reboots its image, runs
   `sfstest verify`, host `fsck.fat -n`.
 - `bash tools/objtest_host.sh`, `termtest_host.sh`, `ttytest_host.sh` —

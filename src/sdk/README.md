@@ -5,6 +5,7 @@ headers (`include/sfos/*.h`) describe each function again, right above its
 declaration.
 
 - [A program](#a-program)
+- [Built in SurfaceOS](#built-in-surfaceos): C programs with tcc
 - [Tables](#tables)
 - [Status](#status)
 - [Overview](#overview): console, files, programs and threads, admin
@@ -66,6 +67,22 @@ There is no start-up code, and the C library is only the SDK's small
 -fno-rtti`) and linked with `src/sdk/sfos.ld` and `bin/sdk/libc.a`. The kernel starts the program in the SDK runtime, which
 calls `SfMain`. What `SfMain` returns ends the program: every thread in it
 ends, and the returned value is the status its parent gets from `Wait`.
+
+## Built in SurfaceOS
+
+A C program can also be built in SurfaceOS itself, with tcc
+([ports/tcc](../../ports/tcc/README.md)). It is the same program: `<sfos.h>`,
+`SfMain`, the [libc](#libc); tcc has these headers and `libc.a` in its
+data folder.
+
+```
+tcc hello.c -o hello.bin        one file
+tcc /demo                       a folder: every .c in it -> /demo/demo.bin
+/demo/demo.bin                  runs it (a path: not from /apps)
+```
+
+The result is a static ELF program like the ones `make` builds, started in
+`SfMain`. C only (C99 and some C11), no C++.
 
 ## Tables
 
