@@ -19,6 +19,7 @@ declaration.
   [SfThread](#sfthread---sys-thread-sfosthreadh),
   [SfSync](#sfsync-sfmutex-sfevent---sys-sync-sfossynch),
   [SfAdmin](#sfadmin---sys-admin-sfosadminh)
+- [libc](#libc): the plain C functions
 - [Where things are](#where-things-are)
 
 ## A program
@@ -59,10 +60,10 @@ Every table, function, field and constant has a Doxygen comment
 (`/// ...`) right above it, which the editor shows on hover and in
 completion.
 
-There is no libc and no start-up code. Programs are built freestanding
-(C: `-std=c11 -ffreestanding -nostdlib`; C++: `-ffreestanding -nostdlib
--fno-exceptions -fno-rtti`) and linked with
-`src/sdk/sfos.ld`. The kernel starts the program in the SDK runtime, which
+There is no start-up code, and the C library is only the SDK's small
+[libc](#libc). Programs are built freestanding (C: `-std=c11
+-ffreestanding -nostdlib`; C++: `-ffreestanding -nostdlib -fno-exceptions
+-fno-rtti`) and linked with `src/sdk/sfos.ld` and `bin/sdk/libc.a`. The kernel starts the program in the SDK runtime, which
 calls `SfMain`. What `SfMain` returns ends the program: every thread in it
 ends, and the returned value is the status its parent gets from `Wait`.
 
@@ -461,6 +462,23 @@ every call. Such a program also has the roots `disk:/` and `mount:/`.
 | `SfSystemInfo` | `MemoryTotal`, `MemoryFree` (bytes), `CpuCount`, `CpuName[48]`, `CpuBusy[]` and `CpuTotal[]` (ms per CPU, up to `SF_MAX_CPUS`). |
 | `SfProcessStats` | `Id`, `ParentId` (0 when gone), `CpuTime` (ms), `Memory` (bytes), `Threads`, `Screen`, `Flags` (`SF_PROCESS_PAUSED`, `SF_PROCESS_ADMIN`), `Name[32]`. |
 
+## libc
+
+`libc/` has the plain C functions under their standard names - none of
+them is a call to the system: that is what the tables are for. Every
+program is linked with it and gets only what it calls. It has just what
+is needed so far (by the tcc port), and grows when something
+needs more.
+
+| Header | Functions |
+|--------|-----------|
+| `<string.h>` | `memcpy`, `memmove`, `memset`, `memcmp`, `strlen`, `strcmp`, `strncmp`, `strcpy`, `strcat`, `strchr`, `strrchr`, `strstr` |
+| `<stdlib.h>` | `strtol`, `strtoul`, `strtoull`, `strtod`, `strtof`, `strtold`, `qsort` |
+| `<stdio.h>` | `vsnprintf`, `snprintf`, `sprintf`: `d i u x X o c s p f %`, flags `- 0 + space #`, width and precision (also `*`), sizes `hh h l ll z j t`, `L` |
+| `<math.h>` | `ldexp` |
+
+`src/apps/libctest.c` checks them.
+
 ## Where things are
 
 | Path                      | What is there |
@@ -468,6 +486,7 @@ every call. Such a program also has the roots `disk:/` and `mount:/`.
 | `include/sfos.h`, `include/sfos/` | The headers programs use. |
 | `include/abi/`            | What the runtime and the kernel share: call numbers and statuses (`sfcall.h`), the runtime's image (`sdkimage.h`). Programs never make calls by number. |
 | `runtime/`                | The code behind the tables. It is built into the kernel and mapped into every program at the same address, so programs do not link it. |
+| `libc/`                   | The C functions (`libc/include/`), built into `bin/sdk/libc.a`. |
 | `sfos.ld`                 | The linker script for programs. |
 
 Example programs: `src/apps/hello.cpp` (the smallest), `src/apps/hello_c.c`

@@ -12,6 +12,7 @@ CCFLAGS		= -c -m64 -g -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
 			  -mgeneral-regs-only -mcmodel=kernel -fno-pic \
 			  -I./src/kernel
 LD			= x86_64-elf-ld
+AR			= x86_64-elf-ar
 OBJCOPY		= x86_64-elf-objcopy
 LDFLAGS		= -m elf_x86_64 -T src/kernel/linker.ld -nostdlib
 
@@ -101,18 +102,19 @@ SOURCES		=  	bin/kernel/kernel.o \
 # SDK: crt0.o is always linked first (contains _start, must be at PROGRAM_BASE)
 # everything else goes into a static library so link order doesn't matter
 SDK_FLAGS   = -c -m64 -ffreestanding -fno-exceptions -fno-rtti -nostdlib \
-			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include -Isrc/sdk/libc/include
 # Programs in C: the same, as C11.
 SDK_CFLAGS  = -c -m64 -std=c11 -ffreestanding -nostdlib \
-			  -fno-asynchronous-unwind-tables -Isrc/sdk/include
+			  -fno-asynchronous-unwind-tables -Isrc/sdk/include -Isrc/sdk/libc/include
 
 # Header dependencies: every compile also writes a .d next to its object
 # (-MMD), with a phony target per header (-MP) so a deleted header does not
 # break the build. Without them a changed struct in a header left stale
 # objects behind that only failed at link time - or not at all.
 DEPFLAGS    = -MMD -MP
-# Programs, all built against <sfos.h> (no libc, no start-up code: the
-# kernel starts them in the SDK runtime, which calls SfMain), in C or C++:
+# Programs, all built against <sfos.h> (no start-up code: the kernel starts
+# them in the SDK runtime, which calls SfMain) and linked with the SDK's
+# libc (only what they call of it), in C or C++:
 #   src/apps/<name>.cpp, .c  a program of one file       -> bin/apps/<name>.bin
 #   src/apps/<name>/         one program of all its .cpp
 #                            and .c files                -> bin/apps/<name>.bin
@@ -211,6 +213,23 @@ bin/sdk/runtime.bin: bin/sdk/runtime.elf
 
 bin/kernel/cpu/sdkpage.asm.o: bin/sdk/runtime.bin
 
+# The SDK's libc: the plain C functions (strings, numbers, formatting),
+# none of them a kernel call. A library, so a program gets only what it
+# calls. Small code model, no PIC, no stack protector: tcc links it too.
+LIBC_SRC   = $(wildcard src/sdk/libc/*.c)
+LIBC_OBJS  = $(patsubst src/sdk/libc/%.c,bin/sdk/libc/%.o,$(LIBC_SRC))
+LIBC_FLAGS = $(SDK_CFLAGS) -O2 -mcmodel=small -fno-pic -fno-stack-protector -fno-builtin \
+			 -fno-tree-loop-distribute-patterns
+LIBC       = bin/sdk/libc.a
+
+bin/sdk/libc/%.o: src/sdk/libc/%.c
+	mkdir -p $(dir $@)
+	$(GCC) $(LIBC_FLAGS) $(DEPFLAGS) -o $@ $<
+
+$(LIBC): $(LIBC_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
 # The other CPUs' first code: a flat binary for its low page, built into
 # the kernel (smp.asm).
 bin/kernel/cpu/ap_trampoline.bin: src/kernel/cpu/ap_trampoline.asm
@@ -231,15 +250,15 @@ bin/apps/%.c.o: src/apps/%.c
 	mkdir -p $(dir $@)
 	$(GCC) $(SDK_CFLAGS) $(DEPFLAGS) -o $@ $<
 
-bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld
-	$(LD) $(APP_LDFLAGS) -o $@ $<
+bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
-bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld
-	$(LD) $(APP_LDFLAGS) -o $@ $<
+bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
 define APP_DIR_RULE
-bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld
-	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^)
+bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld $$(LIBC)
+	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^) $$(LIBC)
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
 
@@ -251,8 +270,8 @@ bin/sfos/cmd.o: src/sfos/cmd.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
-$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld
-	$(LD) $(APP_LDFLAGS) -o $@ $<
+$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
@@ -311,10 +330,10 @@ clean:
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
-	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin
+	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin bin/sdk/libc bin/sdk/libc.a
 	@rm -rf bin/apps/*
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) bin/boot/efi/main_efi.d
