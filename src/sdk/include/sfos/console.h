@@ -28,6 +28,13 @@
 //              the stored length. SF_ABORTED when the user pressed Ctrl+C
 //              instead, SF_END_OF_FILE after Ctrl+D on an empty line.
 //              Up and Down bring back the program's last 16 lines.
+//              Ctrl+arrows select text on the screen from the cursor on,
+//              Ctrl+C copies it to the clipboard (only without a selection
+//              does it end the line), Esc or any other key drops it;
+//              Ctrl+V types what the clipboard holds, its line breaks as
+//              spaces. A program started with SF_START_INPUT
+//              (sfos/process.h) reads the lines of its input file instead,
+//              without waiting for keys, and SF_END_OF_FILE after the last.
 //   GetSize    *Columns and *Rows get the size of the screen.
 //   SetCursor  put the cursor at (Column, Row) - where Print goes on - and
 //              show it (Visible != 0) or hide it.
@@ -57,6 +64,15 @@
 //              a word with '/' in it gets none. Kept until the next call;
 //              null or "" for none.
 //
+// The clipboard, one for all programs and screens (revision 1.2):
+//
+//   SetClipboard  put Size bytes of Data on it (at most
+//                 SF_CLIPBOARD_SIZE; SF_BUFFER_TOO_SMALL for more). Size 0
+//                 empties it.
+//   GetClipboard  what is on it into Buffer. *Size in: Buffer's size; out:
+//                 how many bytes it holds. SF_BUFFER_TOO_SMALL (with *Size
+//                 set) when they do not fit.
+//
 // ReadLine and ReadKey also end with SF_ABORTED when another program on the
 // screen takes the input while they wait for a key (Ctrl+Alt+Z letting a
 // paused program go on). A program moved to another screen (fg, bg) just
@@ -79,6 +95,8 @@ typedef struct SfConsole SfConsole;
 
 #define SF_CONSOLE_LINE         0
 #define SF_CONSOLE_RAW          1
+
+#define SF_CLIPBOARD_SIZE       (64 * 1024)
 
 typedef struct SfCell
 {
@@ -111,10 +129,12 @@ struct SfConsole
     SfStatus (*Clear)(SfConsole* This);
     SfStatus (*WaitInput)(SfConsole* This);
     SfStatus (*SetHints)(SfConsole* This, const char* Commands, const char* Names);
+    SfStatus (*SetClipboard)(SfConsole* This, const void* Data, uint64_t Size);
+    SfStatus (*GetClipboard)(SfConsole* This, void* Buffer, uint64_t* Size);
 };
 
 #define SF_CONSOLE_SIGNATURE    SF_SIGNATURE('S', 'F', 'C', 'O', 'N', 'S', 'O', 'L')
-#define SF_CONSOLE_REVISION     SF_REVISION(1, 1)
+#define SF_CONSOLE_REVISION     SF_REVISION(1, 2)
 
 SF_STATIC_ASSERT(sizeof(SfCell) == 2, "SfCell layout");
 SF_STATIC_ASSERT(sizeof(SfKey) == 4, "SfKey layout");
@@ -125,6 +145,8 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetTitle) == 88, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, Clear) == 96, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, WaitInput) == 104, "SfConsole layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetHints) == 112, "SfConsole layout");
-SF_STATIC_ASSERT(sizeof(SfConsole) == 120, "SfConsole layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, SetClipboard) == 120, "SfConsole layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfConsole, GetClipboard) == 128, "SfConsole layout");
+SF_STATIC_ASSERT(sizeof(SfConsole) == 136, "SfConsole layout");
 
 #endif // SFOS_CONSOLE_H

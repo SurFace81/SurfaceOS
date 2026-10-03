@@ -35,7 +35,9 @@ static bool HexMode;
 static uint64_t Cur;                // the byte the cursor is at, 0..Size
 static uint64_t Anchor = NONE;      // the other end of the selection
 
-// What was cut or copied; it stays from one file to the next.
+// What was cut or copied goes on the system's clipboard, for every program
+// (Console SetClipboard). A piece too big for it is kept here instead, the
+// clipboard emptied; it stays from one file to the next.
 static uint8_t* Clip;
 static uint64_t ClipSize;
 
@@ -238,24 +240,43 @@ static void CopySelection()
     uint64_t From, To;
     if (!Selected(&From, &To))
         return;
-    uint8_t* Kept = (uint8_t*)Alloc(To - From);
-    if (!Kept)
-        return;
-    memcpy(Kept, Data + From, To - From);
     Release(Clip);
-    Clip = Kept;
+    Clip = nullptr;
+    ClipSize = 0;
+    if (To - From <= SF_CLIPBOARD_SIZE &&
+        Con->SetClipboard(Con, Data + From, To - From) == SF_SUCCESS)
+        return;
+    Con->SetClipboard(Con, nullptr, 0);
+    Clip = (uint8_t*)Alloc(To - From);
+    if (!Clip)
+        return;
+    memcpy(Clip, Data + From, To - From);
     ClipSize = To - From;
 }
 
 static void Paste()
 {
-    if (!ClipSize)
-        return;
-    BeginGroup();
-    DeleteSelection();
-    if (Insert(Cur, Clip, ClipSize))
-        Cur += ClipSize;
-    EndGroup();
+    // The system's clipboard, or - while it is empty - what is kept here.
+    uint64_t Count = 0;
+    uint8_t* Text = nullptr;
+    if (Con->GetClipboard(Con, nullptr, &Count) == SF_BUFFER_TOO_SMALL &&
+        (Text = (uint8_t*)Alloc(Count)) && SF_ERROR(Con->GetClipboard(Con, Text, &Count)))
+        Count = 0;
+    const uint8_t* Bytes = Text;
+    if (!Text)
+    {
+        Bytes = Clip;
+        Count = ClipSize;
+    }
+    if (Count)
+    {
+        BeginGroup();
+        DeleteSelection();
+        if (Insert(Cur, Bytes, Count))
+            Cur += Count;
+        EndGroup();
+    }
+    Release(Text);
 }
 
 // --- text: lines -----------------------------------------------------------

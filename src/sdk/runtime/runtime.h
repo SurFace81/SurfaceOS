@@ -45,6 +45,8 @@ void     LockRelease(SdkLock* Lock);
 // sync.cpp
 SfStatus SyncCreateMutex(SfSync* This, SfMutex** Out);
 SfStatus SyncCreateEvent(SfSync* This, uint64_t Flags, SfEvent** Out);
+SfStatus SyncWaitAny(SfSync* This, uint64_t Count, const SfWaitItem* Items, uint64_t TimeoutMs,
+                     uint64_t* Index);
 
 // memory.cpp: set up the heap's lock. Before SfMain.
 SfStatus MemoryInit();

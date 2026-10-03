@@ -139,6 +139,8 @@ namespace process
         void*       line_history;   // ReadLine's earlier lines (sfconsole.cpp), kmalloc'ed
         vnode*      out;            // SF_START_OUTPUT: where its printing goes, referenced
         uint64_t    out_off;
+        vnode*      in;             // SF_START_INPUT: where ReadLine reads, referenced
+        uint64_t    in_off;
         bool        admin;          // the admin right (sfos/admin.h)
         bool        from_console;   // started by its screen's console (the log says so)
         uint64_t    cpu_ticks;      // timer ticks its threads ran (account_tick)
@@ -558,7 +560,7 @@ namespace process
     }
 
     // Release the roots, the command line, ReadLine's history and the
-    // output file.
+    // output and input files.
     static void drop_roots(Process* p)
     {
         if (p->line_history)
@@ -572,6 +574,10 @@ namespace process
         }
         p->out = nullptr;
         p->out_off = 0;
+        if (p->in)
+            vfs::unref(p->in);
+        p->in = nullptr;
+        p->in_off = 0;
         for (uint32_t i = 0; i < MAX_ROOTS; i++)
         {
             if (p->roots[i].v)
@@ -817,6 +823,40 @@ namespace process
         if (len && current->out->ops->write(current->out, current->out_off, s, len, &done) == 0)
             current->out_off += done;
         return true;
+    }
+
+    int input_line(char* buf, uint64_t size, uint64_t* len)
+    {
+        Process* p = current;
+        if (!p || !p->in)
+            return -1;
+        // A chunk at a time up to the line break; what does not fit in buf
+        // is passed over.
+        char chunk[256];
+        uint64_t n = 0;
+        bool any = false;
+        for (;;)
+        {
+            uint64_t done = 0;
+            if (p->in->ops->read(p->in, p->in_off, chunk, sizeof(chunk), &done) != 0 || !done)
+                break;
+            any = true;
+            uint64_t i = 0;
+            while (i < done && chunk[i] != '\n')
+                i++;
+            for (uint64_t k = 0; k < i && n + 1 < size; k++)
+                buf[n++] = chunk[k];
+            p->in_off += i < done ? i + 1 : done;
+            if (i < done)
+                break;
+        }
+        if (!any)
+            return 1;
+        if (n && buf[n - 1] == '\r')
+            n--;
+        buf[n] = '\0';
+        *len = n;
+        return 0;
     }
 
     // Hidden screen s, with its log, goes: nothing runs there any more.
@@ -2436,15 +2476,19 @@ namespace process
         // ArgHandles (r9): argument i's file or folder, ~0 for none - the
         // new program's root arg<i+1>:. The caller keeps them open meanwhile.
         // SF_START_OUTPUT: one more, the file its printing goes to, from
-        // that handle's position on.
+        // that handle's position on. SF_START_INPUT: then one more still,
+        // the file its ReadLine reads, the same way.
         vnode* arg_roots[257] = {};
-        vnode* out = nullptr;
-        uint64_t out_off = 0;
-        if (flags & SF_START_OUTPUT)
+        vnode* io[2] = {};
+        uint64_t io_off[2] = {};
+        uint64_t at = argc;
+        for (uint32_t k = 0; k < 2; k++)
         {
+            if (!(flags & (k ? SF_START_INPUT : SF_START_OUTPUT)))
+                continue;
             uint64_t h = ~0ULL;
             sint64_t frc = 0;
-            file* f = regs->r9 && uaccess::copy_from_user(&h, regs->r9 + argc * 8, 8) &&
+            file* f = regs->r9 && uaccess::copy_from_user(&h, regs->r9 + at++ * 8, 8) &&
                       h < HANDLE_TABLE_SIZE
                     ? filesys::fd_get(&current->handles, (sint32_t)h, &frc) : nullptr;
             if (!f || f->vn->type != vtype::REG)
@@ -2452,8 +2496,8 @@ namespace process
                 regs->rax = SF_BAD_HANDLE;
                 return;
             }
-            out = f->vn;
-            out_off = f->offset;
+            io[k] = f->vn;
+            io_off[k] = f->offset;
         }
         for (uint64_t i = 0; regs->r9 && i < argc; i++)
         {
@@ -2511,11 +2555,17 @@ namespace process
         }
 
         p->screen = current->screen;
-        if (out)
+        if (io[0])
         {
-            vfs::ref(out);
-            p->out = out;
-            p->out_off = out_off;
+            vfs::ref(io[0]);
+            p->out = io[0];
+            p->out_off = io_off[0];
+        }
+        if (io[1])
+        {
+            vfs::ref(io[1]);
+            p->in = io[1];
+            p->in_off = io_off[1];
         }
         char log_name[128];
         if (background)
@@ -2829,9 +2879,18 @@ namespace wait
         return process::queue_sleep(q, 0);
     }
 
+    // Sleepers of wait_any, woken along with every other queue.
+    static wait_queue any_wq;
+
     void wake_up(wait_queue* q)
     {
         process::queue_wake(q, nullptr);
+        process::queue_wake(&any_wq, nullptr);
+    }
+
+    bool wait_any(bool (*cond)(void*), void* arg, uint64_t tick)
+    {
+        return wait_event(&any_wq, cond, arg, tick);
     }
 
     bool sleep_until(uint64_t tick)

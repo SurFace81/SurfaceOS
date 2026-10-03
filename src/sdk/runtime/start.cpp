@@ -92,6 +92,16 @@ static SfStatus ConsoleSetHints(SfConsole*, const char* Commands, const char* Na
     return SfCall(SFCALL_CONSOLE_SET_HINTS, (uint64_t)Commands, (uint64_t)Names);
 }
 
+static SfStatus ConsoleSetClipboard(SfConsole*, const void* Data, uint64_t Size)
+{
+    return SfCall(SFCALL_CONSOLE_SET_CLIPBOARD, (uint64_t)Data, Size);
+}
+
+static SfStatus ConsoleGetClipboard(SfConsole*, void* Buffer, uint64_t* Size)
+{
+    return SfCall(SFCALL_CONSOLE_GET_CLIPBOARD, (uint64_t)Buffer, (uint64_t)Size);
+}
+
 // --- Time ------------------------------------------------------------------
 
 static SfStatus TimeGetTime(SfTime*, SfDateTime* Time)
@@ -128,16 +138,18 @@ static SfStatus ProcessStart(SfProcess*, const char* Name, uint64_t ArgCount,
                              const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags,
                              uint64_t* Handle)
 {
-    // SF_START_OUTPUT: the output file follows the arguments' files.
+    // SF_START_OUTPUT and SF_START_INPUT: their files follow the
+    // arguments' files, in that order.
     const uint64_t MaxArgFiles = 32;
-    uint64_t Handles[MaxArgFiles + 1];
-    if ((Flags & SF_START_OUTPUT) && (!ArgFiles || !ArgFiles[ArgCount]))
+    uint64_t Handles[MaxArgFiles + 2];
+    uint64_t Files = ArgCount + ((Flags & SF_START_OUTPUT) ? 1 : 0) +
+                     ((Flags & SF_START_INPUT) ? 1 : 0);
+    if (Files > ArgCount && (!ArgFiles || !ArgFiles[ArgCount] || !ArgFiles[Files - 1]))
         return SF_INVALID_PARAMETER;
     if (ArgFiles)
     {
         if (ArgCount > MaxArgFiles)
             return SF_INVALID_PARAMETER;
-        uint64_t Files = ArgCount + ((Flags & SF_START_OUTPUT) ? 1 : 0);
         for (uint64_t i = 0; i < Files; i++)
             Handles[i] = ArgFiles[i] ? FileHandle(ArgFiles[i]) : ~0ULL;
     }
@@ -198,6 +210,8 @@ static const SfConsole SdkConsole =
     ConsoleClear,
     ConsoleWaitInput,
     ConsoleSetHints,
+    ConsoleSetClipboard,
+    ConsoleGetClipboard,
 };
 
 const SfFiles SdkFiles =
@@ -250,6 +264,7 @@ static const SfSync SdkSync =
     { SF_SYNC_SIGNATURE, SF_SYNC_REVISION, sizeof(SfSync) },
     SyncCreateMutex,
     SyncCreateEvent,
+    SyncWaitAny,
 };
 
 // --- Admin -----------------------------------------------------------------

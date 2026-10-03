@@ -891,8 +891,9 @@ extern "C" SfStatus SfMain(SfApp*, SfSystem* System)
                         "run it as  sudo explorer\n");
         return SF_ACCESS_DENIED;
     }
-    if (!StartKeys())
-        return SF_OUT_OF_RESOURCES;
+    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny) ||
+        !SF_HAS_FIELD(Sys->Console, SfConsole, GetClipboard))
+        return SF_UNSUPPORTED;
 
     Con->SetMode(Con, SF_CONSOLE_RAW);
     InitScreen();

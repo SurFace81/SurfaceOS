@@ -272,69 +272,19 @@ bool IsFolder(SfFile* File)
 
 // --- keys ------------------------------------------------------------------
 
-// As in taskmgr: a thread blocked in ReadKey hands the keys over through a
-// mutex and an event.
-static SfMutex* Lock;
-static SfEvent* KeyReady;
-static SfKey    Keys[64];
-static uint32_t KeyHead, KeyTail;
-
-static SfStatus ReadKeys(void*)
-{
-    for (;;)
-    {
-        SfKey Key;
-        if (SF_ERROR(Con->ReadKey(Con, &Key)))
-        {
-            // A program we started has the keys, or Ctrl+C in line mode.
-            Sys->Time->Sleep(Sys->Time, 100);
-            continue;
-        }
-        Lock->Lock(Lock);
-        if ((KeyHead + 1) % 64 != KeyTail)
-        {
-            Keys[KeyHead] = Key;
-            KeyHead = (KeyHead + 1) % 64;
-        }
-        Lock->Unlock(Lock);
-        KeyReady->Set(KeyReady);
-    }
-}
-
-static bool NextKey(SfKey* Key)
-{
-    Lock->Lock(Lock);
-    bool Got = KeyTail != KeyHead;
-    if (Got)
-    {
-        *Key = Keys[KeyTail];
-        KeyTail = (KeyTail + 1) % 64;
-    }
-    Lock->Unlock(Lock);
-    return Got;
-}
-
-bool StartKeys()
-{
-    uint64_t Reader;
-    return !SF_ERROR(Sys->Sync->CreateMutex(Sys->Sync, &Lock)) &&
-           !SF_ERROR(Sys->Sync->CreateEvent(Sys->Sync, SF_EVENT_AUTO_RESET, &KeyReady)) &&
-           !SF_ERROR(Sys->Thread->Create(Sys->Thread, ReadKeys, nullptr, &Reader));
-}
-
 SfKey GetKey()
 {
     SfKey Key;
-    while (!NextKey(&Key))
-        KeyReady->Wait(KeyReady, SF_WAIT_FOREVER);
+    while (SF_ERROR(Con->ReadKey(Con, &Key)))
+        Sys->Time->Sleep(Sys->Time, 100);       // a program we started has the keys
     return Key;
 }
 
 bool Cancelled()
 {
-    SfKey Key;
-    while (NextKey(&Key))
-        if (Key.Code == SF_KEY_ESCAPE)
+    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
+    while (Sys->Sync->WaitAny(Sys->Sync, 1, &Item, 0, nullptr) == SF_SUCCESS)
+        if (GetKey().Code == SF_KEY_ESCAPE)
             return true;
     return false;
 }

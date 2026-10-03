@@ -39,7 +39,8 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   and a heap, Sys->Time the clock, the uptime and sleeping,
   Sys->Process starts other programs and waits for them, and gives the
   command line of a process, Sys->Thread threads
-  (Create/Exit/Join), Sys->Sync mutexes and events. App->Args is the command
+  (Create/Exit/Join), Sys->Sync mutexes, events and WaitAny (the first of
+  events, programs or threads ending and a key, with a timeout). App->Args is the command
   line; a path in it is opened by the console and reaches the program as
   argN:. Files go through roots: data:/
   (the program's own /files/<name>, created on first start) and tmp:/
@@ -70,7 +71,10 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   a name or path with spaces goes in quotes ("my file.txt"); Up and
   Down bring back the last lines typed; `a > file` (`>>` adds at the
   end) puts what a prints into the file - a program's too - and
-  `a | b` hands it to the filters grep, head, tail and wc; while a word
+  `a | b` hands it to the filters grep, head, tail and wc, or to a
+  program, whose ReadLine reads it a line at a time; Ctrl+arrows select
+  text on the screen, Ctrl+C copies it to the clipboard - one for every
+  screen and program - Esc drops it, and Ctrl+V types it; while a word
   is typed, the rest of a command, program or name that starts with it
   shows dimmed, and Tab takes it;
   `sudo <program>` runs it with the admin right (Sys->Admin: processes,

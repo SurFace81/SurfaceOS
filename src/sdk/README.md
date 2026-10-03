@@ -147,6 +147,11 @@ its turn.
 
 `SetTitle` puts the program's own words in the title bar, after its name.
 
+The clipboard is one for every program and screen. `SetClipboard` puts
+bytes on it and `GetClipboard` takes them (revision 1.2). In `ReadLine`
+the user selects text on the screen with Ctrl+arrows, copies it with
+Ctrl+C and types it with Ctrl+V.
+
 ### Files
 
 A path always starts with a root:
@@ -175,11 +180,26 @@ a handle to `Wait` on. The flags choose:
   it.
 
 File arguments go in `ArgFiles` and reach the new program as its `argN:`
-roots.
+roots. With `SF_START_OUTPUT` what it prints goes into a file, and with
+`SF_START_INPUT` (revision 1.1) its `ReadLine` reads the lines of a file
+instead of the keys, `SF_END_OF_FILE` after the last: the console's `>`
+and `|`.
 
 `Sys->Thread->Create` runs a function on a new thread, and `Join` waits
 for it. The last thread to end, or `SfMain` returning, ends the program.
-`Sys->Sync` gives mutexes and events to coordinate threads.
+`Sys->Sync` gives mutexes and events to coordinate threads, and
+`WaitAny` (revision 1.1) waits for whichever comes first of events,
+programs and threads ending, and a key, with a timeout:
+
+```cpp
+SfWaitItem Items[2] = { { SF_WAIT_KEY, 0, nullptr }, { SF_WAIT_EVENT, 0, Done } };
+uint64_t Which;
+if (Sys->Sync->WaitAny(Sys->Sync, 2, Items, 1000, &Which) == SF_SUCCESS && Which == 0)
+    Con->ReadKey(Con, &Key);            // there now: no waiting
+```
+
+A program that draws a clock and reads keys needs no second thread for
+it.
 
 ### Admin
 

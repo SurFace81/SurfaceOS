@@ -132,6 +132,12 @@ namespace process
     // goes to its file, not to the screen: true when it went there.
     bool output_to_file(const char* s, uint64_t len);
 
+    // A program started with SF_START_INPUT reads its ReadLine lines from
+    // its file: the next one, without its line break and cut to fit `size`
+    // bytes with the NUL, into buf (*len its length) - 0; 1 at the end of
+    // the file; -1 for a program without one, which reads the keys.
+    int input_line(char* buf, uint64_t size, uint64_t* len);
+
     // Let the other threads of this CPU have a turn (wait::yield_if_due).
     void yield();
 

@@ -36,6 +36,10 @@
 //            a file open for writing: what the program prints in
 //            SF_CONSOLE_LINE goes there, from that file's position on,
 //            instead of to the screen (the console's `>`).
+//            SF_START_INPUT (revision 1.1): ArgFiles is not null and has
+//            one entry more still (after the output file, if any), a file
+//            open for reading: ReadLine gives its lines, from that file's
+//            position on, instead of what is typed (the console's `|`).
 //   Wait     wait until the program behind Handle has ended; *Status (when
 //            Status is not null) gets what it returned - SF_ABORTED when it
 //            was stopped short (Ctrl+Alt+C, EndProcess), SF_CRASHED when a
@@ -63,9 +67,10 @@ struct SfProcess
 #define SF_START_BACKGROUND     0x2
 #define SF_START_ADMIN          0x4
 #define SF_START_OUTPUT         0x8
+#define SF_START_INPUT          0x10
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)
-#define SF_PROCESS_REVISION     SF_REVISION(1, 0)
+#define SF_PROCESS_REVISION     SF_REVISION(1, 1)
 
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, GetArgs) == 24, "SfProcess layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, Start) == 32, "SfProcess layout");

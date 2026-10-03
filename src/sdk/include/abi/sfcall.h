@@ -89,6 +89,9 @@
 #define SFCALL_ADMIN_GET_SYSTEM_INFO 54  // (SfSystemInfo* Info)
 #define SFCALL_ADMIN_GET_PROCESS_INFO 55 // (uint64_t Id, SfProcessStats* Info)
 #define SFCALL_CONSOLE_SET_HINTS     56  // (const char* Commands, const char* Names)
-#define SFCALL_COUNT                 57
+#define SFCALL_WAIT_ANY              57  // (const uint64_t* Items, uint64_t Count, uint64_t TimeoutMs, uint64_t* Index): Items holds Count pairs, kind (SF_WAIT_*) and handle
+#define SFCALL_CONSOLE_SET_CLIPBOARD 58  // (const void* Data, uint64_t Size)
+#define SFCALL_CONSOLE_GET_CLIPBOARD 59  // (void* Buffer, uint64_t* Size)
+#define SFCALL_COUNT                 60
 
 #endif // ABI_SFCALL_H

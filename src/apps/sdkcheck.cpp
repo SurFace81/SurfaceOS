@@ -2,9 +2,9 @@
 //
 // Checks what the kernel hands SfMain - signatures, revisions and sizes of
 // SfSystem, SfApp, SfConsole, SfFiles, SfMemory, SfTime, SfProcess,
-// SfThread and SfSync - that Console->Print works, pages and the heap, the
-// clock and sleeping, the command line, threads, mutexes and events. Files
-// are sfstest's.
+// SfThread and SfSync - that Console->Print works, the clipboard, pages and
+// the heap, the clock and sleeping, the command line, threads, mutexes,
+// events and WaitAny. Files are sfstest's.
 //
 // It leaves one thread asleep for good when SfMain returns: ending the
 // program has to end that thread too. And it starts itself as a child that
@@ -375,6 +375,58 @@ static void CheckSync(SfSync* Sync, SfThread* Thread, SfTime* Time)
         Ping->Close(Ping);
     if (Pong)
         Pong->Close(Pong);
+
+    // WaitAny: the first ready of events, a thread, a program.
+    SfEvent* A = nullptr;
+    SfEvent* B = nullptr;
+    Ok = Sync->CreateEvent(Sync, 0, &A) == SF_SUCCESS &&
+         Sync->CreateEvent(Sync, SF_EVENT_AUTO_RESET, &B) == SF_SUCCESS;
+    SfWaitItem Items[2] = { { SF_WAIT_EVENT, 0, A }, { SF_WAIT_EVENT, 0, B } };
+    uint64_t Index = 9;
+    Check("WaitAny(0) of events not set is SF_TIMEOUT",
+          Ok && Sync->WaitAny(Sync, 2, Items, 0, &Index) == SF_TIMEOUT);
+    Time->GetUptime(Time, &Before);
+    Status = Sync->WaitAny(Sync, 0, nullptr, 100, nullptr);
+    Time->GetUptime(Time, &After);
+    Check("WaitAny of nothing sleeps 100 ms",
+          Status == SF_TIMEOUT && After - Before >= 100 && After - Before <= 200);
+    Check("WaitAny gives the set one and uses up an auto-reset event",
+          Ok && B->Set(B) == SF_SUCCESS && Sync->WaitAny(Sync, 2, Items, 1000, &Index) == SF_SUCCESS &&
+          Index == 1 && B->Wait(B, 0) == SF_TIMEOUT);
+    Check("WaitAny gives the first of two set",
+          Ok && A->Set(A) == SF_SUCCESS && B->Set(B) == SF_SUCCESS &&
+          Sync->WaitAny(Sync, 2, Items, 0, &Index) == SF_SUCCESS && Index == 0 &&
+          B->Wait(B, 0) == SF_SUCCESS);
+    if (A)
+        A->Reset(A);
+
+    Ok = Ok && Thread->Create(Thread, SleepEntry, (void*)100, &Id) == SF_SUCCESS;
+    Items[1] = { SF_WAIT_THREAD, Id, nullptr };
+    Check("WaitAny waits for a thread to end, Join still gets it",
+          Ok && Sync->WaitAny(Sync, 2, Items, 2000, &Index) == SF_SUCCESS && Index == 1 &&
+          Thread->Join(Thread, Id, nullptr) == SF_SUCCESS);
+
+    const char* Args[] = { "child", "word", "two words" };
+    uint64_t Handle = 0;
+    Items[1] = { SF_WAIT_PROCESS, 0, nullptr };
+    Ok = System->Process->Start(System->Process, "sdkcheck", 3, Args, nullptr, 0, &Handle) ==
+         SF_SUCCESS;
+    Items[1].Handle = Handle;
+    Check("WaitAny waits for a program to end, Wait still gets it",
+          Ok && Sync->WaitAny(Sync, 2, Items, 5000, &Index) == SF_SUCCESS && Index == 1 &&
+          System->Process->Wait(System->Process, Handle, &Status) == SF_SUCCESS &&
+          Status == (SF_ERROR_BIT | 5));
+
+    Items[1] = { 77, 0, nullptr };
+    Check("WaitAny of an unknown kind is SF_INVALID_PARAMETER",
+          Sync->WaitAny(Sync, 2, Items, 0, nullptr) == SF_INVALID_PARAMETER);
+    Items[1] = { SF_WAIT_THREAD, 63, nullptr };
+    Check("WaitAny of no such thread is SF_BAD_HANDLE",
+          Sync->WaitAny(Sync, 2, Items, 0, nullptr) == SF_BAD_HANDLE);
+    if (A)
+        A->Close(A);
+    if (B)
+        B->Close(B);
 }
 
 // --- Processes -------------------------------------------------------------
@@ -704,6 +756,21 @@ static void CheckConsole(SfConsole* Console)
     Check("SetTitle works", Console->SetTitle(Console, "checking") == SF_SUCCESS);
     Check("SetMode of 7 is SF_INVALID_PARAMETER",
           Console->SetMode(Console, 7) == SF_INVALID_PARAMETER);
+    char Clip[16];
+    uint64_t Size = 2;
+    Check("SetClipboard, then GetClipboard into too small a buffer gives the size",
+          Console->SetClipboard(Console, "clip\nboard", 10) == SF_SUCCESS &&
+          Console->GetClipboard(Console, Clip, &Size) == SF_BUFFER_TOO_SMALL && Size == 10);
+    Size = sizeof(Clip);
+    Check("GetClipboard gives what was put there",
+          Console->GetClipboard(Console, Clip, &Size) == SF_SUCCESS && Size == 10 &&
+          SameBytes(Clip, "clip\nboard", 10));
+    Check("SetClipboard of more than SF_CLIPBOARD_SIZE is SF_BUFFER_TOO_SMALL",
+          Console->SetClipboard(Console, Clip, SF_CLIPBOARD_SIZE + 1) == SF_BUFFER_TOO_SMALL);
+    Size = sizeof(Clip);
+    Check("SetClipboard of nothing empties it",
+          Console->SetClipboard(Console, nullptr, 0) == SF_SUCCESS &&
+          Console->GetClipboard(Console, Clip, &Size) == SF_SUCCESS && Size == 0);
     char Line[8];
     Check("in SF_CONSOLE_RAW, ReadLine is SF_UNSUPPORTED",
           Console->SetMode(Console, SF_CONSOLE_RAW) == SF_SUCCESS &&
