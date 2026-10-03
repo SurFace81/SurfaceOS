@@ -88,6 +88,11 @@ namespace pci
     void     write16(PCIDevice* d, uint8_t off, uint16_t val);
     
     const char* class_name(uint8_t class_code);
+
+    // pci_ids.cpp. The vendor's name, or null when the id is not listed;
+    // what the class's subclass (and, for USB, the interface) is, or null.
+    const char* vendor_name(uint16_t id);
+    const char* subclass_name(uint8_t cls, uint8_t sub, uint8_t prog_if);
 }
 
 #endif

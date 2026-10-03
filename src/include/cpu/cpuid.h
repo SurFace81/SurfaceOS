@@ -21,12 +21,17 @@ struct CacheInfo {
     uint32_t l2_linesize;   // L2 line size
     uint32_t l3_linesize;   // L3 line size
 };
+#define CORE_EFFICIENCY  0x20   // Intel Atom
+#define CORE_PERFORMANCE 0x40   // Intel Core
+
 struct CPUTopology {
     uint32_t logical_cores;
     uint32_t physical_cores;
     uint32_t packages;         // num of sockets/cpus
     bool hyperthreading;
     bool hybrid;               // performance and efficiency cores
+    uint32_t performance_cores;// hybrid: physical cores of each kind, among
+    uint32_t efficiency_cores; // the CPUs that run (a core type is per CPU)
 };
 
 namespace cpuid {
@@ -36,6 +41,10 @@ namespace cpuid {
     uint32_t get_bus_freq(void);
     void get_cache_info(CacheInfo* cache);
     void get_cpu_topology(CPUTopology* topology);
+
+    // The kind of core this runs on, on a hybrid CPU (CPUID leaf 0x1A):
+    // CORE_PERFORMANCE, CORE_EFFICIENCY, or 0 when it does not say.
+    uint8_t core_type();
 }
 
 #endif

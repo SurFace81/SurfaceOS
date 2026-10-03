@@ -1425,13 +1425,25 @@ namespace process
     static void end_programs_on(uint32_t screen)
     {
         bool others = others_on(screen);
+        uint32_t ended = 0;
         for (uint32_t i = 0; i < MAX_PROCESSES; i++)
         {
             Process* p = &table[i];
             if (alive(p) && !p->kernel && p->screen == screen &&
                 (!others || p->pid != screen_console[screen]))
+            {
                 request_end(p);
+                ended++;
+            }
         }
+
+        // A clean screen saying what happened: whatever the programs left
+        // there (a game's board, a half-drawn table) is of no use now.
+        uint32_t prev = term::selected();
+        term::select(screen);
+        term::clear();
+        screen::printf("Ctrl+Alt+C: %u program(s) ended\n", ended);
+        term::select(prev);
     }
 
     // Ctrl+Alt+Z: the programs on the screen but its console pause - every

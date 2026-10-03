@@ -3,6 +3,8 @@
 
 #include "types.h"
 
+struct Cpu;
+
 // The other CPUs. The boot CPU starts each one the MADT lists (INIT, then
 // startup IPIs into ap_trampoline.asm at the page the loader claimed); a
 // started CPU sets up its own GDT, TSS, GS base, IDT, features, syscall
@@ -17,6 +19,9 @@ namespace smp
 
     // CPUs running, the boot CPU included; their indexes are 0..running()-1.
     uint32_t running();
+
+    // The running CPU of that index (0: the boot CPU), or null.
+    Cpu* cpu(uint32_t index);
 
     // After a user address space lost pages or permissions: make every
     // other CPU that has it loaded drop its TLB entries, and wait until

@@ -29,6 +29,7 @@ struct Cpu
     uint32_t index;         // 0 for the boot CPU
     uint32_t apic_id;
     uint32_t bkl_depth;     // how often it holds the big kernel lock (spinlock.h)
+    uint8_t  core_type;     // hybrid CPUs: CORE_PERFORMANCE / CORE_EFFICIENCY, else 0
     volatile bool online;   // set by the CPU itself once it runs (smp.cpp)
 
     // The scheduler's part (process.cpp): the thread running here and its

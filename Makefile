@@ -54,6 +54,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/drivers/reports.o \
 				bin/kernel/cpu/cpuid.o \
 				bin/kernel/cpu/pci.o \
+				bin/kernel/cpu/pci_ids.o \
 				bin/kernel/drivers/usb/xhci.o \
 				bin/kernel/drivers/usb/usb.o \
 				bin/kernel/drivers/usb/msc.o \

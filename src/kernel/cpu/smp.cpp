@@ -1,6 +1,7 @@
 // Starting the other CPUs. See smp.h.
 
 #include "../../include/cpu/smp.h"
+#include "../../include/cpu/cpuid.h"
 #include "../../include/cpu/percpu.h"
 #include "../../include/cpu/apic.h"
 #include "../../include/cpu/idt.h"
@@ -91,6 +92,7 @@ extern "C" __attribute__((noreturn)) void ap_main(Cpu* c)
     cpu::init_features();
     sfcall::init_cpu();
     c->apic_id = apic::init_cpu();
+    c->core_type = cpuid::core_type();
     __atomic_store_n(&c->online, true, __ATOMIC_RELEASE);
 
     // Its own tick, and on to running threads (its idle loop).
@@ -103,6 +105,7 @@ namespace smp
     void start(uint64_t trampoline)
     {
         cpus[0] = cpu::current();
+        cpus[0]->core_type = cpuid::core_type();
         const acpi::madt_info* m = acpi::madt();
         uint64_t len = (uint64_t)(ap_trampoline_end - ap_trampoline_start);
         if (!trampoline || !m->present || m->cpu_count < 2 || len > PAGE_SIZE_4K)
@@ -179,6 +182,11 @@ namespace smp
     uint32_t running()
     {
         return cpus_running;
+    }
+
+    Cpu* cpu(uint32_t index)
+    {
+        return index < cpus_running ? cpus[index] : nullptr;
     }
 
     void watch_boot_cpu()

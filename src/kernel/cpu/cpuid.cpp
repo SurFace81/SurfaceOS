@@ -1,5 +1,7 @@
 #include "../../include/cpu/cpuid.h"
 #include "../../include/acpi/acpi.h"
+#include "../../include/cpu/smp.h"
+#include "../../include/cpu/percpu.h"
 
 namespace cpuid {
     static void cpuid(uint32_t function, uint32_t* eax, uint32_t* ebx, uint32_t* ecx, uint32_t* edx) {
@@ -203,11 +205,39 @@ namespace cpuid {
         topology->packages       = npackages;
         topology->hyperthreading = logical > ncores;
 
-        cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
         topology->hybrid = false;
         if (max_leaf >= 7) {
             cpuid_sub(7, 0, &eax, &ebx, &ecx, &edx);
             topology->hybrid = (edx >> 15) & 1;
         }
+
+        // Each CPU noted its own kind of core when it started; count the
+        // distinct cores of each kind.
+        topology->performance_cores = topology->efficiency_cores = 0;
+        uint32_t seen_cores[acpi::MAX_CPUS];
+        uint32_t nseen = 0;
+        for (uint32_t i = 0; topology->hybrid && smp::cpu(i); i++) {
+            Cpu* c = smp::cpu(i);
+            uint32_t core = c->apic_id >> smt_shift;
+            bool seen = false;
+            for (uint32_t j = 0; j < nseen; j++)
+                seen = seen || seen_cores[j] == core;
+            if (seen)
+                continue;
+            seen_cores[nseen++] = core;
+            if (c->core_type == CORE_PERFORMANCE)
+                topology->performance_cores++;
+            else if (c->core_type == CORE_EFFICIENCY)
+                topology->efficiency_cores++;
+        }
+    }
+
+    uint8_t core_type() {
+        uint32_t eax, ebx, ecx, edx;
+        cpuid(0x00000000, &eax, &ebx, &ecx, &edx);
+        if (eax < 0x1A)
+            return 0;
+        cpuid_sub(0x1A, 0, &eax, &ebx, &ecx, &edx);
+        return (uint8_t)(eax >> 24);
     }
 }

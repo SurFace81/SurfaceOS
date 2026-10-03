@@ -56,7 +56,7 @@ A hobby x86_64 operating system written in C++ (freestanding, no OOP).
   its screen and in its log. A program on the shown screen gets twice the CPU time of
   one elsewhere
 - The console (CMD.BIN, `help`): ls, cat, xxd, write, cp, mv, rm, mkdir,
-  rmdir, cd, pwd, mount <dev> (partitions go to /mount/<dev>pN), umount
+  rmdir, cd, mount <dev> (partitions go to /mount/<dev>pN), umount
   <dev|dir>, sync, time, settime, uptime, reboot, shutdown and hardware
   info (lsblk, meminfo, cpuid, lspci, lsusb, usbports, usbinfo, acpi,
   dmesg); a program runs by its name (looked up in /apps) or by its path,

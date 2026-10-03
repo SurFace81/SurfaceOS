@@ -41,8 +41,10 @@ static void cmd_cpuid(int argc, const char** argv)
     else
         screen::printf("\n\r Frequencies:    not reported by the CPU");
     screen::printf("\n\r Logical CPUs:   %u, %u started", topo.logical_cores, smp::running());
-    screen::printf("\n\r Physical cores: %u%s", topo.physical_cores,
-                   topo.hybrid ? " (performance + efficiency)" : "");
+    screen::printf("\n\r Physical cores: %u", topo.physical_cores);
+    if (topo.hybrid)
+        screen::printf(" (%u performance + %u efficiency)",
+                       topo.performance_cores, topo.efficiency_cores);
     screen::printf("\n\r Sockets:        %u", topo.packages);
     screen::printf("\n\r Hyperthreading: %s", topo.hyperthreading ? "Yes" : "No");
     const char* whose = topo.hybrid ? "of the core this runs on" : "per core";
@@ -58,26 +60,70 @@ static void cmd_cpuid(int argc, const char** argv)
     }
 }
 
+// `s` added to the string in `out` (of `size` bytes), cut short if it
+// does not fit: the table cells below are built with it.
+static void cat(char* out, uint32_t size, const char* s)
+{
+    uint32_t n = strlen(out);
+    for (; *s && n < size - 1; s++)
+        out[n++] = *s;
+    out[n] = '\0';
+}
+
+// `v` in decimal, into `out` of `size` bytes. Not through screen::capture:
+// a report is itself captured (sfadmin.cpp), and captures do not nest.
+static void number(char* out, uint32_t size, uint64_t v)
+{
+    char digits[21];
+    uint32_t n = 0;
+    do
+        digits[n++] = (char)('0' + v % 10);
+    while ((v /= 10) && n < sizeof(digits));
+    uint32_t i = 0;
+    for (; n && i < size - 1; i++)
+        out[i] = digits[--n];
+    out[i] = '\0';
+}
+
+// One PCI function a line: where it is, its ids, what it is and who made it.
 static void cmd_lspci(int argc, const char** argv)
 {
+    (void)argc; (void)argv;
     uint32_t count = pci::device_count();
     screen::printf("\n\r");
-    screen::printf("\n\r PCI devices found: %u", count);
-    screen::printf("\n\r");
+    screen::printf("\n\r %-9s %-10s %-26s %s", "SLOT", "ID", "CLASS", "VENDOR");
 
     for (uint32_t i = 0; i < count; i++)
     {
         PCIDevice* d = pci::get_by_id(i);
 
-        char vid[5], did[5];
+        char bus[3], dev[3], fn[2], vid[5], did[5];
+        hex_to_str(d->bus, bus, 2);
+        hex_to_str(d->device, dev, 2);
+        hex_to_str(d->function, fn, 1);
         hex_to_str(d->vendor_id, vid, 4);
         hex_to_str(d->device_id, did, 4);
+        char slot[10] = "", id[10] = "";
+        cat(slot, sizeof(slot), bus); cat(slot, sizeof(slot), ":");
+        cat(slot, sizeof(slot), dev); cat(slot, sizeof(slot), ".");
+        cat(slot, sizeof(slot), fn);
+        cat(id, sizeof(id), vid); cat(id, sizeof(id), ":"); cat(id, sizeof(id), did);
 
-        screen::printf("\n\r  %u:%u.%u  0x%s:0x%s  %s",
-            (uint32_t)d->bus, (uint32_t)d->device, (uint32_t)d->function,
-            vid, did,
-            pci::class_name(d->class_code));
+        // "Storage (NVMe)", the class alone when the subclass has no name.
+        char what[40] = "";
+        cat(what, sizeof(what), pci::class_name(d->class_code));
+        const char* sub = pci::subclass_name(d->class_code, d->subclass, d->prog_if);
+        if (sub)
+        {
+            cat(what, sizeof(what), " (");
+            cat(what, sizeof(what), sub);
+            cat(what, sizeof(what), ")");
+        }
+
+        const char* vendor = pci::vendor_name(d->vendor_id);
+        screen::printf("\n\r %-9s %-10s %-26s %s", slot, id, what, vendor ? vendor : "?");
     }
+    screen::printf("\n\r\n\r %u device(s)", count);
 }
 
 // Where everything is mounted.
@@ -88,14 +134,16 @@ static void cmd_mount(int argc, const char** argv)
     for (uint32_t i = 0; vfs::mount_count_get(i); i++)
     {
         mount* m = vfs::mount_count_get(i);
+        if (i == 0)
+            screen::printf(" %-12s %s\n\r", "DEVICE", "MOUNTED ON");
         if (m->point)
         {
             char buf[PATH_MAX];
             if (vfs::get_path(m->point, buf, sizeof(buf), nullptr) == 0)
-                screen::printf("  %s on %s\n\r", m->devname, buf);
+                screen::printf(" %-12s %s\n\r", m->devname, buf);
         }
         else
-            screen::printf("  %s on /\n\r", m->devname);
+            screen::printf(" %-12s /\n\r", m->devname);
     }
 }
 
@@ -163,34 +211,31 @@ static void cmd_lsusb(int argc, const char** argv)
 {
     uint8_t count = usb::get_device_count();
     screen::printf("\n\r");
-    screen::printf("\n\r USB devices: %u", (uint32_t)count);
-    screen::printf("\n\r");
-
     if (count == 0)
     {
-        screen::printf("\n\r No devices found");
+        screen::printf("\n\r No USB devices");
         return;
     }
 
+    // The index is what usbinfo takes.
+    screen::printf("\n\r %3s  %-10s %-4s %-4s %-8s %-16s %-16s %s",
+                   "#", "ID", "CTRL", "SLOT", "PORT", "SPEED", "CLASS", "DRIVER");
     for (uint8_t i = 0; i < count; i++)
     {
         usb_device_info info;
         if (usb::get_device_info(i, &info) != USB_OK)
             continue;
 
-        char vid[5], pid[5];
+        char vid[5], pid[5], id[10] = "";
         hex_to_str(info.vendor_id, vid, 4);
         hex_to_str(info.product_id, pid, 4);
+        cat(id, sizeof(id), vid); cat(id, sizeof(id), ":"); cat(id, sizeof(id), pid);
 
-        screen::printf("\n\r  [%u] %s:%s  ctrl=%u slot=%u port=%s  %s",
-            (uint32_t)i, vid, pid,
-            (uint32_t)info.controller,
-            (uint32_t)info.slot_id,
-            info.path,
-            usb::get_usb_speed_str(info.port_speed));
-        screen::printf("\n\r      class=%s  driver=%s\n\r",
+        screen::printf("\n\r %3u  %-10s %-4u %-4u %-8s %-16s %-16s %s",
+            (uint32_t)i, id, (uint32_t)info.controller, (uint32_t)info.slot_id, info.path,
+            usb::get_usb_speed_str(info.port_speed),
             usb::get_usb_class_name(info.device_class),
-            info.driver ? info.driver : "none");
+            info.driver ? info.driver : "-");
     }
 }
 
@@ -262,15 +307,14 @@ static void lsblk_row(blkdev* d, const char* branch)
     name[n] = '\0';
 
     uint64_t total_mb = d->sector_count * d->sector_size / (1024 * 1024);
-    screen::printf("\n\r %-12s %uB x %u", name, d->sector_size, (uint32_t)d->sector_count);
-    if (total_mb > 1024)
-        screen::printf("  size=%u GB", (uint32_t)(total_mb / 1024));
-    else
-        screen::printf("  size=%u MB", (uint32_t)total_mb);
+    char size[16];
+    number(size, sizeof(size), total_mb > 1024 ? total_mb / 1024 : total_mb);
+    cat(size, sizeof(size), total_mb > 1024 ? " GB" : " MB");
+    char offset[24] = "-";
     if (d->parent)
-        screen::printf("  offset=%u", (uint32_t)d->lba_offset);
-    if (block::gone(d))
-        screen::printf("  (unplugged)");
+        number(offset, sizeof(offset), d->lba_offset);
+    screen::printf("\n\r %-14s %9s %6u %12llu %10s%s", name, size, d->sector_size,
+                   d->sector_count, offset, block::gone(d) ? "  unplugged" : "");
 
     uart::printf("lsblk: %s %uB x %u offset %u\n", d->name,
                  d->sector_size, (uint32_t)d->sector_count, (uint32_t)d->lba_offset);
@@ -291,6 +335,7 @@ static void cmd_lsblk(int argc, const char** argv)
         return;
     }
 
+    screen::printf("\n\r %-14s %9s %6s %12s %10s", "NAME", "SIZE", "SECTOR", "SECTORS", "START");
     static const char mid[]  = { (char)0xC3, (char)0xC4, ' ', 0 };     // ├─
     static const char last[] = { (char)0xC0, (char)0xC4, ' ', 0 };     // └─
     for (uint32_t i = 0; i < count; i++)

@@ -320,16 +320,14 @@ static void Cls(const char**, uint64_t)
     Con->Clear(Con);
 }
 
-static void Pwd(const char**, uint64_t)
-{
-    Print(Cwd);
-    Print("\n");
-}
-
 static void Cd(const char** Args, uint64_t Count)
 {
     if (Count < 2)
-        return Pwd(Args, Count);
+    {
+        Print(Cwd);
+        Print("\n");
+        return;
+    }
     SfFile* Dir = nullptr;
     SfStatus Status = Open(Args[1], SF_FILE_READ, &Dir);
     if (SF_ERROR(Status) || !IsFolder(Dir))
@@ -1163,7 +1161,6 @@ static const struct
     { "cls",      Cls,      "clear the screen" },
     { "ls",       Ls,       "[path]  what is in a folder" },
     { "cd",       Cd,       "[folder]  go there (alone: where you are)" },
-    { "pwd",      Pwd,      "where you are" },
     { "cat",      Cat,      "<file>  show a text file" },
     { "xxd",      Xxd,      "<file>  show a file in hex" },
     { "write",    Write,    "<file> <text...>  write text into a file" },
