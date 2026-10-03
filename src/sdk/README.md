@@ -381,6 +381,7 @@ Every running program has a number, its Id.
 | `Start(const char* Name, uint64_t ArgCount, const char* const* Args, SfFile* const* ArgFiles, uint64_t Flags, uint64_t* Handle)` | Starts program `Name` (from /apps, or a path with a root) on this screen; `Args[0]` becomes its `App->Args[1]`. `ArgFiles`, may be null, has `ArgCount` entries: a non-null one becomes its root `arg<i+1>:`. *out* `Handle` for `Wait`, may be null. Runs on when this program ends. `SF_NOT_FOUND` for no such program. |
 | `Wait(uint64_t Handle, SfStatus* Status)` | Waits until that program has ended; *out* `Status`, may be null: what it returned, `SF_ABORTED` when it was ended, `SF_CRASHED` after a CPU exception. The handle is used up. |
 | `IdOf(uint64_t Handle, uint64_t* Id)` | *out*: the number of the program behind `Handle`. |
+| `Exit(SfStatus Status)` | Ends the calling program with `Status`, from any of its threads: every thread ends, `Wait` gets `Status`. Does not return. |
 
 | `Start` flag | What it does |
 |--------------|--------------|

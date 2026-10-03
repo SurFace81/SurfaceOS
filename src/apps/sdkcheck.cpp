@@ -14,6 +14,9 @@
 //   sdkcheck child <word> <two words>  returns SF_ERROR_BIT | 5 when it got
 //                                      exactly those arguments, | 6 if not
 //   sdkcheck late                      prints a line after 300 ms
+//   sdkcheck exit                      ends itself with Process->Exit(
+//                                      SF_ERROR_BIT | 7) from a second
+//                                      thread while the first sleeps
 //   sdkcheck reader                    reads a line, says what it got
 //                                      ("... aborted" after Ctrl+C)
 //
@@ -451,6 +454,11 @@ static void CheckStart(SfProcess* Process)
              Status == (SF_ERROR_BIT | 5);
     Check("three programs side by side", Ok);
 
+    const char* Exit[] = { "exit" };
+    Check("Exit from a second thread ends the program, Wait gets its status",
+          Process->Start(Process, "sdkcheck", 1, Exit, nullptr, 0, &Handle) == SF_SUCCESS &&
+          Process->Wait(Process, Handle, &Status) == SF_SUCCESS && Status == (SF_ERROR_BIT | 7));
+
     Check("Start of no such program is SF_NOT_FOUND",
           Process->Start(Process, "nosuch", 0, nullptr, nullptr, 0, &Handle) == SF_NOT_FOUND);
     Check("Start of a path is SF_INVALID_PARAMETER",
@@ -794,9 +802,26 @@ static SfStatus RunInput(SfSystem* Sys)
     return ReadAndReport(Sys->Console, "parent");
 }
 
-// sdkcheck child|late|reader: see the top of the file.
+static SfProcess* ExitingProcess;
+
+static SfStatus ProcessExitEntry(void*)
+{
+    ExitingProcess->Exit(ExitingProcess, SF_ERROR_BIT | 7);
+    return SF_ERROR_BIT | 8;            // not reached
+}
+
+// sdkcheck child|late|reader|exit: see the top of the file.
 static SfStatus RunAsChild(SfApp* App, SfSystem* Sys)
 {
+    if (SameText(App->Args[1], "exit"))
+    {
+        uint64_t Id = 0;
+        ExitingProcess = Sys->Process;
+        if (SF_ERROR(Sys->Thread->Create(Sys->Thread, ProcessExitEntry, nullptr, &Id)))
+            return SF_ERROR_BIT | 9;
+        Sys->Time->Sleep(Sys->Time, 5000);
+        return SF_ERROR_BIT | 8;
+    }
     if (SameText(App->Args[1], "reader"))
         return ReadAndReport(Sys->Console, "child");
     if (SameText(App->Args[1], "late"))
@@ -878,7 +903,7 @@ SfStatus SfMain(SfApp* App, SfSystem* Sys)
     Con = Sys->Console;
     if (App && App->ArgCount >= 2 &&
         (SameText(App->Args[1], "child") || SameText(App->Args[1], "late") ||
-         SameText(App->Args[1], "reader")))
+         SameText(App->Args[1], "reader") || SameText(App->Args[1], "exit")))
         return RunAsChild(App, Sys);
     if (App && App->ArgCount >= 2 && SameText(App->Args[1], "input"))
         return RunInput(Sys);

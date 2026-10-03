@@ -167,6 +167,12 @@ static SfStatus ProcessIdOf(SfProcess*, uint64_t Handle, uint64_t* Id)
     return SfCall(SFCALL_PROCESS_ID_OF, Handle, (uint64_t)Id);
 }
 
+static SfStatus ProcessExit(SfProcess*, SfStatus Status)
+{
+    SfCall(SFCALL_EXIT, Status);
+    __builtin_unreachable();            // SFCALL_EXIT does not return
+}
+
 // --- Threads -----------------------------------------------------------------
 
 static SfStatus ThreadCreate(SfThread*, SfThreadEntry Entry, void* Arg, uint64_t* Id)
@@ -249,6 +255,7 @@ static const SfProcess SdkProcess =
     ProcessStart,
     ProcessWait,
     ProcessIdOf,
+    ProcessExit,
 };
 
 static const SfThread SdkThread =

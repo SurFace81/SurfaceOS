@@ -49,6 +49,12 @@ struct SfProcess
     /// *Id gets the number of the program behind Handle (sfos/admin.h
     /// speaks of programs by number).
     SfStatus (*IdOf)(SfProcess* This, uint64_t Handle, uint64_t* Id);
+
+    /// Ends the calling program with Status, from any of its threads: every
+    /// thread ends, and Wait of whoever started it gets Status.
+    ///
+    /// Does not return.
+    SfStatus (*Exit)(SfProcess* This, SfStatus Status);
 };
 
 /// Start: when this program owns its screen's input (the keys), the new
@@ -78,6 +84,7 @@ struct SfProcess
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, GetArgs) == 24, "SfProcess layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, Start) == 32, "SfProcess layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, IdOf) == 48, "SfProcess layout");
-SF_STATIC_ASSERT(sizeof(SfProcess) == 56, "SfProcess layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfProcess, Exit) == 56, "SfProcess layout");
+SF_STATIC_ASSERT(sizeof(SfProcess) == 64, "SfProcess layout");
 
 #endif // SFOS_PROCESS_H
