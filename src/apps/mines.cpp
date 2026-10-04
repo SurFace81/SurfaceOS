@@ -1,15 +1,18 @@
 // mines: the start of a minesweeper.
 //
-// A full-screen program (SF_CONSOLE_RAW): a title line, the field in a frame
-// in the middle, a panel beside it, a message line and the keys at the
-// bottom. The whole screen is put together in Cells and drawn with one Draw
-// call, as in taskmgr. Arrows move the cursor, Space opens the cell under
-// it, f puts a flag on it or takes it off; q or Esc quits.
+// A full-screen program of sfui elements: a title line, the field in the
+// middle - an element it draws itself, which takes the keys - a panel
+// beside it, a message line and the keys at the bottom. Arrows move the
+// cursor, Space opens the cell under it, f puts a flag on it or takes it
+// off; r starts again, q or Esc quits.
 
 #include <sfos.h>
+#include <sfui.h>
+#include <stdio.h>
+#include <string.h>
 
-static SfSystem*  Sys;
-static SfConsole* Con;
+static SfSystem* Sys;
+static SfUi*     Ui;
 
 // --- random numbers --------------------------------------------------------
 
@@ -185,15 +188,7 @@ static void OpenCell()
 
 // --- the screen ------------------------------------------------------------
 
-static const uint32_t MAX_COLUMNS = 512;
-static const uint32_t MAX_ROWS    = 256;
-static SfCell   Cells[MAX_COLUMNS * MAX_ROWS];
-static uint32_t Columns, Rows;
-
-static const uint8_t NORMAL  = SF_CELL_COLOR(SF_COLOR_WHITE, SF_COLOR_BLACK);
-static const uint8_t BRIGHT  = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
-static const uint8_t FRAME   = SF_CELL_COLOR(SF_COLOR_WHITE, SF_COLOR_BLACK);
-static const uint8_t HEADER  = SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_WHITE);
+static const uint8_t FRAME = SF_CELL_COLOR(SF_COLOR_WHITE, SF_COLOR_BLACK);
 
 // The cells: dark grey tiles in grey lines, opened ones white. The font is
 // one pixel thin, so every symbol stands in a strong contrast: dark ink on
@@ -238,71 +233,6 @@ static const uint8_t NUMBER_INK[9] =
     SF_COLOR_BLACK,                     // 8
 };
 
-static void Put(uint32_t X, uint32_t Y, char C, uint8_t Color)
-{
-    if (X < Columns && Y < Rows)
-    {
-        Cells[Y * Columns + X].Char  = C;
-        Cells[Y * Columns + X].Color = Color;
-    }
-}
-
-// Text at (X, Y); where it ends.
-static uint32_t Text(uint32_t X, uint32_t Y, const char* S, uint8_t Color)
-{
-    for (; *S; S++, X++)
-        Put(X, Y, *S, Color);
-    return X;
-}
-
-// Value in decimal, right-aligned in Width (0: as long as it is) into Out;
-// where it ends.
-static char* Number(char* Out, uint64_t Value, uint32_t Width = 0)
-{
-    char Digits[24];
-    uint32_t n = 0;
-    do
-    {
-        Digits[n++] = (char)('0' + Value % 10);
-        Value /= 10;
-    } while (Value);
-    for (uint32_t i = n; i < Width; i++)
-        *Out++ = ' ';
-    while (n)
-        *Out++ = Digits[--n];
-    *Out = '\0';
-    return Out;
-}
-
-static void Fill(uint32_t X, uint32_t Y, uint32_t Width, char C, uint8_t Color)
-{
-    for (uint32_t i = 0; i < Width; i++)
-        Put(X + i, Y, C, Color);
-}
-
-// A frame of Width x Height at (X, Y) with Title in its top line.
-static void Frame(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, const char* Title)
-{
-    Put(X, Y, SF_BOX_TOP_LEFT, FRAME);
-    Fill(X + 1, Y, Width - 2, SF_BOX_H, FRAME);
-    Put(X + Width - 1, Y, SF_BOX_TOP_RIGHT, FRAME);
-    for (uint32_t y = Y + 1; y < Y + Height - 1; y++)
-    {
-        Put(X, y, SF_BOX_V, FRAME);
-        Fill(X + 1, y, Width - 2, ' ', NORMAL);
-        Put(X + Width - 1, y, SF_BOX_V, FRAME);
-    }
-    Put(X, Y + Height - 1, SF_BOX_BOTTOM_LEFT, FRAME);
-    Fill(X + 1, Y + Height - 1, Width - 2, SF_BOX_H, FRAME);
-    Put(X + Width - 1, Y + Height - 1, SF_BOX_BOTTOM_RIGHT, FRAME);
-
-    Put(X + 1, Y, ' ', BRIGHT);
-    uint32_t End = Text(X + 2, Y, Title, BRIGHT);
-    Put(End, Y, ' ', BRIGHT);
-}
-
-// --- drawing ---------------------------------------------------------------
-
 // The field is a grid of lines; a cell is 3 characters and the line beside
 // it wide, 1 character and the line below it high: 4 x 2 characters, which
 // with the 8 x 16 font is 32 x 32 pixels - square, with the symbol in the
@@ -318,13 +248,6 @@ static const uint32_t FIELD_H = HEIGHT * CELL_H + 1;
 
 static const uint32_t PANEL_WIDTH = 20;
 
-static void DrawHeader()
-{
-    Fill(0, 0, Columns, ' ', HEADER);
-    Text(1, 0, "Mines", HEADER);
-    // TODO: what goes on the right of the title line.
-}
-
 // The line character where the grid lines cross at (gx, gy).
 static char Crossing(uint32_t gx, uint32_t gy)
 {
@@ -335,7 +258,7 @@ static char Crossing(uint32_t gx, uint32_t gy)
     return Left ? SF_BOX_T_RIGHT : Right ? SF_BOX_T_LEFT : SF_BOX_CROSS;
 }
 
-static void DrawField(uint32_t X, uint32_t Y)
+static void DrawField(SfUi* Ui, SfElement*, uint32_t X, uint32_t Y, uint32_t, uint32_t)
 {
     for (uint32_t gy = 0; gy < FIELD_H; gy++)
         for (uint32_t gx = 0; gx < FIELD_W; gx++)
@@ -344,7 +267,7 @@ static void DrawField(uint32_t X, uint32_t Y)
             if (LineH || LineV)
             {
                 char C = LineH && LineV ? Crossing(gx, gy) : LineH ? SF_BOX_H : SF_BOX_V;
-                Put(X + gx, Y + gy, C, FRAME);
+                SfPut(Ui, X + gx, Y + gy, C, FRAME);
                 continue;
             }
 
@@ -383,139 +306,138 @@ static void DrawField(uint32_t X, uint32_t Y)
                 Paper = CURSOR_PAPER;
             }
             bool Middle = gx % CELL_W == CELL_W / 2;
-            Put(X + gx, Y + gy, Middle ? C : ' ', SF_CELL_COLOR(Ink, Paper));
+            SfPut(Ui, X + gx, Y + gy, Middle ? C : ' ', SF_CELL_COLOR(Ink, Paper));
         }
 }
 
-static void DrawPanel(uint32_t X, uint32_t Y)
+// --- the rest of the screen ------------------------------------------------
+
+static SfElement* MinesLeft;
+static SfElement* Flags;
+static SfElement* Time;
+static SfElement* MessageLine;
+
+static SfElement* AddBright(sint32_t X, sint32_t Y, sint32_t Width, const char* Text)
 {
-    Frame(X, Y, PANEL_WIDTH, FIELD_H, "Game");
-    Text(X + 2, Y + 2, "Mines:", NORMAL);
-    Text(X + 2, Y + 3, "Flags:", NORMAL);
-    Text(X + 2, Y + 4, "Time:", NORMAL);
-    char Line[24];
-    Number(Line, FlagCount < MINES ? MINES - FlagCount : 0, 3);
-    Text(X + 8, Y + 2, Line, NORMAL);
-    Number(Line, FlagCount, 3);
-    Text(X + 8, Y + 3, Line, NORMAL);
-    Number(Line, Seconds(), 3);
-    Text(X + 8, Y + 4, Line, NORMAL);
+    SfElement* L = SfAddLabel(Ui, X, Y, Width, Text);
+    SfSetColors(L, SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
+    return L;
 }
 
-static void DrawFooter()
+static void SetNumber(SfElement* Label, uint64_t Value)
 {
-    Fill(0, Rows - 2, Columns, ' ', NORMAL);
-    Text(1, Rows - 2, Message, BRIGHT);
-
-    uint32_t Y = Rows - 1;
-    Fill(0, Y, Columns, ' ', NORMAL);
-    char Arrows[] = { ' ', SF_ARROW_UP, SF_ARROW_DOWN, SF_ARROW_LEFT, SF_ARROW_RIGHT, 0 };
-    uint32_t X = Text(0, Y, Arrows, BRIGHT);
-    X = Text(X, Y, " move   ", NORMAL);
-    X = Text(X, Y, "Space", BRIGHT);
-    X = Text(X, Y, " open   ", NORMAL);
-    X = Text(X, Y, "F", BRIGHT);
-    X = Text(X, Y, " flag   ", NORMAL);
-    X = Text(X, Y, "Q", BRIGHT);
-    X = Text(X, Y, " quit   ", NORMAL);
-    X = Text(X, Y, "R", BRIGHT);
-    X = Text(X, Y, " restart   ", NORMAL);
+    char Line[8];
+    snprintf(Line, sizeof(Line), "%3llu", Value);
+    SfSetText(Label, Line);
 }
 
-static void Draw()
+// What the panel and the message line show.
+static void Refresh()
 {
-    for (uint32_t i = 0; i < Columns * Rows; i++)
+    SetNumber(MinesLeft, FlagCount < MINES ? MINES - FlagCount : 0);
+    SetNumber(Flags, FlagCount);
+    SetNumber(Time, Seconds());
+    SfSetText(MessageLine, Message);
+}
+
+static void OnTick(SfUi*)
+{
+    SetNumber(Time, Seconds());
+}
+
+// The keys of the field: arrows, Space, f.
+static bool FieldKey(SfUi*, SfElement*, SfKey Key)
+{
+    if (Key.Char == 'f' || Key.Char == 'F')
+        ToggleFlag();
+    else if (Key.Code == SF_KEY_SPACE)
+        OpenCell();
+    else if (Over)
+        return false;
+    else switch (Key.Code)
     {
-        Cells[i].Char  = ' ';
-        Cells[i].Color = NORMAL;
+        case SF_KEY_UP:    if (CursorY > 0)          CursorY--; break;
+        case SF_KEY_DOWN:  if (CursorY + 1 < HEIGHT) CursorY++; break;
+        case SF_KEY_LEFT:  if (CursorX > 0)          CursorX--; break;
+        case SF_KEY_RIGHT: if (CursorX + 1 < WIDTH)  CursorX++; break;
+        default:           return false;
     }
-
-    // The field and the panel side by side in the middle of the screen.
-    uint32_t Width  = FIELD_W + 1 + PANEL_WIDTH;
-    uint32_t Height = FIELD_H;
-    uint32_t X = Columns > Width ? (Columns - Width) / 2 : 0;
-    uint32_t Y = Rows > Height + 3 ? 1 + (Rows - 3 - Height) / 2 : 1;
-
-    DrawHeader();
-    DrawField(X, Y);
-    DrawPanel(X + FIELD_W + 1, Y);
-    DrawFooter();
-    Con->Draw(Con, 0, 0, Columns, Rows, Cells);
+    Refresh();
+    return true;
 }
 
-// --- keys ------------------------------------------------------------------
-
-// ReadKey waits for a key, but the clock has to go on meanwhile: as in
-// taskmgr, WaitAny waits for a key until the next second, and ReadKey
-// takes it once it is there.
-static bool NextKey(SfKey* Key, uint64_t TimeoutMs)
-{
-    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
-    return Sys->Sync->WaitAny(Sys->Sync, 1, &Item, TimeoutMs, nullptr) == SF_SUCCESS &&
-           Con->ReadKey(Con, Key) == SF_SUCCESS;
-}
-
-// One key; false when it is time to go.
-static bool OnKey(const SfKey& Key)
+static bool OnKey(SfUi* Ui, SfElement*, SfKey Key)
 {
     if (Key.Char == 'q' || Key.Char == 'Q' || Key.Code == SF_KEY_ESCAPE ||
         ((Key.Mods & SF_MOD_CTRL) && Key.Char == 3))
-        return false;
-
-    if (Key.Char == 'f' || Key.Char == 'F')
-    {
-        ToggleFlag();
-        return true;
-    }
-
-    if (Key.Char == 'r' || Key.Char == 'R')
+        SfUiEnd(Ui, 1);
+    else if (Key.Char == 'r' || Key.Char == 'R')
     {
         for (uint32_t i = 0; i < WIDTH * HEIGHT; i++)
             Open[i] = Mine[i] = Flag[i] = false;
         FlagCount = OpenedCount = CursorX = CursorY = 0;
         Over = Lost = Started = false;      // the next move places new mines
         Message = "";
-        return true;
+        Refresh();
     }
-
-    if (Over == true) return true;
-
-    switch (Key.Code)
-    {
-        case SF_KEY_UP:    if (CursorY > 0)          CursorY--; break;
-        case SF_KEY_DOWN:  if (CursorY + 1 < HEIGHT) CursorY++; break;
-        case SF_KEY_LEFT:  if (CursorX > 0)          CursorX--; break;
-        case SF_KEY_RIGHT: if (CursorX + 1 < WIDTH)  CursorX++; break;
-        case SF_KEY_SPACE: OpenCell(); break;
-    }
+    else
+        return false;
     return true;
+}
+
+// The field and the panel side by side in the middle of the screen.
+static void Build(uint32_t Columns, uint32_t Rows)
+{
+    SfElement* Header = SfAddLabel(Ui, 0, 0, 0, " Mines");
+    SfSetColors(Header, SF_COLOR_BLACK, SF_COLOR_WHITE);
+
+    uint32_t Width = FIELD_W + 1 + PANEL_WIDTH;
+    sint32_t X = Columns > Width ? (sint32_t)(Columns - Width) / 2 : 0;
+    sint32_t Y = Rows > FIELD_H + 3 ? 1 + (sint32_t)(Rows - 3 - FIELD_H) / 2 : 1;
+    SfElement* Field = SfAddCustom(Ui, X, Y, FIELD_W, FIELD_H);
+    SfOnPaint(Field, DrawField);
+    SfOnKey(Field, FieldKey);
+
+    sint32_t PX = X + FIELD_W + 1;
+    SfElement* Panel = SfAddFrame(Ui, PX, Y, PANEL_WIDTH, FIELD_H, "Game");
+    SfSetFocusColors(Panel, SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
+    SfAddLabel(Ui, PX + 2, Y + 2, 6, "Mines:");
+    SfAddLabel(Ui, PX + 2, Y + 3, 6, "Flags:");
+    SfAddLabel(Ui, PX + 2, Y + 4, 6, "Time:");
+    MinesLeft = SfAddLabel(Ui, PX + 8, Y + 2, 3, "");
+    Flags     = SfAddLabel(Ui, PX + 8, Y + 3, 3, "");
+    Time      = SfAddLabel(Ui, PX + 8, Y + 4, 3, "");
+
+    MessageLine = AddBright(1, -2, 0, "");
+    char Arrows[] = { ' ', SF_ARROW_UP, SF_ARROW_DOWN, SF_ARROW_LEFT, SF_ARROW_RIGHT, 0 };
+    const char* const Keys[] =
+        { Arrows, " move   ", "Space", " open   ", "F", " flag   ", "Q", " quit   ", "R",
+          " restart" };
+    sint32_t At = 0;
+    for (uint32_t i = 0; i < 10; i++)
+    {
+        sint32_t n = (sint32_t)strlen(Keys[i]);
+        if (i % 2)
+            SfAddLabel(Ui, At, -1, n, Keys[i]);
+        else
+            AddBright(At, -1, n, Keys[i]);
+        At += n;
+    }
 }
 
 SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys = System;
-    Con = System->Console;
-    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny))
+    Ui = SfUiOpen(Sys);
+    if (!Ui)
         return SF_UNSUPPORTED;
-
-    Con->SetMode(Con, SF_CONSOLE_RAW);         // clears the screen, hides the cursor
-    Con->GetSize(Con, &Columns, &Rows);
-    if (Columns > MAX_COLUMNS) Columns = MAX_COLUMNS;
-    if (Rows > MAX_ROWS)       Rows    = MAX_ROWS;
-
-    for (;;)
-    {
-        Draw();
-        // Until a key; while the clock runs, at most until its next second.
-        uint64_t Timeout = SF_WAIT_FOREVER;
-        if (Started && !Over)
-            Timeout = 1000 - (Uptime() - StartMs) % 1000;
-        SfKey Key;
-        for (; NextKey(&Key, Timeout); Timeout = 0)
-            if (!OnKey(Key))
-            {
-                Con->SetMode(Con, SF_CONSOLE_LINE);
-                return SF_SUCCESS;
-            }
-    }
+    uint32_t Columns, Rows;
+    SfUiSize(Ui, &Columns, &Rows);
+    Build(Columns, Rows);
+    Refresh();
+    SfUiOnKey(Ui, OnKey);
+    SfUiOnTimer(Ui, 250, OnTick);
+    SfUiRun(Ui);
+    SfUiClose(Ui);
+    return SF_SUCCESS;
 }
