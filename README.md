@@ -180,9 +180,9 @@ with a README of what it is, where it comes from and what was changed.
   - `tcc hello.c -o hello.bin`: one file
   - `tcc /demo`: a project - every `.c` in the folder and the folders in
     it, into `/demo/demo.bin`
-  - its headers (tcc's, the SDK's, libc's) and `libc.a`, `libtcc1.a` are
-    in its data folder /files/tcc
-  - `/demo`: a project of three files to try it on
+  - its headers (tcc's, the SDK's, libc's) and `libui.a`, `libc.a`,
+    `libtcc1.a` are in its data folder /files/tcc
+  - `/demo`: a project of three files to try it on, a window of sfui
  
 # Project Structure
  

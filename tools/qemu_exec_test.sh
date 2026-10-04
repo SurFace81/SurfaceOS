@@ -400,16 +400,17 @@ echo "      frames free: $FRAMES_BEFORE -> $FRAMES_AFTER"
 result $? "a program leaks no physical frames"
 
 # 6. tcc builds a C project in SurfaceOS: /demo (main.c, gui/window.c,
-#    include/window.h) into /demo/demo.bin, which prints from both files.
+#    include/window.h) into /demo/demo.bin, a window of sfui that Enter
+#    closes.
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "tcc /demo"
 wait_session_end $WANT 90; result $? "tcc /demo ended"
 [ "$(last_status)" = "$ST_SUCCESS" ]; result $? "tcc /demo built it (SF_SUCCESS)"
 WANT=$(( $(sessions_ended) + 1 ))
 type_cmd "/demo/demo.bin"
-wait_session_end $WANT 15; result $? "/demo/demo.bin ended"
-grep -aq "demo: hello from main.c" "$LOG" && grep -aqF "| and from gui/window.c |" "$LOG"
-result $? "demo.bin printed from main.c and gui/window.c"
+sleep 2; key ret
+wait_session_end $WANT 15; result $? "/demo/demo.bin ended on Enter"
+[ "$(last_status)" = "$ST_SUCCESS" ]; result $? "demo.bin ended with SF_SUCCESS"
 
 # 7. console still alive
 monitor "screendump /tmp/scr_final.ppm"

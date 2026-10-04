@@ -417,7 +417,7 @@ static void PutByte(uint8_t Value)
 
 static void DrawStatus()
 {
-    Fill(0, 0, Columns, ' ', COL_STATUS);
+    SfFill(Ui, 0, 0, Columns, ' ', COL_STATUS);
     char Line[160];
     char* p = Line;
     if (HexMode)
@@ -443,13 +443,13 @@ static void DrawStatus()
         Append(p, "   view only");
     uint32_t n = (uint32_t)Length(Line);
     uint32_t At = Columns > n + 1 ? Columns - n - 1 : 0;
-    Text(At, 0, Line, COL_STATUS);
+    SfText(Ui, At, 0, Line, COL_STATUS);
 
     // The name, with a star while there are changes not saved.
     uint32_t Room = At > 4 ? At - 4 : 0;
     uint64_t Len = Length(FilePath);
-    Put(1, 0, Modified() ? '*' : ' ', COL_STATUS);
-    TextIn(2, 0, Len > Room ? FilePath + (Len - Room) : FilePath, Room, COL_STATUS);
+    SfPut(Ui, 1, 0, Modified() ? '*' : ' ', COL_STATUS);
+    SfTextIn(Ui, 2, 0, Len > Room ? FilePath + (Len - Room) : FilePath, Room, COL_STATUS);
 }
 
 // Where the cursor goes on the screen, as the last drawing left it.
@@ -479,16 +479,16 @@ static void DrawText()
     {
         uint32_t Y = 1 + r;
         uint64_t L = TopLine + r;
-        Fill(0, Y, Columns, ' ', COL_TEXT);
+        SfFill(Ui, 0, Y, Columns, ' ', COL_TEXT);
         if (L >= LineCount)
         {
-            Fill(0, Y, Gutter, ' ', COL_GUTTER);
+            SfFill(Ui, 0, Y, Gutter, ' ', COL_GUTTER);
             continue;
         }
         char Digits[24];
         *Number(Digits, L + 1, Gutter - 1) = '\0';
-        Text(0, Y, Digits, L == Line ? COL_HERE : COL_GUTTER);
-        Put(Gutter - 1, Y, ' ', COL_GUTTER);
+        SfText(Ui, 0, Y, Digits, L == Line ? COL_HERE : COL_GUTTER);
+        SfPut(Ui, Gutter - 1, Y, ' ', COL_GUTTER);
 
         uint64_t End = LineEnd(L), c = 0;
         for (uint64_t i = Lines[L]; i <= End && c < LeftCol + Width; i++)
@@ -500,13 +500,10 @@ static void DrawText()
             char Glyph = i < End && Data[i] != '\t' ? (char)Data[i] : ' ';
             for (; c < Next; c++)
                 if (c >= LeftCol && c < LeftCol + Width && (i < End || In))
-                    Put(Gutter + (uint32_t)(c - LeftCol), Y, Glyph, Color);
+                    SfPut(Ui, Gutter + (uint32_t)(c - LeftCol), Y, Glyph, Color);
         }
     }
     DrawStatus();
-    static const char* const Names[10] =
-        { "Help", "Save", "Next", "Hex", "Go to", "", "Find", "", "", "Quit" };
-    KeyBar(Names);
     CursorX = Gutter + (uint32_t)(Col - LeftCol);
     CursorY = 1 + (uint32_t)(Line - TopLine);
 }
@@ -529,14 +526,14 @@ static void DrawHex()
     if (Row >= HexTop + Height)
         HexTop = Row - Height + 1;
 
-    Fill(0, 1, Columns, ' ', COL_GUTTER);
-    Text(0, 1, "  Offset", COL_GUTTER);
+    SfFill(Ui, 0, 1, Columns, ' ', COL_GUTTER);
+    SfText(Ui, 0, 1, "  Offset", COL_GUTTER);
     for (uint32_t i = 0; i < PER_ROW; i++)
     {
         char Digits[4];
         HexNumber(Digits, i, 2);
-        Text(HexColumn(i), 1, Digits, i == Cur % PER_ROW ? COL_HERE : COL_GUTTER);
-        Put(ASCII_X + i, 1, Digits[1], i == Cur % PER_ROW ? COL_HERE : COL_GUTTER);
+        SfText(Ui, HexColumn(i), 1, Digits, i == Cur % PER_ROW ? COL_HERE : COL_GUTTER);
+        SfPut(Ui, ASCII_X + i, 1, Digits[1], i == Cur % PER_ROW ? COL_HERE : COL_GUTTER);
     }
 
     uint64_t From = 0, To = 0;
@@ -545,12 +542,12 @@ static void DrawHex()
     {
         uint32_t Y = 2 + r;
         uint64_t Start = (HexTop + r) * PER_ROW;
-        Fill(0, Y, Columns, ' ', COL_TEXT);
+        SfFill(Ui, 0, Y, Columns, ' ', COL_TEXT);
         if (Start > Size)
             continue;
         char Digits[20];
         HexNumber(Digits, Start, 8);
-        Text(0, Y, Digits, Start / PER_ROW == Row ? COL_HERE : COL_GUTTER);
+        SfText(Ui, 0, Y, Digits, Start / PER_ROW == Row ? COL_HERE : COL_GUTTER);
         for (uint32_t i = 0; i < PER_ROW && Start + i < Size; i++)
         {
             uint64_t Pos = Start + i;
@@ -559,28 +556,33 @@ static void DrawHex()
             bool In = Pos >= From && Pos < To;
             uint8_t Color = In ? COL_SELECT : COL_TEXT;
             HexNumber(Digits, B, 2);
-            Text(HexColumn(i), Y, Digits, Pos == Cur && AsciiSide ? COL_SELECT : Color);
+            SfText(Ui, HexColumn(i), Y, Digits, Pos == Cur && AsciiSide ? COL_SELECT : Color);
             if (In && i + 1 < PER_ROW && Pos + 1 < To)
-                Put(HexColumn(i) + 2, Y, ' ', Color);
-            Put(ASCII_X + i, Y, B >= 32 && B != 127 ? (char)B : '.',
+                SfPut(Ui, HexColumn(i) + 2, Y, ' ', Color);
+            SfPut(Ui, ASCII_X + i, Y, B >= 32 && B != 127 ? (char)B : '.',
                 Pos == Cur && !AsciiSide ? COL_SELECT : Color);
         }
     }
     DrawStatus();
-    static const char* const Names[10] =
-        { "Help", "Save", "Next", "Text", "Go to", "", "Find", "", "", "Quit" };
-    KeyBar(Names);
     uint32_t i = (uint32_t)(Cur % PER_ROW);
     CursorX = AsciiSide ? ASCII_X + i : HexColumn(i) + (Nibble ? 1 : 0);
     CursorY = 2 + (uint32_t)(Row - HexTop);
 }
 
-static void Compose()
+static SfElement* Keys;             // the key bar: F4 goes to hex, or to text
+
+static void Paint(SfUi* Ui, SfElement*, uint32_t, uint32_t, uint32_t, uint32_t)
 {
+    static const char* const TextKeys[10] =
+        { "Help", "Save", "Next", "Hex", "Go to", "", "Find", "", "", "Quit" };
+    static const char* const HexKeys[10] =
+        { "Help", "Save", "Next", "Text", "Go to", "", "Find", "", "", "Quit" };
     if (HexMode)
         DrawHex();
     else
         DrawText();
+    SfSetItems(Keys, HexMode ? HexKeys : TextKeys, 10);
+    SfCaret(Ui, CursorX, CursorY);
 }
 
 // --- the file --------------------------------------------------------------
@@ -697,14 +699,14 @@ static void Help()
         "(\"4D 5A\") on the byte side, for text on the",
         "character side.",
     };
-    Menu("Editor keys", Text, sizeof(Text) / sizeof(Text[0]), 0);
+    SfMenu(Ui, "Editor keys", Text, sizeof(Text) / sizeof(Text[0]), 0, nullptr);
 }
 
 static void AskFind()
 {
     static char Wanted[128];
     bool Bytes = HexMode && !AsciiSide;
-    if (!Input("Find", Bytes ? "Bytes in hex, as 4D 5A:" : "Text (any case):", Wanted,
+    if (!SfInput(Ui, "Find", Bytes ? "Bytes in hex, as 4D 5A:" : "Text (any case):", Wanted,
                sizeof(Wanted)))
         return;
     PatternSize = 0;
@@ -731,7 +733,7 @@ static void AskFind()
 static void AskGoTo()
 {
     char Wanted[32] = "";
-    if (!Input("Go to", HexMode ? "Offset, in hex:" : "Line:", Wanted, sizeof(Wanted)))
+    if (!SfInput(Ui, "Go to", HexMode ? "Offset, in hex:" : "Line:", Wanted, sizeof(Wanted)))
         return;
     uint64_t Value = 0;
     for (const char* c = Wanted; *c; c++)
@@ -945,13 +947,98 @@ static bool MayLeave()
     if (!Modified())
         return true;
     static const char* const Labels[] = { "Save", "Discard", "Cancel" };
-    switch (Buttons("Leave the editor", "The file has changes that are not saved:", FilePath,
-                    Labels, 3))
+    switch (SfButtons(Ui, "Leave the editor", "The file has changes that are not saved:",
+                      FilePath, Labels, 3, false))
     {
         case 0:  return Save();
         case 1:  return true;
         default: return false;
     }
+}
+
+// One key of the editor: all of them are its.
+static bool Key(SfUi* Ui, SfElement*, SfKey K)
+{
+    bool Shift = K.Mods & SF_MOD_SHIFT;
+
+    if (K.Code == SF_KEY_ESCAPE || K.Code == SF_KEY_F10)
+    {
+        if (MayLeave())
+            SfUiEnd(Ui, 1);
+    }
+    else if (K.Code == SF_KEY_F1)
+        Help();
+    else if (K.Code == SF_KEY_F2)
+    {
+        if (!ReadOnly)
+            Save();
+    }
+    else if (K.Code == SF_KEY_F3)
+        FindNext(HexMode ? Cur + 1 : Cur);
+    else if (K.Code == SF_KEY_F4)
+    {
+        HexMode = !HexMode;
+        Nibble = false;
+        if (!HexMode)
+        {
+            FindLines();
+            if (!HexMode)
+                Goal = ColumnOf(LineOf(Cur), Cur);
+        }
+    }
+    else if (K.Code == SF_KEY_F7 || Ctrl(K, 'f'))
+        AskFind();
+    else if (K.Code == SF_KEY_F5 || Ctrl(K, 'g'))
+        AskGoTo();
+    else if (Ctrl(K, 'a'))
+    {
+        Anchor = 0;
+        Cur = Size;
+    }
+    else if (Ctrl(K, 'c'))
+        CopySelection();
+    else if (Ctrl(K, 'z') || Ctrl(K, 'y') || Ctrl(K, 'x') || Ctrl(K, 'v'))
+    {
+        if (ReadOnly)
+            return true;
+        if (Ctrl(K, 'z'))
+            Undo();
+        else if (Ctrl(K, 'y'))
+            Redo();
+        else if (Ctrl(K, 'v'))
+            Paste();
+        else
+        {
+            CopySelection();
+            DeleteSelection();
+            Sealed = true;
+        }
+        if (!HexMode)
+            FindLines();
+    }
+    else
+    {
+        // Shift with a moving key stretches the selection from where
+        // the cursor was; a moving key without it drops the selection.
+        uint64_t Was = Cur;
+        if (HexMode ? MoveHex(K) : MoveText(K))
+        {
+            if (!Shift)
+                Anchor = NONE;
+            else if (Anchor == NONE)
+                Anchor = Was;
+            Sealed = true;
+        }
+        else if (HexMode)
+            TypeHex(K);
+        else if (!ReadOnly)
+            TypeText(K);
+    }
+    if (Cur > Size)
+        Cur = Size;
+    if (!HexMode && !LineCount)
+        HexMode = true;
+    return true;
 }
 
 void Edit(const char* Path, bool View)
@@ -973,95 +1060,15 @@ void Edit(const char* Path, bool View)
     HexMode = LooksBinary(Data, Size);
     FindLines();
 
-    void (*Behind)() = Repaint;
-    Repaint = Compose;
-    for (;;)
-    {
-        Compose();
-        ShowWithCursor(CursorX, CursorY);
-        SfKey K = GetKey();
-        bool Shift = K.Mods & SF_MOD_SHIFT;
-
-        if (K.Code == SF_KEY_ESCAPE || K.Code == SF_KEY_F10)
-        {
-            if (MayLeave())
-                break;
-        }
-        else if (K.Code == SF_KEY_F1)
-            Help();
-        else if (K.Code == SF_KEY_F2)
-        {
-            if (!ReadOnly)
-                Save();
-        }
-        else if (K.Code == SF_KEY_F3)
-            FindNext(HexMode ? Cur + 1 : Cur);
-        else if (K.Code == SF_KEY_F4)
-        {
-            HexMode = !HexMode;
-            Nibble = false;
-            if (!HexMode)
-            {
-                FindLines();
-                if (!HexMode)
-                    Goal = ColumnOf(LineOf(Cur), Cur);
-            }
-        }
-        else if (K.Code == SF_KEY_F7 || Ctrl(K, 'f'))
-            AskFind();
-        else if (K.Code == SF_KEY_F5 || Ctrl(K, 'g'))
-            AskGoTo();
-        else if (Ctrl(K, 'a'))
-        {
-            Anchor = 0;
-            Cur = Size;
-        }
-        else if (Ctrl(K, 'c'))
-            CopySelection();
-        else if (Ctrl(K, 'z') || Ctrl(K, 'y') || Ctrl(K, 'x') || Ctrl(K, 'v'))
-        {
-            if (ReadOnly)
-                continue;
-            if (Ctrl(K, 'z'))
-                Undo();
-            else if (Ctrl(K, 'y'))
-                Redo();
-            else if (Ctrl(K, 'v'))
-                Paste();
-            else
-            {
-                CopySelection();
-                DeleteSelection();
-                Sealed = true;
-            }
-            if (!HexMode)
-                FindLines();
-        }
-        else
-        {
-            // Shift with a moving key stretches the selection from where
-            // the cursor was; a moving key without it drops the selection.
-            uint64_t Was = Cur;
-            if (HexMode ? MoveHex(K) : MoveText(K))
-            {
-                if (!Shift)
-                    Anchor = NONE;
-                else if (Anchor == NONE)
-                    Anchor = Was;
-                Sealed = true;
-            }
-            else if (HexMode)
-                TypeHex(K);
-            else if (!ReadOnly)
-                TypeText(K);
-        }
-        if (Cur > Size)
-            Cur = Size;
-        if (!HexMode && !LineCount)
-            HexMode = true;
-    }
-
-    Repaint = Behind;
+    // A window over the whole screen, without lines: the shadow falls off it.
+    SfElement* Window = SfAddWindow(Ui, "", 0, 0);
+    SfSetLines(Window, SF_LINES_NONE);
+    SfElement* Page = SfAddCustom(Ui, 0, 0, 0, 0);
+    SfOnPaint(Page, Paint);
+    SfOnKey(Page, Key);
+    Keys = SfAddKeyBar(Ui, nullptr);
+    SfUiRun(Ui);
+    SfRemove(Window);
     while (ChangeCount)
         Release(Changes[--ChangeCount].Bytes);
     Release(Changes);

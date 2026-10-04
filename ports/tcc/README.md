@@ -29,14 +29,15 @@ tcc reaches the system (`sfport.h`). The plain C functions come from the
 SDK's libc. Built by the Makefile into `/apps/tcc`.
 
 What it builds are SDK programs too: static ELF files that start in
-`SfMain`, with `libtcc1.a` and the SDK's `libc.a` linked in. Its files are
-in its data folder `/files/tcc` (`data:/` to tcc), put there by the
+`SfMain`, with `libtcc1.a`, the SDK's `libui.a` (sfui) and its `libc.a`
+linked in. Its files are in its data folder `/files/tcc` (`data:/` to tcc), put there by the
 Makefile (`mkimg.py --tree`):
 
 | Path | What is there |
 |------|---------------|
 | `include/` | tcc's `stdarg.h`, `stdbool.h`, `float.h`, `varargs.h`; the SDK's libc headers; `sfos.h` and the SDK headers |
 | `lib/libtcc1.a` | `tinycc/lib`: what the code tcc makes calls (`va_arg`, `alloca`, long long conversions), built by gcc |
+| `lib/libui.a` | the SDK's sfui |
 | `lib/libc.a` | the SDK's libc |
 
 ```
@@ -49,7 +50,8 @@ folders in it (in path order), built into `<folder>/<name>.bin` unless
 there is an `-o`; the other arguments go to tcc as they are. Paths in the
 project are below its folder - `#include "../include/x.h"` from
 `gui/window.c` works, and messages read `gui/window.c:3: ...`.
-`ports/tcc/demo` is such a project; the image has it as `/demo`.
+`ports/tcc/demo` is such a project, a window of sfui; the image has it as
+`/demo`.
 
 What changed in `tinycc/`:
 
@@ -63,8 +65,8 @@ What changed in `tinycc/`:
 - messages go to the console; an error ends tcc at once
   (`Process->Exit`) instead of `longjmp`;
 - `__DATE__` and `__TIME__` from `Sys->Time`;
-- programs: entry `SfMain` instead of `_start`, no `crt*.o`, `libtcc1.a`
-  and `libc.a` from `data:/lib` instead of `-lc`, always static;
+- programs: entry `SfMain` instead of `_start`, no `crt*.o`, `libtcc1.a`,
+  `libui.a` and `libc.a` from `data:/lib` instead of `-lc`, always static;
 - `__SURFACEOS__` instead of `__unix__`; `size_t` is `unsigned long long`
   as in the SDK, so `include/stddef.h` is the SDK libc's (tcc's is gone);
 - for the SDK headers: `_Static_assert`, `__builtin_offsetof`;
@@ -72,9 +74,11 @@ What changed in `tinycc/`:
   calls go straight to the function instead of through a PLT, and
   `fill_got` runs before `tidy_section_headers` drops the relocations it
   reads;
-- left out: `-run` and everything else that runs code in tcc's process,
-  shared libraries, `-ar`, `-impdef`, `-m32`, `-MD` (`tcctools.c` is gone),
-  stdin as `-`, environment variables.
+- options: only those `tcc -h` shows - `-o -c -E -I -D -U -L -l -g -w
+  -Werror -v -h`; any other is an invalid option. `-run` and everything
+  else that runs code in tcc's process, shared libraries, `-ar`
+  (`tcctools.c` is gone), stdin as `-` and environment variables are left
+  out.
 
 ## License
 

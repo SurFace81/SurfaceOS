@@ -86,8 +86,8 @@ void BookmarkMenu()
         for (uint32_t i = 0; i < BookmarkCount; i++)
             Items[i] = Bookmarks[i];
         SfKey Other;
-        int i = Menu("Bookmarks - Ins: add this folder, Del: remove", Items, BookmarkCount, 0,
-                     &Other);
+        int i = SfMenu(Ui, "Bookmarks - Ins: add this folder, Del: remove", Items,
+                       BookmarkCount, 0, &Other);
         if (i < 0)
             return;
         if (Other.Code == 0)
@@ -240,8 +240,8 @@ void Volumes()
             Items[i] = Labels[i];
         }
         SfKey Other;
-        int i = Menu("Volumes - Enter: go there (mounting it), Del: unmount", Items, VolCount,
-                     At, &Other);
+        int i = SfMenu(Ui, "Volumes - Enter: go there (mounting it), Del: unmount", Items,
+                       VolCount, At, &Other);
         if (i < 0)
             return;
         At = (uint32_t)i;
@@ -347,7 +347,7 @@ static bool Walk(const char* Folder)
         }
         if (Go && IsDir)
             Go = Walk(Path);
-        if (Cancelled())
+        if (SfUiEscape(Ui))
             Go = false;
     }
     Dir->Close(Dir);
@@ -356,8 +356,8 @@ static bool Walk(const char* Folder)
 
 void FindFiles()
 {
-    if (!Input("Find files", "Names like (* and ? stand for anything):", Mask, sizeof(Mask)) ||
-        !Input("Find files", "Holding the text (empty: any file):", Wanted, sizeof(Wanted)))
+    if (!SfInput(Ui, "Find files", "Names like (* and ? stand for anything):", Mask, sizeof(Mask)) ||
+        !SfInput(Ui, "Find files", "Holding the text (empty: any file):", Wanted, sizeof(Wanted)))
         return;
     if (!Mask[0])
         Copy(Mask, "*", sizeof(Mask));
@@ -370,7 +370,7 @@ void FindFiles()
     char* p = Append(Title, "Found: ");
     p = Number(p, FoundCount);
     Append(p, " - Enter goes there");
-    int i = Menu(Title, Found, FoundCount, 0);
+    int i = SfMenu(Ui, Title, Found, FoundCount, 0, nullptr);
     if (i >= 0)
     {
         char Folder[PATH_SIZE], Name[256];
@@ -459,7 +459,7 @@ void DrawQuickView(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, cons
         return;
     if (E->Folder)
     {
-        Text(X + 1, Y + 1, "A folder. Space counts what it holds.", COL_FILE);
+        SfText(Ui, X + 1, Y + 1, "A folder. Space counts what it holds.", COL_FILE);
         return;
     }
     if (!Same(Path, Shown) || ShownSize != E->Size)
@@ -486,13 +486,13 @@ void DrawQuickView(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, cons
         {
             char Digits[12];
             HexNumber(Digits, (uint64_t)r * Per, 6);
-            Text(X, Y + r, Digits, COL_DIM);
+            SfText(Ui, X, Y + r, Digits, COL_DIM);
             for (uint32_t i = 0; i < Per && (uint64_t)r * Per + i < Count; i++)
             {
                 uint8_t B = Bytes[r * Per + i];
                 HexNumber(Digits, B, 2);
-                Text(X + 8 + i * 3, Y + r, Digits, COL_FILE);
-                Put(X + 8 + Per * 3 + 1 + i, Y + r, B >= 32 && B != 127 ? (char)B : '.',
+                SfText(Ui, X + 8 + i * 3, Y + r, Digits, COL_FILE);
+                SfPut(Ui, X + 8 + Per * 3 + 1 + i, Y + r, B >= 32 && B != 127 ? (char)B : '.',
                     COL_FOLDER);
             }
         }
@@ -509,7 +509,7 @@ void DrawQuickView(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, cons
         else if (B != '\r')
         {
             if (Col < Width)
-                Put(X + Col, Y + Row, (char)B, COL_FOLDER);
+                SfPut(Ui, X + Col, Y + Row, (char)B, COL_FOLDER);
             Col++;
         }
     }

@@ -279,12 +279,3 @@ SfKey GetKey()
         Sys->Time->Sleep(Sys->Time, 100);       // a program we started has the keys
     return Key;
 }
-
-bool Cancelled()
-{
-    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
-    while (Sys->Sync->WaitAny(Sys->Sync, 1, &Item, 0, nullptr) == SF_SUCCESS)
-        if (GetKey().Code == SF_KEY_ESCAPE)
-            return true;
-    return false;
-}

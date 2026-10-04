@@ -230,6 +230,20 @@ $(LIBC): $(LIBC_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
+# The SDK's sfui (sfui.h): full-screen programs of elements. A library
+# like libc, built the same way, so tcc links it too.
+LIBUI_SRC  = $(wildcard src/sdk/ui/*.c)
+LIBUI_OBJS = $(patsubst src/sdk/ui/%.c,bin/sdk/ui/%.o,$(LIBUI_SRC))
+LIBUI      = bin/sdk/libui.a
+
+bin/sdk/ui/%.o: src/sdk/ui/%.c
+	mkdir -p $(dir $@)
+	$(GCC) $(LIBC_FLAGS) $(DEPFLAGS) -o $@ $<
+
+$(LIBUI): $(LIBUI_OBJS)
+	rm -f $@
+	$(AR) rcs $@ $^
+
 # The other CPUs' first code: a flat binary for its low page, built into
 # the kernel (smp.asm).
 bin/kernel/cpu/ap_trampoline.bin: src/kernel/cpu/ap_trampoline.asm
@@ -250,15 +264,15 @@ bin/apps/%.c.o: src/apps/%.c
 	mkdir -p $(dir $@)
 	$(GCC) $(SDK_CFLAGS) $(DEPFLAGS) -o $@ $<
 
-bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld $(LIBC)
-	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
+bin/apps/%.bin: bin/apps/%.o src/sdk/sfos.ld $(LIBUI) $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBUI) $(LIBC)
 
-bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld $(LIBC)
-	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
+bin/apps/%.bin: bin/apps/%.c.o src/sdk/sfos.ld $(LIBUI) $(LIBC)
+	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBUI) $(LIBC)
 
 define APP_DIR_RULE
-bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld $$(LIBC)
-	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^) $$(LIBC)
+bin/apps/$(1).bin: $$(filter bin/apps/$(1)/%,$$(APP_OBJS)) src/sdk/sfos.ld $$(LIBUI) $$(LIBC)
+	$$(LD) $$(APP_LDFLAGS) -o $$@ $$(filter %.o,$$^) $$(LIBUI) $$(LIBC)
 endef
 $(foreach d,$(APP_DIRS),$(eval $(call APP_DIR_RULE,$(d))))
 
@@ -284,7 +298,7 @@ bin/ports/tcc.bin: $(TCC_OBJS) src/sdk/sfos.ld $(LIBC)
 # tcc's own files, in its data folder /files/tcc (data:/ to tcc). And
 # ports/tcc/demo, a project to build with it, as /demo.
 #   include/  tcc's headers (stdarg.h, ...), the SDK's libc and the SDK
-#   lib/      libtcc1.a - the helpers of the code tcc makes - and libc.a
+#   lib/      libtcc1.a - the helpers of the code tcc makes - libui.a and libc.a
 LIBTCC1_SRC  = ports/tcc/tinycc/lib/libtcc1.c ports/tcc/tinycc/lib/va_list.c \
 			   ports/tcc/tinycc/lib/alloca86_64.S
 LIBTCC1_OBJS = $(patsubst ports/tcc/tinycc/lib/%,bin/ports/tcc/lib/%.o,$(LIBTCC1_SRC))
@@ -301,11 +315,11 @@ $(LIBTCC1): $(LIBTCC1_OBJS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(TCC_FILES)/.stamp: $(TCC_HEADERS) $(LIBC) $(LIBTCC1)
+$(TCC_FILES)/.stamp: $(TCC_HEADERS) $(LIBC) $(LIBUI) $(LIBTCC1)
 	rm -rf $(TCC_FILES)
 	mkdir -p $(TCC_FILES)/include $(TCC_FILES)/lib
 	cp -r ports/tcc/tinycc/include/. src/sdk/libc/include/. src/sdk/include/. $(TCC_FILES)/include/
-	cp $(LIBC) $(LIBTCC1) $(TCC_FILES)/lib/
+	cp $(LIBC) $(LIBUI) $(LIBTCC1) $(TCC_FILES)/lib/
 	touch $@
 
 # The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
@@ -380,10 +394,10 @@ clean:
 	@rm -rf bin/kernel/mm/*.o bin/kernel/drivers/usb/*.o bin/kernel/drivers/fs/*.o bin/kernel/dev/*.o bin/kernel/fs/*.o bin/kernel/fs/fat32/*.o
 	@rm -rf bin/kernel/acpi/*.o bin/kernel/obj/*.o
 	@find bin -name '*.d' -delete 2>/dev/null || true
-	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin bin/sdk/libc bin/sdk/libc.a
+	@rm -rf bin/sdk/runtime bin/sdk/runtime.elf bin/sdk/runtime.bin bin/sdk/libc bin/sdk/libc.a bin/sdk/ui bin/sdk/libui.a
 	@rm -rf bin/apps/* bin/ports
 	@rm -f src/kernel/version.h
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(LIBUI_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d

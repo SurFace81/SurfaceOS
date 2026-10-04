@@ -1,11 +1,11 @@
 // explorer: a file manager of two panels, with an editor. Run it as
 // `sudo explorer`: it works on the whole disk, which takes the admin right.
 //
-// A full-screen program (SF_CONSOLE_RAW), drawn as taskmgr is: the screen
-// is put together in cells and shown with one Draw. Each panel lists a
-// folder; Tab goes from one to the other, and what is copied or moved goes
-// from the panel with the cursor to the other one. F1 lists the keys, F9
-// the commands.
+// A full-screen program of sfui elements: each panel is one it draws
+// itself, which takes the keys, with the status line and the key bar under
+// them; the dialogs are sfui's. Each panel lists a folder; Tab goes from one
+// to the other, and what is copied or moved goes from the panel with the
+// cursor to the other one. F1 lists the keys, F9 the commands.
 
 #include "explorer.h"
 
@@ -234,14 +234,15 @@ static uint32_t MarkedCount(const Panel* P, uint64_t* Bytes = nullptr)
     return n;
 }
 
-static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
+// A panel's element, its tag the panel's index.
+static void PaintPanel(SfUi* Ui, SfElement* View, uint32_t X, uint32_t, uint32_t W, uint32_t H)
 {
+    uint32_t Index = (uint32_t)(uint64_t)SfGetTag(View);
     Panel* P = &Panels[Index];
-    uint32_t H = Rows - 2;
     bool Mine = Index == Active;
 
     for (uint32_t y = 0; y < H; y++)
-        Fill(X, y, W, ' ', COL_FILE);
+        SfFill(Ui, X, y, W, ' ', COL_FILE);
     Box(X, 0, W, H, COL_FRAME);
 
     // The folder in the top line; a long one shows its end.
@@ -250,9 +251,9 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
     const char* Title = Len > Room ? P->Path + (Len - Room) : P->Path;
     uint32_t n = (uint32_t)Length(Title);
     uint32_t At = X + (W - n - 2) / 2;
-    Put(At, 0, ' ', Mine ? COL_CURSOR : COL_FRAME);
-    At = Text(At + 1, 0, Title, Mine ? COL_CURSOR : COL_FRAME);
-    Put(At, 0, ' ', Mine ? COL_CURSOR : COL_FRAME);
+    SfPut(Ui, At, 0, ' ', Mine ? COL_CURSOR : COL_FRAME);
+    At = SfText(Ui, At + 1, 0, Title, Mine ? COL_CURSOR : COL_FRAME);
+    SfPut(Ui, At, 0, ' ', Mine ? COL_CURSOR : COL_FRAME);
 
     if (QuickView && !Mine)
     {
@@ -264,9 +265,9 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
     uint32_t Inner = W - 2, SizeW = 9, DateW = Inner >= 48 ? 14 : 8;
     uint32_t NameW = Inner - SizeW - DateW - 2;
     uint32_t SizeX = X + 1 + NameW + 1, DateX = SizeX + SizeW + 1;
-    Text(X + 1 + (NameW - 4) / 2, 1, "Name", COL_MARKED);
-    Text(SizeX + 2, 1, "Size", COL_MARKED);
-    Text(DateX + (DateW - 4) / 2, 1, "Date", COL_MARKED);
+    SfText(Ui, X + 1 + (NameW - 4) / 2, 1, "Name", COL_MARKED);
+    SfText(Ui, SizeX + 2, 1, "Size", COL_MARKED);
+    SfText(Ui, DateX + (DateW - 4) / 2, 1, "Date", COL_MARKED);
 
     uint32_t Shown = H - 5;
     if (P->Cursor < P->Top)
@@ -280,8 +281,8 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
     for (uint32_t r = 0; r < Shown; r++)
     {
         uint32_t Y = 2 + r, i = P->Top + r;
-        Put(SizeX - 1, Y, SF_BOX_V, COL_FRAME);
-        Put(DateX - 1, Y, SF_BOX_V, COL_FRAME);
+        SfPut(Ui, SizeX - 1, Y, SF_BOX_V, COL_FRAME);
+        SfPut(Ui, DateX - 1, Y, SF_BOX_V, COL_FRAME);
         if (i >= P->Count)
             continue;
         const Entry* E = &P->Items[i];
@@ -290,9 +291,9 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
                       : E->Marked ? COL_MARKED
                       : E->Folder ? COL_FOLDER
                       : Programs ? COL_PROGRAM : COL_FILE;
-        TextIn(X + 1, Y, E->Name, NameW, Color);
+        SfTextIn(Ui, X + 1, Y, E->Name, NameW, Color);
         if (Length(E->Name) > NameW)
-            Put(X + NameW, Y, SF_TRIANGLE_RIGHT, Color);        // there is more of it
+            SfPut(Ui, X + NameW, Y, SF_TRIANGLE_RIGHT, Color);        // there is more of it
 
         char Part[32], Line[64];
         if (IsUp(E))
@@ -304,8 +305,8 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
         uint32_t Pad = SizeW - (uint32_t)Length(Part);
         memset(Line, ' ', Pad);
         Append(Line + Pad, Part);
-        Put(SizeX - 1, Y, SF_BOX_V, Cursor ? Color : COL_FRAME);
-        Text(SizeX, Y, Line, Color);
+        SfPut(Ui, SizeX - 1, Y, SF_BOX_V, Cursor ? Color : COL_FRAME);
+        SfText(Ui, SizeX, Y, Line, Color);
 
         char* p = Line;
         if (IsUp(E))
@@ -322,16 +323,16 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
                 p = Number(p, E->Modified.Minute, 2, '0');
             }
         }
-        Put(DateX - 1, Y, SF_BOX_V, Cursor ? Color : COL_FRAME);
-        TextIn(DateX, Y, Line, DateW, Color);
+        SfPut(Ui, DateX - 1, Y, SF_BOX_V, Cursor ? Color : COL_FRAME);
+        SfTextIn(Ui, DateX, Y, Line, DateW, Color);
     }
-    Put(SizeX - 1, 1, SF_BOX_V, COL_FRAME);
-    Put(DateX - 1, 1, SF_BOX_V, COL_FRAME);
+    SfPut(Ui, SizeX - 1, 1, SF_BOX_V, COL_FRAME);
+    SfPut(Ui, DateX - 1, 1, SF_BOX_V, COL_FRAME);
     if (P->Closed)
-        TextIn(X + 1, 4, "The system does not let this folder be listed.", NameW, COL_MARKED);
+        SfTextIn(Ui, X + 1, 4, "The system does not let this folder be listed.", NameW, COL_MARKED);
 
     // Under the list: what is marked, or the whole name under the cursor.
-    Fill(X + 1, H - 3, Inner, SF_BOX_H, COL_FRAME);
+    SfFill(Ui, X + 1, H - 3, Inner, SF_BOX_H, COL_FRAME);
     char Line[PATH_SIZE];
     uint64_t Bytes = 0;
     uint32_t Marked = MarkedCount(P, &Bytes);
@@ -341,30 +342,26 @@ static void DrawPanel(uint32_t Index, uint32_t X, uint32_t W)
         p = Append(p, " marked, ");
         p = Number(p, Bytes);
         Append(p, " bytes");
-        TextIn(X + 1, H - 2, Line, Inner, COL_MARKED);
+        SfTextIn(Ui, X + 1, H - 2, Line, Inner, COL_MARKED);
     }
     else if (UnderCursor(P))
     {
         const Entry* E = UnderCursor(P);
         uint64_t L = Length(E->Name);
-        TextIn(X + 1, H - 2, L > Inner ? E->Name + (L - Inner) : E->Name, Inner, COL_FILE);
+        SfTextIn(Ui, X + 1, H - 2, L > Inner ? E->Name + (L - Inner) : E->Name, Inner, COL_FILE);
     }
 }
 
-// The whole screen into the cells.
-static void Compose()
+// The line above the keys: the folder, or the name being typed. The title
+// bar shows the folder too.
+static void PaintStatus(SfUi* Ui, SfElement*, uint32_t, uint32_t Y, uint32_t, uint32_t)
 {
-    uint32_t Half = Columns / 2;
-    DrawPanel(0, 0, Half);
-    DrawPanel(1, Half, Columns - Half);
-
-    // The line above the keys: the folder, or the name being typed.
-    uint32_t Y = Rows - 2;
-    Fill(0, Y, Columns, ' ', COL_LINE);
+    Con->SetTitle(Con, Here()->Path);
+    SfFill(Ui, 0, Y, Columns, ' ', COL_LINE);
     if (Search[0])
     {
-        uint32_t X = Text(0, Y, "Search: ", COL_KEY);
-        Text(X, Y, Search, COL_KEY);
+        uint32_t X = SfText(Ui, 0, Y, "Search: ", COL_KEY);
+        SfText(Ui, X, Y, Search, COL_KEY);
     }
     else
     {
@@ -376,20 +373,9 @@ static void Compose()
             p = Append(p, ", reversed");
         Append(p, "   F9 commands ");
         uint32_t n = (uint32_t)Length(Line);
-        TextIn(0, Y, Here()->Path, Columns - n - 1, COL_LINE);
-        Text(Columns - n, Y, Line, COL_LINE);
+        SfTextIn(Ui, 0, Y, Here()->Path, Columns - n - 1, COL_LINE);
+        SfText(Ui, Columns - n, Y, Line, COL_LINE);
     }
-
-    static const char* const Names[10] =
-        { "Help", "Rename", "View", "Edit", "Copy", "Move", "Folder", "Delete", "Menu", "Quit" };
-    KeyBar(Names);
-}
-
-static void Draw()
-{
-    Compose();
-    Con->SetTitle(Con, Here()->Path);
-    Show();
 }
 
 // --- commands --------------------------------------------------------------
@@ -456,7 +442,7 @@ static void CopyOrMove(bool Move)
     char Prompt[400], Typed[PATH_SIZE], Target[PATH_SIZE];
     Describe(Prompt, Move ? "Move " : "Copy ", P, " to:");
     Copy(Typed, There()->Path, sizeof(Typed));
-    if (!Input(Move ? "Move" : "Copy", Prompt, Typed, sizeof(Typed)) || !Typed[0])
+    if (!SfInput(Ui, Move ? "Move" : "Copy", Prompt, Typed, sizeof(Typed)) || !Typed[0])
         return;
     Absolute(P->Path, Typed, Target);
 
@@ -498,7 +484,7 @@ static void Rename()
         return;
     char Typed[256], From[PATH_SIZE], To[PATH_SIZE];
     Copy(Typed, E->Name, sizeof(Typed));
-    if (!Input("Rename", "The new name:", Typed, sizeof(Typed)) || !Typed[0] ||
+    if (!SfInput(Ui, "Rename", "The new name:", Typed, sizeof(Typed)) || !Typed[0] ||
         Same(Typed, E->Name))
         return;
     if (!Join(From, P->Path, E->Name))
@@ -517,7 +503,7 @@ static void DeleteChosen()
         return;
     char Line[400];
     Describe(Line, "Delete ", P, "?");
-    if (!Confirm("Delete", Line, "Folders go with everything in them."))
+    if (!SfConfirm(Ui, "Delete", Line, "Folders go with everything in them."))
         return;
     BeginJob("Deleting");
     bool Any = MarkedCount(P) != 0;
@@ -533,7 +519,7 @@ static void DeleteChosen()
 static void MakeFolder()
 {
     char Typed[256] = "", Path[PATH_SIZE], Full[PATH_SIZE + 8];
-    if (!Input("New folder", "Its name:", Typed, sizeof(Typed)) || !Typed[0])
+    if (!SfInput(Ui, "New folder", "Its name:", Typed, sizeof(Typed)) || !Typed[0])
         return;
     Absolute(Here()->Path, Typed, Path);
     DiskPath(Path, Full);
@@ -547,7 +533,7 @@ static void MakeFolder()
 static void NewFile()
 {
     char Typed[256] = "", Path[PATH_SIZE];
-    if (!Input("New file", "Its name:", Typed, sizeof(Typed)) || !Typed[0])
+    if (!SfInput(Ui, "New file", "Its name:", Typed, sizeof(Typed)) || !Typed[0])
         return;
     Absolute(Here()->Path, Typed, Path);
     if (FolderAt(Path))
@@ -623,7 +609,7 @@ static void Mark(bool Count)
 static void MarkByMask(bool On)
 {
     static char Mask[128] = "*";
-    if (!Input(On ? "Mark" : "Unmark", "Names like (* and ? stand for anything):", Mask,
+    if (!SfInput(Ui, On ? "Mark" : "Unmark", "Names like (* and ? stand for anything):", Mask,
                sizeof(Mask)))
         return;
     Panel* P = Here();
@@ -645,7 +631,7 @@ static void HistoryMenu()
     const char* Items[16];
     for (uint32_t i = 0; i < HistoryCount; i++)
         Items[i] = History[i];
-    int i = Menu("Folders been to", Items, HistoryCount, 0);
+    int i = SfMenu(Ui, "Folders been to", Items, HistoryCount, 0, nullptr);
     if (i >= 0)
     {
         char Path[PATH_SIZE];
@@ -684,7 +670,7 @@ static void Help()
         "Ctrl+F3..F6   order by name, extension, date, size (again: reversed)",
         "F10           quit",
     };
-    Menu("Keys", Text, sizeof(Text) / sizeof(Text[0]), 0);
+    SfMenu(Ui, "Keys", Text, sizeof(Text) / sizeof(Text[0]), 0, nullptr);
 }
 
 static void Swap()
@@ -720,7 +706,7 @@ static bool SearchFor()
 }
 
 // One key; false when it is time to go.
-static bool OnKey(const SfKey& K)
+static bool Command(const SfKey& K)
 {
     Panel* P = Here();
     uint32_t Page = Rows > 8 ? Rows - 8 : 1;
@@ -850,7 +836,7 @@ static void CommandMenu()
     };
     Entry* E = UnderCursor(Here());
     char Path[PATH_SIZE];
-    switch (Menu("Commands", Items, sizeof(Items) / sizeof(Items[0]), 0))
+    switch (SfMenu(Ui, "Commands", Items, sizeof(Items) / sizeof(Items[0]), 0, nullptr))
     {
         case 0:  Volumes(); break;
         case 1:  FindFiles(); break;
@@ -880,6 +866,19 @@ static void CommandMenu()
     }
 }
 
+static SfElement* Views[2];          // the panels' elements
+
+// Every key goes to the panel with the cursor; its view takes the focus. A
+// job's progress window goes when the key that started it is done.
+static bool PanelKey(SfUi* Ui, SfElement*, SfKey K)
+{
+    if (!Command(K))
+        SfUiEnd(Ui, 1);
+    EndProgress();
+    SfFocus(Views[Active]);
+    return true;
+}
+
 SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
@@ -891,13 +890,12 @@ SfStatus SfMain(SfApp*, SfSystem* System)
                         "run it as  sudo explorer\n");
         return SF_ACCESS_DENIED;
     }
-    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny) ||
-        !SF_HAS_FIELD(Sys->Console, SfConsole, GetClipboard))
+    if (!SF_HAS_FIELD(Sys->Console, SfConsole, GetClipboard))
         return SF_UNSUPPORTED;
-
-    Con->SetMode(Con, SF_CONSOLE_RAW);
-    InitScreen();
-    Repaint = Compose;
+    Ui = SfUiOpen(Sys);
+    if (!Ui)
+        return SF_UNSUPPORTED;
+    SfUiSize(Ui, &Columns, &Rows);
 
     // Where the panels were the last time.
     Copy(Panels[0].Path, "/", PATH_SIZE);
@@ -910,14 +908,25 @@ SfStatus SfMain(SfApp*, SfSystem* System)
         GoTo(&Panels[i], Path);
     }
 
-    for (;;)
+    // Two panels side by side over the status line and the key bar.
+    sint32_t Half = (sint32_t)Columns / 2;
+    Views[0] = SfAddCustom(Ui, 0, 0, Half, -2);
+    Views[1] = SfAddCustom(Ui, Half, 0, 0, -2);
+    for (uint64_t i = 0; i < 2; i++)
     {
-        Draw();
-        if (!OnKey(GetKey()))
-            break;
+        SfSetTag(Views[i], (void*)i);
+        SfOnPaint(Views[i], PaintPanel);
+        SfOnKey(Views[i], PanelKey);
     }
+    SfOnPaint(SfAddCustom(Ui, 0, -2, 0, 1), PaintStatus);
+    static const char* const Names[10] =
+        { "Help", "Rename", "View", "Edit", "Copy", "Move", "Folder", "Delete", "Menu", "Quit" };
+    SfAddKeyBar(Ui, Names);
+    SfFocus(Views[Active]);
+
+    SfUiRun(Ui);
     SaveConfig();
     Con->SetTitle(Con, "");
-    Con->SetMode(Con, SF_CONSOLE_LINE);
-    return SF_SUCCESS;                  // the key reader ends with the program
+    SfUiClose(Ui);
+    return SF_SUCCESS;
 }

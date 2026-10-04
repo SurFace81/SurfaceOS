@@ -4,7 +4,7 @@
 // explorer: a two-panel file manager with an editor. What its parts share.
 //
 //   main.cpp    the panels, their keys and the commands
-//   screen.cpp  the cells of the screen and the dialogs
+//   screen.cpp  the screen (sfui) and what the dialogs share
 //   ops.cpp     copying, moving and deleting, folders and all
 //   tools.cpp   volumes, finding files, bookmarks, comparing, quick view
 //   editor.cpp  the editor: text and hex
@@ -14,6 +14,7 @@
 // the console; the files are reached through the root disk:/.
 
 #include <sfos.h>
+#include <sfui.h>
 
 extern SfSystem*  Sys;
 extern SfConsole* Con;
@@ -73,9 +74,7 @@ void  DiskPath(const char* Path, char* Out);                // PATH_SIZE + 8 byt
 SfStatus Open(const char* Path, uint64_t Mode, SfFile** Out);
 bool  IsFolder(SfFile* File);
 
-// Keys: looked for without waiting too, so that Esc can stop a long job.
 SfKey GetKey();                                             // waits for one
-bool  Cancelled();                                          // Esc was pressed meanwhile
 inline bool Ctrl(const SfKey& K, char Letter)
 {
     return (K.Mods & SF_MOD_CTRL) && K.Char == Letter - 'a' + 1;
@@ -87,32 +86,15 @@ inline bool Types(const SfKey& K)                           // a character to ty
 
 // --- screen.cpp ------------------------------------------------------------
 
+extern SfUi*    Ui;
 extern uint32_t Columns, Rows;
 
-void     InitScreen();
-void     Put(uint32_t X, uint32_t Y, char C, uint8_t Color);
-uint32_t Text(uint32_t X, uint32_t Y, const char* S, uint8_t Color);
-void     TextIn(uint32_t X, uint32_t Y, const char* S, uint32_t Width, uint8_t Color);
-void     Fill(uint32_t X, uint32_t Y, uint32_t Width, char C, uint8_t Color);
-void     Box(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, uint8_t Color);
-void     KeyBar(const char* const* Names);                  // ten names, F1..F10
-void     Show();                                            // the cells onto the screen
-void     ShowWithCursor(uint32_t X, uint32_t Y);
-
-// Dialogs: drawn over the screen behind them, which Repaint puts together
-// (into the cells, without showing it) each time a dialog draws itself.
-extern void (*Repaint)();
-int  Buttons(const char* Title, const char* Line1, const char* Line2,
-             const char* const* Labels, uint32_t Count, bool Error = false);
+void Box(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, uint8_t Color);
 void Message(const char* Title, const char* Line, SfStatus Status = SF_SUCCESS);
-bool Confirm(const char* Title, const char* Line1, const char* Line2 = nullptr);
-bool Input(const char* Title, const char* Prompt, char* Buffer, uint64_t Size);
-// The chosen item, -1 for Esc. A key the list has no use for ends it too
-// when Other is given: *Other gets the key, the item under the cursor comes
-// back (Other->Code stays 0 after Enter).
-int  Menu(const char* Title, const char* const* Items, uint32_t Count, uint32_t Start,
-          SfKey* Other = nullptr);
+// A job under way, in a window that stays until EndProgress. Drawn at most
+// ten times a second, unless Now. Percent below 0: no bar.
 void Progress(const char* Title, const char* Line, int Percent, bool Now = false);
+void EndProgress();
 
 // --- main.cpp --------------------------------------------------------------
 

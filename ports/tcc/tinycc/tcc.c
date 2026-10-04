@@ -23,170 +23,29 @@
 # include "libtcc.c"
 #endif
 
+/* SurfaceOS: the options here are all that tcc_parse_args takes */
 static const char help[] =
-    "Tiny C Compiler "TCC_VERSION" - Copyright (C) 2001-2006 Fabrice Bellard\n"
+    "Tiny C Compiler "TCC_VERSION" for SurfaceOS\n"
     "Usage: tcc [options...] [-o outfile] [-c] infile(s)...\n"
-    "       tcc [options...] -run infile [arguments...]\n"
-    "General options:\n"
-    "  -c          compile only - generate an object file\n"
-    "  -o outfile  set output filename\n"
-    "  -run        run compiled source\n"
-    "  -fflag      set or reset (with 'no-' prefix) 'flag' (see tcc -hh)\n"
-    "  -Wwarning   set or reset (with 'no-' prefix) 'warning' (see tcc -hh)\n"
-    "  -w          disable all warnings\n"
-    "  -v -vv      show version, show search paths or loaded files\n"
-    "  -h -hh      show this, show more help\n"
-    "  -bench      show compilation statistics\n"
-    "  -           use stdin pipe as infile\n"
-    "  @listfile   read arguments from listfile\n"
-    "Preprocessor options:\n"
+    "       tcc [options...] folder    build every .c in it: folder/name.bin\n"
+    "Options:\n"
+    "  -o outfile  set output file name\n"
+    "  -c          compile only - make an object file\n"
+    "  -E          preprocess only\n"
     "  -Idir       add include path 'dir'\n"
     "  -Dsym[=val] define 'sym' with value 'val'\n"
     "  -Usym       undefine 'sym'\n"
-    "  -E          preprocess only\n"
-    "Linker options:\n"
     "  -Ldir       add library path 'dir'\n"
-    "  -llib       link with dynamic or static library 'lib'\n"
-    "  -r          generate (relocatable) object file\n"
-    "  -shared     generate a shared library/dll\n"
-    "  -rdynamic   export all global symbols to dynamic linker\n"
-    "  -soname     set name for shared library to be used at runtime\n"
-    "  -Wl,-opt[=val]  set linker option (see tcc -hh)\n"
-    "Debugger options:\n"
-    "  -g          generate runtime debug info\n"
-#ifdef CONFIG_TCC_BCHECK
-    "  -b          compile with built-in memory and bounds checker (implies -g)\n"
-#endif
-#ifdef CONFIG_TCC_BACKTRACE
-    "  -bt N       show N callers in stack traces\n"
-#endif
-    "Misc. options:\n"
-    "  -x[c|a|n]   specify type of the next infile\n"
-    "  -nostdinc   do not use standard system include paths\n"
-    "  -nostdlib   do not link with standard crt and libraries\n"
-    "  -Bdir       set tcc's private include/library dir\n"
-    "  -MD         generate dependency file for make\n"
-    "  -MF file    specify dependency file name\n"
-    "  -m32/64     defer to i386/x86_64 cross compiler\n"
-    "Tools:\n"
-    "  create library  : tcc -ar [rcsv] lib.a files\n"
-#ifdef TCC_TARGET_PE
-    "  create def file : tcc -impdef lib.dll [-v] [-o lib.def]\n"
-#endif
-    ;
-
-static const char help2[] =
-    "Tiny C Compiler "TCC_VERSION" - More Options\n"
-    "Special options:\n"
-    "  -P -P1                        with -E: no/alternative #line output\n"
-    "  -dD -dM                       with -E: output #define directives\n"
-    "  -pthread                      same as -D_REENTRANT and -lpthread\n"
-    "  -On                           same as -D__OPTIMIZE__ for n > 0\n"
-    "  -Wp,-opt                      same as -opt\n"
-    "  -include file                 include 'file' above each input file\n"
-    "  -isystem dir                  add 'dir' to system include path\n"
-    "  -static                       link to static libraries (not recommended)\n"
-    "  -dumpversion                  print version\n"
-    "  -print-search-dirs            print search paths\n"
-    "  -dt                           with -run/-E: auto-define 'test_...' macros\n"
-    "Ignored options:\n"
-    "  --param  -pedantic  -pipe  -s  -std  -traditional\n"
-    "-W... warnings:\n"
-    "  all                           turn on some (*) warnings\n"
-    "  error                         stop after first warning\n"
-    "  unsupported                   warn about ignored options, pragmas, etc.\n"
-    "  write-strings                 strings are const\n"
-    "  implicit-function-declaration warn for missing prototype (*)\n"
-    "-f[no-]... flags:\n"
-    "  unsigned-char                 default char is unsigned\n"
-    "  signed-char                   default char is signed\n"
-    "  common                        use common section instead of bss\n"
-    "  leading-underscore            decorate extern symbols\n"
-    "  ms-extensions                 allow anonymous struct in struct\n"
-    "  dollars-in-identifiers        allow '$' in C symbols\n"
-    "-m... target specific options:\n"
-    "  ms-bitfields                  use MSVC bitfield layout\n"
-#ifdef TCC_TARGET_ARM
-    "  float-abi                     hard/softfp on arm\n"
-#endif
-#ifdef TCC_TARGET_X86_64
-    "  no-sse                        disable floats on x86_64\n"
-#endif
-    "-Wl,... linker options:\n"
-    "  -nostdlib                     do not link with standard crt/libs\n"
-    "  -[no-]whole-archive           load lib(s) fully/only as needed\n"
-    "  -export-all-symbols           same as -rdynamic\n"
-    "  -image-base= -Ttext=          set base address of executable\n"
-    "  -section-alignment=           set section alignment in executable\n"
-#ifdef TCC_TARGET_PE
-    "  -file-alignment=              set PE file alignment\n"
-    "  -stack=                       set PE stack reserve\n"
-    "  -large-address-aware          set related PE option\n"
-    "  -subsystem=[console/windows]  set PE subsystem\n"
-    "  -oformat=[pe-* binary]        set executable output format\n"
-    "Predefined macros:\n"
-    "  tcc -E -dM - < nul\n"
-#else
-    "  -rpath=                       set dynamic library search path\n"
-    "  -enable-new-dtags             set DT_RUNPATH instead of DT_RPATH\n"
-    "  -soname=                      set DT_SONAME elf tag\n"
-    "  -Bsymbolic                    set DT_SYMBOLIC elf tag\n"
-    "  -oformat=[elf32/64-* binary]  set executable output format\n"
-    "  -init= -fini= -as-needed -O   (ignored)\n"
-    "Predefined macros:\n"
-    "  tcc -E -dM - < /dev/null\n"
-#endif
-    "See also the manual for more details.\n"
+    "  -llib       link with library 'liblib.a'\n"
+    "  -g          generate debug info\n"
+    "  -w          disable all warnings\n"
+    "  -Werror     stop at the first warning\n"
+    "  -v          show version and the files tcc reads\n"
+    "  -h          show this help\n"
     ;
 
 static const char version[] =
-    "tcc version "TCC_VERSION" ("
-#ifdef TCC_TARGET_I386
-        "i386"
-#elif defined TCC_TARGET_X86_64
-        "x86_64"
-#elif defined TCC_TARGET_C67
-        "C67"
-#elif defined TCC_TARGET_ARM
-        "ARM"
-#elif defined TCC_TARGET_ARM64
-        "AArch64"
-#endif
-#ifdef TCC_ARM_HARDFLOAT
-        " Hard Float"
-#endif
-#ifdef TCC_TARGET_PE
-        " Windows"
-#elif defined(TCC_TARGET_MACHO)
-        " Darwin"
-#elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__)
-        " FreeBSD"
-#else
-        " SurfaceOS"
-#endif
-    ")\n"
-    ;
-
-static void print_dirs(const char *msg, char **paths, int nb_paths)
-{
-    int i;
-    sf_printf(NULL, "%s:\n%s", msg, nb_paths ? "" : "  -\n");
-    for(i = 0; i < nb_paths; i++)
-        sf_printf(NULL, "  %s\n", paths[i]);
-}
-
-static void print_search_dirs(TCCState *s)
-{
-    sf_printf(NULL, "install: %s\n", s->tcc_lib_path);
-    /* print_dirs("programs", NULL, 0); */
-    print_dirs("include", s->sysinclude_paths, s->nb_sysinclude_paths);
-    print_dirs("libraries", s->library_paths, s->nb_library_paths);
-    sf_printf(NULL, "libtcc1:\n  %s/lib/"TCC_LIBTCC1"\n", s->tcc_lib_path);
-#ifndef TCC_TARGET_PE
-    print_dirs("crt", s->crt_paths, s->nb_crt_paths);
-    sf_printf(NULL, "elfinterp:\n  %s\n",  DEFAULT_ELFINTERP(s));
-#endif
-}
+    "tcc version "TCC_VERSION" (x86_64 SurfaceOS)\n";
 
 static char *default_outputfile(TCCState *s, const char *first_file)
 {
@@ -194,37 +53,21 @@ static char *default_outputfile(TCCState *s, const char *first_file)
     char *ext;
     const char *name = "a";
 
-    if (first_file && strcmp(first_file, "-"))
+    if (first_file)
         name = tcc_basename(first_file);
     snprintf(buf, sizeof(buf), "%s", name);
     ext = tcc_fileextension(buf);
-#ifdef TCC_TARGET_PE
-    if (s->output_type == TCC_OUTPUT_DLL)
-        strcpy(ext, ".dll");
-    else
-    if (s->output_type == TCC_OUTPUT_EXE)
-        strcpy(ext, ".exe");
-    else
-#endif
-    if (s->output_type == TCC_OUTPUT_OBJ && !s->option_r && *ext)
+    if (s->output_type == TCC_OUTPUT_OBJ && *ext)
         strcpy(ext, ".o");
     else
         strcpy(buf, "a.out");
     return tcc_strdup(buf);
 }
 
-static unsigned getclock_ms(void)
-{
-    uint64_t ms = 0;
-    Sys->Time->GetUptime(Sys->Time, &ms);
-    return (unsigned)ms;
-}
-
 int main(int argc0, char **argv0)
 {
     TCCState *s;
-    int ret, opt, n = 0, t = 0;
-    unsigned start_time = 0;
+    int ret, opt, n = 0;
     const char *first_file;
     int argc; char **argv;
     SfFile *ppfp = NULL; /* the console */
@@ -234,26 +77,13 @@ redo:
     s = tcc_new();
     opt = tcc_parse_args(s, &argc, &argv, 1);
 
-    if ((n | t) == 0) {
+    if (n == 0) {
         if (opt == OPT_HELP)
             return sf_printf(NULL, help), 1;
-        if (opt == OPT_HELP2)
-            return sf_printf(NULL, help2), 1;
-        /* SurfaceOS: no tcctools.c - no other tcc to run, no ar */
-        if (opt == OPT_M32 || opt == OPT_M64)
-            tcc_error("only 64-bit programs are supported");
         if (s->verbose)
             sf_printf(NULL, version);
-        if (opt == OPT_AR || opt == OPT_IMPDEF)
-            tcc_error("-ar and -impdef are not supported");
         if (opt == OPT_V)
             return 0;
-        if (opt == OPT_PRINT_DIRS) {
-            /* initialize search dirs */
-            tcc_set_output_type(s, TCC_OUTPUT_MEMORY);
-            print_search_dirs(s);
-            return 0;
-        }
 
         n = s->nb_files;
         if (n == 0)
@@ -265,28 +95,18 @@ redo:
                 if (!ppfp)
                     tcc_error("could not write '%s'", s->outfile);
             }
-        } else if (s->output_type == TCC_OUTPUT_OBJ && !s->option_r) {
+        } else if (s->output_type == TCC_OUTPUT_OBJ) {
             if (s->nb_libraries)
                 tcc_error("cannot specify libraries with -c");
             if (n > 1 && s->outfile)
                 tcc_error("cannot specify output file with -c many files");
-        } else {
-            if (s->option_pthread)
-                tcc_set_options(s, "-lpthread");
         }
-
-        if (s->do_bench)
-            start_time = getclock_ms();
     }
 
     if (s->output_type == 0)
         s->output_type = TCC_OUTPUT_EXE;
     tcc_set_output_type(s, s->output_type);
     s->ppfp = ppfp;
-
-    if ((s->output_type == TCC_OUTPUT_MEMORY
-      || s->output_type == TCC_OUTPUT_PREPROCESS) && (s->dflag & 16))
-        s->dflag |= t ? 32 : 0, s->run_test = ++t, n = s->nb_files;
 
     /* compile or add each files or library */
     for (first_file = NULL, ret = 0;;) {
@@ -306,35 +126,20 @@ redo:
         }
         s->filetype = 0;
         s->alacarte_link = 1;
-        if (--n == 0 || ret
-            || (s->output_type == TCC_OUTPUT_OBJ && !s->option_r))
+        if (--n == 0 || ret || s->output_type == TCC_OUTPUT_OBJ)
             break;
     }
 
-    if (s->run_test) {
-        t = 0;
-    } else if (s->output_type == TCC_OUTPUT_PREPROCESS) {
-        ;
-    } else if (0 == ret) {
-        if (s->output_type == TCC_OUTPUT_MEMORY) {
-#ifdef TCC_IS_NATIVE
-            ret = tcc_run(s, argc, argv);
-#endif
-        } else {
-            if (!s->outfile)
-                s->outfile = default_outputfile(s, first_file);
-            if (tcc_output_file(s, s->outfile))
-                ret = 1;
-        }
+    if (s->output_type != TCC_OUTPUT_PREPROCESS && 0 == ret) {
+        if (!s->outfile)
+            s->outfile = default_outputfile(s, first_file);
+        if (tcc_output_file(s, s->outfile))
+            ret = 1;
     }
 
-    if (s->do_bench && (n | t | ret) == 0)
-        tcc_print_stats(s, getclock_ms() - start_time);
     tcc_delete(s);
     if (ret == 0 && n)
         goto redo; /* compile more files with -c */
-    if (t)
-        goto redo; /* run more tests with -dt -run */
     if (ppfp)
         ppfp->Close(ppfp);
     return ret;
