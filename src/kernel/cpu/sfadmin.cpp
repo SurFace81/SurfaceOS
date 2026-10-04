@@ -14,6 +14,7 @@
 #include "../../include/drivers/uart.h"
 #include "../../include/drivers/rtc.h"
 #include "../../include/drivers/screen.h"
+#include "../../include/drivers/term.h"
 #include "../../include/drivers/reports.h"
 #include "../../include/cpu/cpuid.h"
 #include "../../include/cpu/smp.h"
@@ -54,6 +55,65 @@ namespace
     inline bool part_of(blkdev* d, blkdev* dev)
     {
         return d == dev || d->parent == dev;
+    }
+
+    // (void* Buffer, uint64_t* Size, uint32_t* Width, uint32_t* Height):
+    // the picture a row at a time. Nothing draws meanwhile - the screen is
+    // kernel code - so it is one moment's.
+    void capture_screen(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        uint32_t w = screen::shot_width(), h = screen::shot_height();
+        uint64_t row = (uint64_t)w * 3, need = row * h;
+        uint64_t size = 0;
+        if (!uaccess::copy_from_user(&size, regs->rsi, sizeof(size)) ||
+            !uaccess::copy_to_user(regs->rsi, &need, sizeof(need)) ||
+            !uaccess::copy_to_user(regs->rdx, &w, sizeof(w)) ||
+            !uaccess::copy_to_user(regs->r10, &h, sizeof(h)))
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        if (size < need)
+        {
+            regs->rax = SF_BUFFER_TOO_SMALL;
+            return;
+        }
+        uint8_t* line = (uint8_t*)kmalloc(row);
+        if (!line)
+        {
+            regs->rax = SF_OUT_OF_RESOURCES;
+            return;
+        }
+        regs->rax = SF_SUCCESS;
+        for (uint32_t y = 0; y < h; y++)
+        {
+            screen::shot_row(y, line);
+            if (!uaccess::copy_to_user(regs->rdi + y * row, line, row))
+            {
+                regs->rax = SF_INVALID_PARAMETER;
+                break;
+            }
+        }
+        kfree(line);
+    }
+
+    // (const char* Text, uint64_t Milliseconds)
+    void set_status(user_regs* regs, iret_frame*)
+    {
+        if (!allowed(regs))
+            return;
+        char text[64];
+        sint64_t len = uaccess::strncpy_from_user(text, regs->rdi, sizeof(text));
+        if (len == -1)
+        {
+            regs->rax = SF_INVALID_PARAMETER;
+            return;
+        }
+        text[sizeof(text) - 1] = '\0';         // a longer one is cut
+        term::set_status(text, (uint32_t)regs->rsi);
+        regs->rax = SF_SUCCESS;
     }
 
     // (SfProcessInfo* Buffer, uint64_t* Count)
@@ -342,5 +402,7 @@ namespace sfadmin
         sfcall::set_handler(SFCALL_ADMIN_BACKGROUND, background);
         sfcall::set_handler(SFCALL_ADMIN_GET_SYSTEM_INFO, get_system_info);
         sfcall::set_handler(SFCALL_ADMIN_GET_PROCESS_INFO, get_process_info);
+        sfcall::set_handler(SFCALL_ADMIN_CAPTURE_SCREEN, capture_screen);
+        sfcall::set_handler(SFCALL_ADMIN_SET_STATUS, set_status);
     }
 }

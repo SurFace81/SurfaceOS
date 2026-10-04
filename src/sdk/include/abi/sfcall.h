@@ -109,6 +109,8 @@
 #define SFCALL_CONSOLE_SET_CLIPBOARD 58  // (const void* Data, uint64_t Size)
 #define SFCALL_CONSOLE_GET_CLIPBOARD 59  // (void* Buffer, uint64_t* Size)
 #define SFCALL_FILES_CREATE_PIPE     60  // (uint64_t* Read, uint64_t* Write)
-#define SFCALL_COUNT                 61
+#define SFCALL_ADMIN_CAPTURE_SCREEN  61  // (void* Buffer, uint64_t* Size, uint32_t* Width, uint32_t* Height)
+#define SFCALL_ADMIN_SET_STATUS      62  // (const char* Text, uint64_t Milliseconds)
+#define SFCALL_COUNT                 63
 
 #endif // ABI_SFCALL_H

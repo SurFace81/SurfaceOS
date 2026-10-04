@@ -17,7 +17,8 @@ IMG="$1"
 APPS="$2"
 SIZE="${3:-64}"
 
-make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt bin/sfos/cmd.bin >/dev/null
+SFOS_BINS=$(ls src/sfos/*.cpp | sed 's|^src/sfos/\(.*\)\.cpp$|bin/sfos/\1.bin|')
+make bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $SFOS_BINS >/dev/null
 APP_BINS=""
 TREES=""
 for a in $APPS; do
@@ -37,7 +38,7 @@ python3 tools/mkimg.py "$IMG" \
     bin/boot/efi/BOOTX64.EFI \
     bin/kernel/kernel.bin \
     bin/kernel/data/stdfont.fnt \
-    bin/sfos/cmd.bin \
+    $SFOS_BINS \
     $APP_BINS \
     $TREES \
     --size="$SIZE" >/dev/null

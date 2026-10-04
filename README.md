@@ -104,7 +104,8 @@ How to write a program, and every table in detail:
   - Ctrl+Alt+C ends every program on the shown screen
   - Ctrl+Alt+Z pauses them and hands the keys to the console (again: they
     go on)
-  - Print Screen saves the screen as a BMP in /files/screenshots
+  - Print Screen saves the screen as a BMP in /files/screenshots: the
+    kernel starts /sfos/SHOT.BIN, which takes the picture and writes it
 
 ### The console (CMD.BIN)
 
@@ -218,7 +219,8 @@ src/
                 runtime and the kernel share), runtime/ (the code behind
                 the SDK tables), libc/ (the C functions), sfos.ld
                 (program link script)
-  sfos/       — cmd.cpp: the console, /sfos/CMD.BIN
+  sfos/       — the system's programs: cmd.cpp the console (/sfos/CMD.BIN),
+                shot.cpp the screenshot (/sfos/SHOT.BIN)
   apps/       — programs: <name>.cpp or <name>.c is one program,
                 <name>/ is one program of all the .cpp and .c files in it
 ports/

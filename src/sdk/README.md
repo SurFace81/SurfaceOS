@@ -252,6 +252,8 @@ gets `Sys->Admin` and the roots `disk:/` and `mount:/`. With them it can:
 - see the memory, the load of each CPU and what each program uses
   (`GetSystemInfo`, `GetProcessInfo`);
 - mount and unmount volumes;
+- capture the screen and put a note on the title bar (`CaptureScreen`,
+  `SetStatus`);
 - set the clock;
 - restart and power off;
 - read the kernel's reports (`lspci`, `dmesg`, ...).
@@ -475,6 +477,8 @@ every call. Such a program also has the roots `disk:/` and `mount:/`.
 | `Background(uint64_t Id)` | The same, onto a hidden screen of its own, its output logged as with `SF_START_BACKGROUND`. |
 | `GetSystemInfo(SfSystemInfo* Info)` | *out*: the memory and the CPUs now. A CPU's load over a time is how much its `CpuBusy` grew against its `CpuTotal`. |
 | `GetProcessInfo(uint64_t Id, SfProcessStats* Info)` | *out*: what program `Id` uses. `SF_NOT_FOUND`. |
+| `CaptureScreen(void* Buffer, uint64_t* Size, uint32_t* Width, uint32_t* Height)` | What the screen shows now, title bar included: *out* `Width` x `Height` pixels, rows from the top, 3 bytes a pixel (blue, green, red). *in/out* `Size`: Buffer's size / the bytes it takes; `SF_BUFFER_TOO_SMALL`. |
+| `SetStatus(const char* Text, uint64_t Milliseconds)` | `Text` on the title bar of the screen shown, in place of the clock, for `Milliseconds` (0: until replaced); `""` takes it away. |
 
 | Type | What it holds |
 |------|---------------|

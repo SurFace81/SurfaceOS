@@ -1998,6 +1998,35 @@ namespace process
         start_kernel_process("cmdkeeper", cmdkeeper_main);
     }
 
+    pid_t start_system_program(const char* path, uint32_t screen)
+    {
+        Process* p = nullptr;
+        ArgList ae;
+        if (ae.init())
+        {
+            if (ae.push_kstr(path) == 0)
+                p = launch(path, &ae, nullptr, LAUNCH_ADMIN | LAUNCH_CONSOLE);
+            ae.destroy();
+        }
+        if (!p)
+        {
+            uart::printf("process: cannot start %s\n", path);
+            return -1;
+        }
+        p->ppid   = 0;
+        p->screen = screen;
+        Thread* t = first_thread(p);
+        task::prepare_user(&t->task, p->name, kstack_top(t), &t->ctx);
+        start(p);
+        uart::printf("process: started %s (pid %u)\n", p->name, (uint32_t)p->pid);
+        return p->pid;
+    }
+
+    bool running(pid_t pid)
+    {
+        return find_live(pid) != nullptr;
+    }
+
     void run_cpu()
     {
         task::init(&this_cpu()->idle_task, "idle");

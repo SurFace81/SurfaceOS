@@ -109,6 +109,14 @@ namespace process
     struct Process;
     Process* start_kernel_process(const char* name, void (*entry)(void*));
 
+    // A program of /sfos the kernel starts itself (SHOT.BIN): with the
+    // admin right and no data folder, on screen `screen` without its keys.
+    // Its pid, or -1 when it cannot be started.
+    pid_t start_system_program(const char* path, uint32_t screen);
+
+    // Does process `pid` still run?
+    bool running(pid_t pid);
+
     // The rest of the boot task's life: run whatever can run, halt when
     // nothing can. Never returns.
     __attribute__((noreturn)) void idle();

@@ -2,7 +2,7 @@
 """Build a bootable SurfaceOS disk image (no sudo required).
 
 Usage:
-  mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> <cmd.bin> [apps...] [--size MiB]
+  mkimg.py <image> <BOOTX64.EFI> <kernel.bin> <stdfont.fnt> [programs...] [--size MiB]
            [--tree=<folder>:<path in image>]...
 
 The image is GPT with one FAT32 partition filling the disk, formatted with
@@ -12,8 +12,9 @@ stick's files could not be reached there. Firmware boots
 /EFI/Boot/BOOTX64.EFI from a removable disk's FAT partition either way.
 The firmware boots /EFI/Boot/BOOTX64.EFI; the loader and the kernel expect
 /sfos/KERNEL.BIN and /sfos/FONT.FNT, and the kernel starts the console of
-every screen from /sfos/CMD.BIN. Programs land in /apps/<lowercase
-name> without an extension, through LFN. The top-level /files, /tmp and
+every screen from /sfos/CMD.BIN. A program from a .../sfos/ folder
+(cmd.bin, shot.bin) lands in /sfos/<NAME>.BIN, any other in
+/apps/<lowercase name> without an extension, through LFN. The top-level /files, /tmp and
 /mount are created too. Each --tree copies a folder with everything in
 it to a path in the image (a program's data folder: /files/<name>).
 
@@ -49,7 +50,7 @@ def build_gpt(image, size_mib):
     return start * 512
 
 
-def populate(image, off_bytes, efi, kernel, font, cmd, apps, trees):
+def populate(image, off_bytes, efi, kernel, font, programs, trees):
     fs = PyFatFS(image, offset=off_bytes, read_only=False)
 
     for d in ("/EFI", "/EFI/Boot", "/sfos", "/apps", "/files", "/tmp", "/mount"):
@@ -62,13 +63,14 @@ def populate(image, off_bytes, efi, kernel, font, cmd, apps, trees):
     put("/EFI/Boot/BOOTX64.EFI", efi)
     put("/sfos/KERNEL.BIN", kernel)
     put("/sfos/FONT.FNT", font)
-    put("/sfos/CMD.BIN", cmd)
-
-    for app in apps:
-        base = app.rsplit("/", 1)[-1]
+    for prog in programs:
+        base = prog.rsplit("/", 1)[-1]
         if base.endswith(".bin"):
             base = base[:-4]
-        put("/apps/" + base.lower(), app)
+        if "/sfos/" in prog:
+            put("/sfos/" + base.upper() + ".BIN", prog)
+        else:
+            put("/apps/" + base.lower(), prog)
 
     # --tree=<folder>:<path>: the folder's files and folders, under path.
     for src, dst in trees:
@@ -116,18 +118,18 @@ def main(argv):
             print("mkimg: unknown option %s" % a)
             return 1
 
-    if len(args) < 5:
+    if len(args) < 4:
         print(__doc__)
         return 1
 
-    image, efi, kernel, font, cmd = args[0:5]
-    apps = args[5:]
+    image, efi, kernel, font = args[0:4]
+    programs = args[4:]
 
     if os.path.exists(image):
         os.remove(image)
 
     off = build_gpt(image, size_mib)
-    populate(image, off, efi, kernel, font, cmd, apps, trees)
+    populate(image, off, efi, kernel, font, programs, trees)
     fsck_repair(image, off)
 
     print("Image built: %s (GPT, FAT32 at %d bytes)" % (image, off))
