@@ -19,6 +19,7 @@ uint32_t Active;
 enum { SORT_NAME, SORT_EXTENSION, SORT_TIME, SORT_SIZE };
 
 static bool QuickView;              // the other panel shows the file under the cursor
+bool        ShowHidden;
 static char Search[64];             // the start of a name, as typed
 
 static Panel* Here()  { return &Panels[Active]; }
@@ -146,6 +147,8 @@ static bool Read(Panel* P)
     SfStatus Status;
     while ((Status = Dir->ReadDir(Dir, &D)) == SF_SUCCESS)
     {
+        if (D.Name[0] == '.' && !ShowHidden)
+            continue;
         Entry* E = AddEntry(P);
         if (!E)
             break;
@@ -217,6 +220,12 @@ static void ReloadBoth()
 {
     Reload(&Panels[0]);
     Reload(&Panels[1]);
+}
+
+static void ToggleHidden()
+{
+    ShowHidden = !ShowHidden;
+    ReloadBoth();
 }
 
 // --- drawing ---------------------------------------------------------------
@@ -667,6 +676,7 @@ static void Help()
         "Ctrl+K        compare the folders: mark what differs",
         "Ctrl+U        swap the panels;  =  the same folder in the other",
         "Ctrl+R        read the folders again",
+        "Ctrl+H        show the hidden names (those starting with '.') or not",
         "Ctrl+F3..F6   order by name, extension, date, size (again: reversed)",
         "F10           quit",
     };
@@ -763,6 +773,7 @@ static bool Command(const SfKey& K)
     else if (Ctrl(K, 'k'))  CompareFolders();
     else if (Ctrl(K, 'u'))  Swap();
     else if (Ctrl(K, 'r'))  ReloadBoth();
+    else if (Ctrl(K, 'h'))  ToggleHidden();
     else switch (K.Code)
     {
         case SF_KEY_TAB:        Active = 1 - Active; break;
@@ -824,6 +835,7 @@ static void CommandMenu()
         "Swap the panels              Ctrl+U",
         "Same folder in the other     =",
         "Read the folders again       Ctrl+R",
+        "Hidden names on / off        Ctrl+H",
         "Order by name                Ctrl+F3",
         "Order by extension           Ctrl+F4",
         "Order by date                Ctrl+F5",
@@ -847,19 +859,20 @@ static void CommandMenu()
         case 6:  Swap(); break;
         case 7:  GoTo(There(), Here()->Path); break;
         case 8:  ReloadBoth(); break;
-        case 9:  SetSort(SORT_NAME); break;
-        case 10: SetSort(SORT_EXTENSION); break;
-        case 11: SetSort(SORT_TIME); break;
-        case 12: SetSort(SORT_SIZE); break;
-        case 13: NewFile(); break;
-        case 14: MarkByMask(true); break;
-        case 15: MarkByMask(false); break;
-        case 16:
+        case 9:  ToggleHidden(); break;
+        case 10: SetSort(SORT_NAME); break;
+        case 11: SetSort(SORT_EXTENSION); break;
+        case 12: SetSort(SORT_TIME); break;
+        case 13: SetSort(SORT_SIZE); break;
+        case 14: NewFile(); break;
+        case 15: MarkByMask(true); break;
+        case 16: MarkByMask(false); break;
+        case 17:
             for (uint32_t i = 0; i < Here()->Count; i++)
                 if (!IsUp(&Here()->Items[i]))
                     Here()->Items[i].Marked = !Here()->Items[i].Marked;
             break;
-        case 17:
+        case 18:
             if (E && !E->Folder && Join(Path, Here()->Path, E->Name))
                 RunProgram(Path);
             break;

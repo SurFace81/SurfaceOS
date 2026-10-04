@@ -113,6 +113,8 @@ Every screen runs /sfos/CMD.BIN: a program in ring 3 with the admin right,
 started again whenever it ends. `help` lists its commands.
 
 - Files: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd
+- A name starting with '.' is hidden: `ls -a` shows it, and explorer
+  with Ctrl+H
 - Volumes: mount <dev> (partitions go to /mount/<dev>pN), umount
   <dev|dir>, sync
 - Time and power: time, settime, uptime, reboot, shutdown
@@ -156,6 +158,7 @@ started again whenever it ends. `help` lists its commands.
   - volumes mounted and unmounted from a menu
   - files found by name and content, quick view, bookmarks, folders
     compared
+  - hidden names ('.' first) on and off with Ctrl+H
   - F1 lists the keys
 - taskmgr (`sudo taskmgr`): memory, the load of every CPU and the running
   programs with their CPU share, CPU time, memory and threads, live; Del

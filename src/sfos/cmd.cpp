@@ -389,8 +389,12 @@ static void PrintEntry(const SfDirEntry* E)
     Print("\n");
 }
 
+// ls [-a] [path]: a name starting with '.' is hidden, -a shows it too.
 static void Ls(const char** Args, uint64_t Count)
 {
+    bool All = Count > 1 && Same(Args[1], "-a");
+    if (All)
+        Args++, Count--;
     const char* Path = Count > 1 ? Args[1] : ".";
     SfFile* Dir = nullptr;
     SfStatus Status = Open(Path, SF_FILE_READ, &Dir);
@@ -407,7 +411,8 @@ static void Ls(const char** Args, uint64_t Count)
     {
         SfDirEntry Entry;
         while ((Status = Dir->ReadDir(Dir, &Entry)) == SF_SUCCESS)
-            PrintEntry(&Entry);
+            if (All || Entry.Name[0] != '.')
+                PrintEntry(&Entry);
         if (Status != SF_END_OF_FILE)
             Fail("ls:", Path, Status);
     }
@@ -1375,7 +1380,7 @@ static const struct
 } Commands[] = {
     { "help",     Help,     "this list" },
     { "cls",      Cls,      "clear the screen" },
-    { "ls",       Ls,       "[path]  what is in a folder" },
+    { "ls",       Ls,       "[-a] [path]  what is in a folder; -a: .names too" },
     { "cd",       Cd,       "[folder]  go there (alone: where you are)" },
     { "cat",      Cat,      "<file>  show a text file" },
     { "xxd",      Xxd,      "<file>  show a file in hex" },
