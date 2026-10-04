@@ -1,166 +1,46 @@
 // taskmgr: the task manager. Run it as `sudo taskmgr`.
 //
-// A full-screen program (SF_CONSOLE_RAW) that shows, once a second, the
-// memory, the load of every CPU and the running programs with their CPU
-// share, CPU time, memory and threads - and ends the chosen one.
+// A full-screen program that shows, once a second, the memory, the load of
+// every CPU and the running programs with their CPU share, CPU time, memory
+// and threads - and ends the chosen one.
 //
-// How it is built, as an example of the console protocol: the whole screen
-// is put together in Cells and drawn with one Draw call. It waits for a
-// key with WaitAny, with a timeout - its tick - and ReadKey takes the key
-// once one is there.
+// How it is built, as an example of sfui: the screen is made of elements
+// once - frames, labels, bars and the list of programs, whose rows it draws
+// itself - and a timer of one second takes a sample and sets what they show.
 
 #include <sfos.h>
+#include <sfui.h>
+#include <stdio.h>
 
-static SfSystem*  Sys;
-static SfConsole* Con;
-static SfAdmin*   Admin;
+static SfSystem* Sys;
+static SfAdmin*  Admin;
+static SfUi*     Ui;
 
-// --- the screen ------------------------------------------------------------
-
-static const uint32_t MAX_COLUMNS = 512;
-static const uint32_t MAX_ROWS    = 256;
-static SfCell   Cells[MAX_COLUMNS * MAX_ROWS];
-static uint32_t Columns, Rows;
-
-static const uint8_t NORMAL   = SF_CELL_COLOR(SF_COLOR_WHITE, SF_COLOR_BLACK);
-static const uint8_t BRIGHT   = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
-static const uint8_t FRAME    = SF_CELL_COLOR(SF_COLOR_CYAN, SF_COLOR_BLACK);
-static const uint8_t HEADER   = SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_CYAN);
-static const uint8_t CHOSEN   = SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_WHITE);
-static const uint8_t DIM      = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_BLACK, SF_COLOR_BLACK);
-static const uint8_t WARNING  = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_YELLOW, SF_COLOR_BLACK);
-
-static void Put(uint32_t X, uint32_t Y, char C, uint8_t Color)
-{
-    if (X < Columns && Y < Rows)
-    {
-        Cells[Y * Columns + X].Char  = C;
-        Cells[Y * Columns + X].Color = Color;
-    }
-}
-
-// Text at (X, Y); where it ends.
-static uint32_t Text(uint32_t X, uint32_t Y, const char* S, uint8_t Color)
-{
-    for (; *S; S++, X++)
-        Put(X, Y, *S, Color);
-    return X;
-}
-
-static void Fill(uint32_t X, uint32_t Y, uint32_t Width, char C, uint8_t Color)
-{
-    for (uint32_t i = 0; i < Width; i++)
-        Put(X + i, Y, C, Color);
-}
-
-// A frame of Width x Height at (X, Y) with Title in its top line.
-static void Frame(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Height, const char* Title)
-{
-    Put(X, Y, SF_BOX_TOP_LEFT, FRAME);
-    Fill(X + 1, Y, Width - 2, SF_BOX_H, FRAME);
-    Put(X + Width - 1, Y, SF_BOX_TOP_RIGHT, FRAME);
-    for (uint32_t y = Y + 1; y < Y + Height - 1; y++)
-    {
-        Put(X, y, SF_BOX_V, FRAME);
-        Fill(X + 1, y, Width - 2, ' ', NORMAL);
-        Put(X + Width - 1, y, SF_BOX_V, FRAME);
-    }
-    Put(X, Y + Height - 1, SF_BOX_BOTTOM_LEFT, FRAME);
-    Fill(X + 1, Y + Height - 1, Width - 2, SF_BOX_H, FRAME);
-    Put(X + Width - 1, Y + Height - 1, SF_BOX_BOTTOM_RIGHT, FRAME);
-
-    Put(X + 2, Y, ' ', BRIGHT);
-    uint32_t End = Text(X + 3, Y, Title, BRIGHT);
-    Put(End, Y, ' ', BRIGHT);
-}
-
-// A bar Width cells long, Percent of it full: green, yellow past 60%, red
-// past 85%.
-static void Bar(uint32_t X, uint32_t Y, uint32_t Width, uint32_t Percent)
-{
-    uint8_t Ink = Percent > 85 ? SF_COLOR_BRIGHT | SF_COLOR_RED
-                : Percent > 60 ? SF_COLOR_BRIGHT | SF_COLOR_YELLOW
-                : SF_COLOR_BRIGHT | SF_COLOR_GREEN;
-    uint32_t Full = (Percent * Width + 50) / 100;
-    for (uint32_t i = 0; i < Width; i++)
-        Put(X + i, Y, i < Full ? SF_BLOCK_FULL : SF_SHADE_LIGHT,
-            SF_CELL_COLOR(i < Full ? Ink : SF_COLOR_BRIGHT | SF_COLOR_BLACK, SF_COLOR_BLACK));
-}
+static const uint8_t NORMAL = SF_CELL_COLOR(SF_COLOR_WHITE, SF_COLOR_BLACK);
+static const uint8_t CHOSEN = SF_CELL_COLOR(SF_COLOR_BLACK, SF_COLOR_WHITE);
+static const uint8_t DIM    = SF_CELL_COLOR(SF_COLOR_BRIGHT | SF_COLOR_BLACK, SF_COLOR_BLACK);
 
 // --- numbers into text -----------------------------------------------------
 
-// Value in decimal, right-aligned in Width (0: as long as it is) into Out.
-static char* Number(char* Out, uint64_t Value, uint32_t Width = 0)
-{
-    char Digits[24];
-    uint32_t n = 0;
-    do
-    {
-        Digits[n++] = (char)('0' + Value % 10);
-        Value /= 10;
-    } while (Value);
-    for (uint32_t i = n; i < Width; i++)
-        *Out++ = ' ';
-    while (n)
-        *Out++ = Digits[--n];
-    *Out = '\0';
-    return Out;
-}
-
-static char* Append(char* Out, const char* S)
-{
-    while (*S)
-        *Out++ = *S++;
-    *Out = '\0';
-    return Out;
-}
-
-static char* TwoDigits(char* Out, uint64_t Value)
-{
-    *Out++ = (char)('0' + Value / 10 % 10);
-    *Out++ = (char)('0' + Value % 10);
-    *Out = '\0';
-    return Out;
-}
-
 // Bytes as "123 KB", "45 MB" or "2.5 GB".
-static char* Size(char* Out, uint64_t Bytes)
+static void Size(char* Out, uint64_t Size, uint64_t Bytes)
 {
     const uint64_t K = 1024, M = K * K, G = M * K;
     if (Bytes >= 10 * G || (Bytes >= G && Bytes % G == 0))
-        return Append(Number(Out, Bytes / G), " GB");
-    if (Bytes >= G)
-    {
-        Out = Number(Out, Bytes / G);
-        *Out++ = '.';
-        *Out++ = (char)('0' + Bytes % G * 10 / G);
-        return Append(Out, " GB");
-    }
-    if (Bytes >= 10 * M)
-        return Append(Number(Out, Bytes / M), " MB");
-    return Append(Number(Out, Bytes / K), " KB");
+        snprintf(Out, Size, "%llu GB", Bytes / G);
+    else if (Bytes >= G)
+        snprintf(Out, Size, "%llu.%llu GB", Bytes / G, Bytes % G * 10 / G);
+    else if (Bytes >= 10 * M)
+        snprintf(Out, Size, "%llu MB", Bytes / M);
+    else
+        snprintf(Out, Size, "%llu KB", Bytes / K);
 }
 
 // Milliseconds as "h:mm:ss".
-static char* Duration(char* Out, uint64_t Ms)
+static void Duration(char* Out, uint64_t Size, uint64_t Ms)
 {
     uint64_t S = Ms / 1000;
-    Out = Number(Out, S / 3600);
-    *Out++ = ':';
-    Out = TwoDigits(Out, S / 60 % 60);
-    *Out++ = ':';
-    return TwoDigits(Out, S % 60);
-}
-
-// Right-align Text in Width into Out.
-static char* Right(char* Out, const char* S, uint32_t Width)
-{
-    uint32_t n = 0;
-    while (S[n])
-        n++;
-    for (uint32_t i = n; i < Width; i++)
-        *Out++ = ' ';
-    return Append(Out, S);
+    snprintf(Out, Size, "%llu:%02llu:%02llu", S / 3600, S / 60 % 60, S % 60);
 }
 
 // --- what is running -------------------------------------------------------
@@ -196,16 +76,8 @@ static uint32_t CpuLoad(uint32_t Cpu)
                    Info.CpuTotal[Cpu] - LastInfo.CpuTotal[Cpu]);
 }
 
-static uint64_t Chosen;             // the Id of the chosen program
-
 static void Sample()
 {
-    // The chosen program gone, the one now in its place is chosen.
-    uint32_t Was = 0;
-    for (uint32_t i = 0; i < ProgramCount; i++)
-        if (Programs[i].Stats.Id == Chosen)
-            Was = i;
-
     LastInfo = Info;
     LastCount = ProgramCount;
     for (uint32_t i = 0; i < ProgramCount; i++)
@@ -233,332 +105,263 @@ static void Sample()
                                   Now - LastNow);
         ProgramCount++;
     }
-
-    bool Found = false;
-    for (uint32_t i = 0; i < ProgramCount; i++)
-        Found |= Programs[i].Stats.Id == Chosen;
-    if (!Found && ProgramCount)
-        Chosen = Programs[Was < ProgramCount ? Was : ProgramCount - 1].Stats.Id;
 }
 
-// --- drawing ---------------------------------------------------------------
+// --- the screen ------------------------------------------------------------
 
-static uint32_t Top;                // the first program row shown
-static char     Message[128];
-static uint8_t  MessageColor = NORMAL;
-static bool     Asking;             // "End ...? y/n"
+static uint32_t   Columns, Rows;
+static SfElement* Clock;            // uptime and time, in the header
+static SfElement* MemoryBar;
+static SfElement* MemoryPercent;
+static SfElement* MemoryText;
+static SfElement* CpuFrame;
+static SfElement* CpuAll;           // " all 12% " in the processor frame's top line
+static SfElement* CpuBars[SF_MAX_CPUS];
+static SfElement* CpuPercents[SF_MAX_CPUS];
+static SfElement* ProgramFrame;
+static SfElement* ProgramList;
+static SfElement* Message;          // over the footer, until the next key
 
-static uint32_t ChosenIndex()
+// A bar's colour: green, yellow past 60%, red past 85%.
+static void SetBar(SfElement* Bar, uint32_t Percent)
 {
-    for (uint32_t i = 0; i < ProgramCount; i++)
-        if (Programs[i].Stats.Id == Chosen)
-            return i;
-    return 0;
+    SfSetValue(Bar, Percent);
+    SfSetColors(Bar, Percent > 85 ? SF_COLOR_BRIGHT | SF_COLOR_RED
+                   : Percent > 60 ? SF_COLOR_BRIGHT | SF_COLOR_YELLOW
+                   : SF_COLOR_BRIGHT | SF_COLOR_GREEN, SF_COLOR_BLACK);
 }
 
-static void DrawHeader()
+static SfElement* AddBar(sint32_t X, sint32_t Y, sint32_t Width)
 {
-    Fill(0, 0, Columns, ' ', HEADER);
-    Text(1, 0, "SurfaceOS task manager", HEADER);
+    SfElement* Bar = SfAddBar(Ui, X, Y, Width);
+    SfSetFocusColors(Bar, SF_COLOR_BRIGHT | SF_COLOR_BLACK, SF_COLOR_BLACK);
+    return Bar;
+}
 
-    char Line[64];
+static SfElement* AddFrame(sint32_t Y, sint32_t Height, const char* Title)
+{
+    SfElement* F = SfAddFrame(Ui, 0, Y, 0, Height, Title);
+    SfSetColors(F, SF_COLOR_CYAN, SF_COLOR_BLACK);
+    SfSetFocusColors(F, SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
+    return F;
+}
+
+static SfElement* AddBright(sint32_t X, sint32_t Y, sint32_t Width, const char* Text)
+{
+    SfElement* L = SfAddLabel(Ui, X, Y, Width, Text);
+    SfSetColors(L, SF_COLOR_BRIGHT | SF_COLOR_WHITE, SF_COLOR_BLACK);
+    return L;
+}
+
+// One row of the list of programs.
+static void DrawProgram(SfUi* Ui, SfElement*, uint32_t Index, uint32_t X, uint32_t Y,
+                        uint32_t Width, bool Cursor)
+{
+    const Program* P = &Programs[Index];
+    const SfProcessStats* S = &P->Stats;
+    uint8_t Color = Cursor ? CHOSEN : (S->Flags & SF_PROCESS_PAUSED) ? DIM : NORMAL;
+
+    char Where[8], Load[8], Time[16], Memory[16], Line[160];
+    if (S->Screen)
+        snprintf(Where, sizeof(Where), "F%u", S->Screen);
+    else
+        snprintf(Where, sizeof(Where), "bg");
+    snprintf(Load, sizeof(Load), "%u%%", P->Load);
+    Duration(Time, sizeof(Time), S->CpuTime);
+    Size(Memory, sizeof(Memory), S->Memory);
+    snprintf(Line, sizeof(Line), " %5llu  %-20.20s%-7s%-6s%6s%11s%10s%9u%s", S->Id, S->Name,
+             Where, (S->Flags & SF_PROCESS_PAUSED) ? "paused" : "runs", Load, Time, Memory,
+             S->Threads, (S->Flags & SF_PROCESS_ADMIN) ? "  admin" : "");
+    SfTextIn(Ui, X, Y, Line, Width, Color);
+}
+
+// What the elements show, from the last sample.
+static void Refresh()
+{
+    char Line[96];
     SfDateTime T;
     Sys->Time->GetTime(Sys->Time, &T);
-    char* p = Append(Line, "up ");
-    p = Duration(p, Now);
-    p = Append(p, "   ");
-    p = TwoDigits(p, T.Hour);   *p++ = ':';
-    p = TwoDigits(p, T.Minute); *p++ = ':';
-    p = TwoDigits(p, T.Second);
-    Text(Columns - (uint32_t)(p - Line) - 1, 0, Line, HEADER);
-}
+    char Up[16];
+    Duration(Up, sizeof(Up), Now);
+    snprintf(Line, sizeof(Line), "up %s   %02u:%02u:%02u ", Up, T.Hour, T.Minute, T.Second);
+    SfSetText(Clock, Line);
 
-static uint32_t DrawMemory(uint32_t Y)
-{
-    Frame(0, Y, Columns, 3, "Memory");
     uint64_t Used = Info.MemoryTotal - Info.MemoryFree;
     uint32_t P = Percent(Used, Info.MemoryTotal);
+    SetBar(MemoryBar, P);
+    snprintf(Line, sizeof(Line), "%u%%", P);
+    SfSetText(MemoryPercent, Line);
+    char A[16], B[16], C[16];
+    Size(A, sizeof(A), Used);
+    Size(B, sizeof(B), Info.MemoryTotal);
+    Size(C, sizeof(C), Info.MemoryFree);
+    snprintf(Line, sizeof(Line), "%s of %s used, %s free", A, B, C);
+    SfSetText(MemoryText, Line);
 
-    char Line[96];
-    char* p = Size(Line, Used);
-    p = Append(p, " of ");
-    p = Size(p, Info.MemoryTotal);
-    p = Append(p, " used, ");
-    p = Size(p, Info.MemoryFree);
-    Append(p, " free");
+    uint64_t Busy = 0;
+    for (uint32_t i = 0; i < Info.CpuCount && i < SF_MAX_CPUS; i++)
+    {
+        uint32_t Load = CpuLoad(i);
+        Busy += Load;
+        SetBar(CpuBars[i], Load);
+        snprintf(Line, sizeof(Line), "%u%%", Load);
+        SfSetText(CpuPercents[i], Line);
+    }
+    int n = snprintf(Line, sizeof(Line), " all %u%% ",
+                     Info.CpuCount ? (uint32_t)(Busy / Info.CpuCount) : 0);
+    SfSetText(CpuAll, Line);
+    SfSetPlace(CpuAll, -(n + 2), 4, n, 1);
 
-    uint32_t BarWidth = Columns > 70 ? Columns - 50 : 10;
-    Bar(2, Y + 1, BarWidth, P);
-    Number(Line + 80, P, 4);
-    Append(Line + 84, "%");
-    Text(2 + BarWidth + 1, Y + 1, Line + 80, BRIGHT);
-    Text(2 + BarWidth + 8, Y + 1, Line, NORMAL);
-    return Y + 3;
+    uint32_t Threads = 0;
+    for (uint32_t i = 0; i < ProgramCount; i++)
+        Threads += Programs[i].Stats.Threads;
+    snprintf(Line, sizeof(Line), "Programs: %u, threads: %u", ProgramCount, Threads);
+    SfSetText(ProgramFrame, Line);
 }
 
-static uint32_t DrawCpus(uint32_t Y)
+// A new sample; the cursor stays on the program it was on, or on the one
+// now in its place when that one ended.
+static void OnTick(SfUi*)
 {
+    uint32_t At = SfGetCursor(ProgramList);
+    uint64_t Chosen = At < ProgramCount ? Programs[At].Stats.Id : 0;
+    Sample();
+    SfSetCount(ProgramList, ProgramCount);
+    for (uint32_t i = 0; i < ProgramCount; i++)
+        if (Programs[i].Stats.Id == Chosen)
+            At = i;
+    SfSetCursor(ProgramList, At);
+    Refresh();
+}
+
+static void Say(const char* Text)
+{
+    SfSetText(Message, Text);
+    SfSetVisible(Message, true);
+}
+
+static void EndChosen()
+{
+    uint32_t At = SfGetCursor(ProgramList);
+    if (At >= ProgramCount)
+        return;
+    const SfProcessStats* S = &Programs[At].Stats;
+    char Line[96];
+    snprintf(Line, sizeof(Line), "[%llu] %s", S->Id, S->Name);
+    if (!SfConfirm(Ui, "End the program", Line, nullptr))
+        return;
+    snprintf(Line, sizeof(Line), "[%llu] %s %s", S->Id, S->Name,
+             SF_ERROR(Admin->EndProcess(Admin, S->Id)) ? "is gone already" : "ended");
+    Say(Line);
+}
+
+// Every key the list gets first: the message goes.
+static bool ListKey(SfUi*, SfElement*, SfKey)
+{
+    SfSetVisible(Message, false);
+    return false;
+}
+
+static bool OnKey(SfUi* Ui, SfElement*, SfKey K)
+{
+    if (K.Char == 'q' || K.Char == 'Q' || K.Code == SF_KEY_ESCAPE || K.Code == SF_KEY_F10 ||
+        ((K.Mods & SF_MOD_CTRL) && K.Char == 3))
+        SfUiEnd(Ui, 1);
+    else if (K.Code == SF_KEY_DELETE)
+        EndChosen();
+    else
+        return false;
+    return true;
+}
+
+// The elements, once: the processor frame is as high as the CPUs need.
+static void Build()
+{
+    SfElement* Header = SfAddLabel(Ui, 0, 0, 0, " SurfaceOS task manager");
+    SfSetColors(Header, SF_COLOR_BLACK, SF_COLOR_CYAN);
+    Clock = SfAddLabel(Ui, -32, 0, 0, "");
+    SfSetColors(Clock, SF_COLOR_BLACK, SF_COLOR_CYAN);
+    SfSetAlign(Clock, SF_ALIGN_RIGHT);
+
+    AddFrame(1, 3, "Memory");
+    uint32_t BarWidth = Columns > 70 ? Columns - 50 : 10;
+    MemoryBar = AddBar(2, 2, (sint32_t)BarWidth);
+    MemoryPercent = AddBright((sint32_t)BarWidth + 3, 2, 5, "");
+    SfSetAlign(MemoryPercent, SF_ALIGN_RIGHT);
+    MemoryText = SfAddLabel(Ui, (sint32_t)BarWidth + 10, 2, -1, "");
+
     // As many columns of CPUs as fit, each "CPU 12 [bar] 100%".
     const uint32_t Cell = 34;
     uint32_t PerRow = (Columns - 2) / Cell;
     if (!PerRow)
         PerRow = 1;
-    uint32_t Lines = (Info.CpuCount + PerRow - 1) / PerRow;
-    Frame(0, Y, Columns, Lines + 3, "Processor");
-
-    char Line[96];
-    char* p = Append(Line, Info.CpuName[0] ? Info.CpuName : "CPU");
-    p = Append(p, ", ");
-    p = Number(p, Info.CpuCount);
-    Append(p, Info.CpuCount == 1 ? " core" : " cores");
-    Text(2, Y + 1, Line, NORMAL);
-
-    uint64_t Busy = 0;
-    for (uint32_t i = 0; i < Info.CpuCount; i++)
+    uint32_t Count = Info.CpuCount < SF_MAX_CPUS ? Info.CpuCount : SF_MAX_CPUS;
+    uint32_t Lines = (Count + PerRow - 1) / PerRow;
+    CpuFrame = AddFrame(4, (sint32_t)Lines + 3, "Processor");
+    char Line[64];
+    snprintf(Line, sizeof(Line), "%s, %u %s", Info.CpuName[0] ? Info.CpuName : "CPU",
+             Info.CpuCount, Info.CpuCount == 1 ? "core" : "cores");
+    SfAddLabel(Ui, 2, 5, -1, Line);
+    for (uint32_t i = 0; i < Count; i++)
     {
-        uint32_t X = 2 + (i % PerRow) * Cell, Row = Y + 2 + i / PerRow;
-        p = Append(Line, "CPU ");
-        Number(p, i, 2);
-        Text(X, Row, Line, NORMAL);
-        uint32_t Load = CpuLoad(i);
-        Busy += Load;
-        Bar(X + 7, Row, Cell - 14, Load);
-        Number(Line, Load, 4);
-        Append(Line + 4, "%");
-        Text(X + Cell - 7, Row, Line, BRIGHT);
+        sint32_t X = 2 + (sint32_t)((i % PerRow) * Cell), Y = 6 + (sint32_t)(i / PerRow);
+        snprintf(Line, sizeof(Line), "CPU %2u", i);
+        SfAddLabel(Ui, X, Y, 6, Line);
+        CpuBars[i] = AddBar(X + 7, Y, Cell - 14);
+        CpuPercents[i] = AddBright(X + Cell - 7, Y, 5, "");
+        SfSetAlign(CpuPercents[i], SF_ALIGN_RIGHT);
     }
+    CpuAll = AddBright(-12, 4, 9, "");
 
-    p = Append(Line, " all ");
-    p = Number(p, Info.CpuCount ? (uint32_t)(Busy / Info.CpuCount) : 0);
-    Append(p, "% ");
-    Text(Columns - (uint32_t)(p - Line) - 3, Y, Line, BRIGHT);
-    return Y + Lines + 3;
-}
+    // The programs: from under the processor to the line above the footer.
+    sint32_t Y = 4 + (sint32_t)Lines + 3;
+    ProgramFrame = AddFrame(Y, -1, "Programs");
+    AddBright(1, Y + 1, -1,
+              "    ID  NAME                WHERE  STATE    CPU   CPU TIME    MEMORY  THREADS");
+    ProgramList = SfAddList(Ui, 1, Y + 2, -1, -2);
+    SfOnDrawItem(ProgramList, DrawProgram);
+    SfOnKey(ProgramList, ListKey);
 
-static void DrawPrograms(uint32_t Y)
-{
-    uint32_t Height = Rows - 1 - Y;
-    if (Height < 4)
-        return;
-    uint32_t Threads = 0;
-    for (uint32_t i = 0; i < ProgramCount; i++)
-        Threads += Programs[i].Stats.Threads;
-    char Title[64];
-    char* p = Append(Title, "Programs: ");
-    p = Number(p, ProgramCount);
-    p = Append(p, ", threads: ");
-    Number(p, Threads);
-    Frame(0, Y, Columns, Height, Title);
-
-    //        ID  NAME   WHERE STATE    CPU  CPU TIME  MEMORY THREADS
-    Text(2, Y + 1, "   ID  NAME                WHERE  STATE    CPU   CPU TIME    MEMORY  THREADS",
-         BRIGHT);
-
-    uint32_t Shown = Height - 3;
-    uint32_t Index = ChosenIndex();
-    if (Index < Top)
-        Top = Index;
-    if (Index >= Top + Shown)
-        Top = Index - Shown + 1;
-    if (Top + Shown > ProgramCount)
-        Top = ProgramCount > Shown ? ProgramCount - Shown : 0;
-
-    for (uint32_t r = 0; r < Shown && Top + r < ProgramCount; r++)
-    {
-        const SfProcessStats* S = &Programs[Top + r].Stats;
-        uint32_t Row = Y + 2 + r;
-        bool Mine = S->Id == Chosen;
-        uint8_t Color = Mine ? CHOSEN : (S->Flags & SF_PROCESS_PAUSED) ? DIM : NORMAL;
-        Fill(1, Row, Columns - 2, ' ', Color);
-
-        char Line[128], Part[32];
-        p = Number(Line, S->Id, 5);
-        p = Append(p, "  ");
-        char* Name = p;
-        p = Append(p, S->Name);
-        while (p < Name + 20)
-            *p++ = ' ';
-        *p = '\0';
-        if (S->Screen)
-        {
-            p = Append(p, "F");
-            p = Number(p, S->Screen);
-            p = Append(p, S->Screen < 10 ? "     " : "    ");
-        }
-        else
-            p = Append(p, "bg     ");
-        p = Append(p, (S->Flags & SF_PROCESS_PAUSED) ? "paused" : "runs  ");
-        Append(Number(Part, Programs[Top + r].Load), "%");
-        p = Right(p, Part, 6);
-        Duration(Part, S->CpuTime);
-        p = Right(p, Part, 11);
-        Size(Part, S->Memory);
-        p = Right(p, Part, 10);
-        Number(Part, S->Threads);
-        p = Right(p, Part, 9);
-        if (S->Flags & SF_PROCESS_ADMIN)
-            Append(p, "  admin");
-        Text(2, Row, Line, Color);
-    }
-}
-
-static void DrawFooter()
-{
-    uint32_t Y = Rows - 1;
-    Fill(0, Y, Columns, ' ', NORMAL);
-    if (Message[0])
-    {
-        Text(1, Y, Message, MessageColor);
-        return;
-    }
-    char Keys[] = { ' ', SF_ARROW_UP, SF_ARROW_DOWN, 0 };
-    uint32_t X = Text(0, Y, Keys, BRIGHT);
-    X = Text(X, Y, " choose   ", NORMAL);
-    X = Text(X, Y, "Del", BRIGHT);
-    X = Text(X, Y, " end the program   ", NORMAL);
-    X = Text(X, Y, "q", BRIGHT);
-    Text(X, Y, " quit", NORMAL);
-}
-
-static void Draw()
-{
-    DrawHeader();
-    uint32_t Y = DrawMemory(1);
-    Y = DrawCpus(Y);
-    DrawPrograms(Y);
-    DrawFooter();
-    Con->Draw(Con, 0, 0, Columns, Rows, Cells);
-}
-
-// --- keys ------------------------------------------------------------------
-
-// The next key, when one comes within TimeoutMs milliseconds.
-static bool NextKey(SfKey* Key, uint64_t TimeoutMs)
-{
-    SfWaitItem Item = { SF_WAIT_KEY, 0, nullptr };
-    return Sys->Sync->WaitAny(Sys->Sync, 1, &Item, TimeoutMs, nullptr) == SF_SUCCESS &&
-           Con->ReadKey(Con, Key) == SF_SUCCESS;
-}
-
-static void Say(const char* Text, uint8_t Color)
-{
-    char* p = Message;
-    for (uint32_t i = 0; Text[i] && i + 1 < sizeof(Message); i++)
-        *p++ = Text[i];
-    *p = '\0';
-    MessageColor = Color;
-}
-
-// One key; false when it is time to go.
-static bool OnKey(const SfKey& Key)
-{
-    uint32_t Index = ChosenIndex();
-    const SfProcessStats* S = ProgramCount ? &Programs[Index].Stats : nullptr;
-
-    if (Asking)
-    {
-        Asking = false;
-        Message[0] = '\0';
-        if (S && (Key.Char == 'y' || Key.Char == 'Y' || Key.Code == SF_KEY_ENTER))
-        {
-            char Line[96];
-            char* p = Append(Line, "[");
-            p = Number(p, S->Id);
-            p = Append(p, "] ");
-            p = Append(p, S->Name);
-            if (SF_ERROR(Admin->EndProcess(Admin, S->Id)))
-                Append(p, " is gone already");
-            else
-                Append(p, " ended");
-            Say(Line, BRIGHT);
-        }
-        return true;
-    }
-
-    Message[0] = '\0';
-    if (Key.Char == 'q' || Key.Char == 'Q' || Key.Code == SF_KEY_ESCAPE ||
-        Key.Code == SF_KEY_F10 || ((Key.Mods & SF_MOD_CTRL) && Key.Char == 3))
-        return false;
-
-    switch (Key.Code)
-    {
-        case SF_KEY_UP:
-            if (Index > 0)
-                Chosen = Programs[Index - 1].Stats.Id;
-            break;
-        case SF_KEY_DOWN:
-            if (Index + 1 < ProgramCount)
-                Chosen = Programs[Index + 1].Stats.Id;
-            break;
-        case SF_KEY_PAGE_UP:
-            Chosen = Programs[Index > 10 ? Index - 10 : 0].Stats.Id;
-            break;
-        case SF_KEY_PAGE_DOWN:
-            if (ProgramCount)
-                Chosen = Programs[Index + 10 < ProgramCount ? Index + 10 : ProgramCount - 1]
-                             .Stats.Id;
-            break;
-        case SF_KEY_HOME:
-            if (ProgramCount)
-                Chosen = Programs[0].Stats.Id;
-            break;
-        case SF_KEY_END:
-            if (ProgramCount)
-                Chosen = Programs[ProgramCount - 1].Stats.Id;
-            break;
-        case SF_KEY_DELETE:
-            if (S)
-            {
-                char Line[96];
-                char* p = Append(Line, "End [");
-                p = Number(p, S->Id);
-                p = Append(p, "] ");
-                p = Append(p, S->Name);
-                Append(p, "? y - yes, any other key - no");
-                Say(Line, WARNING);
-                Asking = true;
-            }
-            break;
-    }
-    return true;
+    // The footer: the keys, bright, and what they do.
+    char Arrows[] = { ' ', SF_ARROW_UP, SF_ARROW_DOWN, 0 };
+    AddBright(0, -1, 3, Arrows);
+    SfAddLabel(Ui, 3, -1, 10, " choose");
+    AddBright(13, -1, 3, "Del");
+    SfAddLabel(Ui, 16, -1, 19, " end the program");
+    AddBright(35, -1, 1, "q");
+    SfAddLabel(Ui, 36, -1, 0, " quit");
+    Message = AddBright(0, -1, 0, "");
+    SfSetVisible(Message, false);
 }
 
 SfStatus SfMain(SfApp*, SfSystem* System)
 {
     Sys   = System;
-    Con   = System->Console;
     Admin = System->Admin;
+    SfConsole* Con = System->Console;
     if (!Admin || !SF_HAS_FIELD(Admin, SfAdmin, GetProcessInfo))
     {
         Con->Print(Con, "taskmgr needs the admin right: run it as  sudo taskmgr\n");
         return SF_ACCESS_DENIED;
     }
-    if (!SF_HAS_FIELD(Sys->Sync, SfSync, WaitAny))
+    Ui = SfUiOpen(Sys);
+    if (!Ui)
         return SF_UNSUPPORTED;
-
-    Con->SetMode(Con, SF_CONSOLE_RAW);
-    Con->GetSize(Con, &Columns, &Rows);
-    if (Columns > MAX_COLUMNS) Columns = MAX_COLUMNS;
-    if (Rows > MAX_ROWS)       Rows    = MAX_ROWS;
+    SfUiSize(Ui, &Columns, &Rows);
 
     Sample();
-    Sys->Process->GetId(Sys->Process, &Chosen);     // start on itself
-    for (;;)
-    {
-        Draw();
-        // Until a key, or the next sample a second after the last one;
-        // then every key that is there.
-        uint64_t T;
-        Sys->Time->GetUptime(Sys->Time, &T);
-        SfKey Key;
-        for (uint64_t Wait = T - Now < 1000 ? 1000 - (T - Now) : 0; NextKey(&Key, Wait); Wait = 0)
-            if (!OnKey(Key))
-            {
-                Con->SetMode(Con, SF_CONSOLE_LINE);
-                return SF_SUCCESS;
-            }
-        Sys->Time->GetUptime(Sys->Time, &T);
-        if (T - Now >= 1000)
-            Sample();
-    }
+    Build();
+    SfSetCount(ProgramList, ProgramCount);
+    uint64_t Self = 0;
+    Sys->Process->GetId(Sys->Process, &Self);       // start on itself
+    for (uint32_t i = 0; i < ProgramCount; i++)
+        if (Programs[i].Stats.Id == Self)
+            SfSetCursor(ProgramList, i);
+    Refresh();
+
+    SfUiOnKey(Ui, OnKey);
+    SfUiOnTimer(Ui, 1000, OnTick);
+    SfUiRun(Ui);
+    SfUiClose(Ui);
+    return SF_SUCCESS;
 }
