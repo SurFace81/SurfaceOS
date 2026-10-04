@@ -74,9 +74,11 @@ What changed in `tinycc/`:
   calls go straight to the function instead of through a PLT, and
   `fill_got` runs before `tidy_section_headers` drops the relocations it
   reads;
-- left out: `-run` and everything else that runs code in tcc's process,
-  shared libraries, `-ar`, `-impdef`, `-m32`, `-MD` (`tcctools.c` is gone),
-  stdin as `-`, environment variables.
+- options: only those `tcc -h` shows - `-o -c -E -I -D -U -L -l -g -w
+  -Werror -v -h`; any other is an invalid option. `-run` and everything
+  else that runs code in tcc's process, shared libraries, `-ar`
+  (`tcctools.c` is gone), stdin as `-` and environment variables are left
+  out.
 
 ## License
 

@@ -793,13 +793,6 @@ struct TCCState {
     int nb_libraries; /* number of libs thereof */
     int filetype;
     char *outfile; /* output filename */
-    int option_r; /* option -r */
-    int do_bench; /* option -bench */
-    int gen_deps; /* option -MD  */
-    char *deps_outfile; /* option -MF */
-    int option_pthread; /* -pthread option */
-    int argc;
-    char **argv;
 };
 
 struct filespec {
@@ -1147,7 +1140,6 @@ ST_FUNC int tcc_add_crt(TCCState *s, const char *filename);
 ST_FUNC int tcc_add_dll(TCCState *s, const char *filename, int flags);
 ST_FUNC void tcc_add_pragma_libs(TCCState *s1);
 PUB_FUNC int tcc_add_library_err(TCCState *s, const char *f);
-PUB_FUNC void tcc_print_stats(TCCState *s, unsigned total_time);
 PUB_FUNC int tcc_parse_args(TCCState *s, int *argc, char ***argv, int optind);
 #ifdef _WIN32
 ST_FUNC char *normalize_slashes(char *path);
@@ -1155,13 +1147,7 @@ ST_FUNC char *normalize_slashes(char *path);
 
 /* tcc_parse_args return codes: */
 #define OPT_HELP 1
-#define OPT_HELP2 2
-#define OPT_V 3
-#define OPT_PRINT_DIRS 4
-#define OPT_AR 5
-#define OPT_IMPDEF 6
-#define OPT_M32 32
-#define OPT_M64 64
+#define OPT_V 2
 
 /* ------------ tccpp.c ------------ */
 
@@ -1272,7 +1258,6 @@ ST_DATA int func_var; /* true if current function is variadic */
 ST_DATA int func_vc;
 ST_DATA int last_line_num, last_ind, func_ind; /* debug last line number and pc */
 ST_DATA const char *funcname;
-ST_DATA int g_debug;
 
 ST_FUNC void tcc_debug_start(TCCState *s1);
 ST_FUNC void tcc_debug_end(TCCState *s1);
