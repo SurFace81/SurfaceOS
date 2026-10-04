@@ -32,14 +32,14 @@ static bool Problem(const char* What, const char* Path, SfStatus Status)
         Append(p, Why(Status));
     }
     Skipped++;
-    if (Buttons(JobTitle, Line, Path, Labels, 2, true) != 0)
+    if (SfButtons(Ui, JobTitle, Line, Path, Labels, 2, true) != 0)
         Stop = true;
     return !Stop;
 }
 
 static bool CheckStop()
 {
-    if (!Stop && Cancelled())
+    if (!Stop && SfUiEscape(Ui))
         Stop = true;
     return Stop;
 }
@@ -52,7 +52,7 @@ static bool MayOverwrite(const char* To)
     if (!OverwriteNone)
     {
         static const char* const Labels[] = { "Overwrite", "All", "Skip", "None", "Cancel" };
-        switch (Buttons(JobTitle, "It exists already:", To, Labels, 5))
+        switch (SfButtons(Ui, JobTitle, "It exists already:", To, Labels, 5, false))
         {
             case 0:  return true;
             case 1:  OverwriteAll = true; return true;
@@ -271,7 +271,7 @@ bool FolderSize(const char* Path, uint64_t* Bytes, uint64_t* Files)
             *Bytes += E.Size;
             (*Files)++;
         }
-        if (Cancelled())
+        if (SfUiEscape(Ui))
             Ok = false;
     }
     Dir->Close(Dir);
