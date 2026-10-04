@@ -85,6 +85,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sfsync.o \
 				bin/kernel/cpu/apic.o \
 				bin/kernel/fs/fileio.o \
+				bin/kernel/fs/pipe.o \
 				bin/kernel/cpu/percpu.o \
 				bin/kernel/cpu/spinlock.o \
 				bin/kernel/cpu/smp.o \

@@ -136,3 +136,24 @@ SfStatus FilesRename(SfFiles*, const char* OldPath, const char* NewPath)
 {
     return SfCall(SFCALL_FILES_RENAME, (uint64_t)OldPath, (uint64_t)NewPath);
 }
+
+SfStatus FilesCreatePipe(SfFiles*, SfFile** Read, SfFile** Write)
+{
+    if (!Read || !Write)
+        return SF_INVALID_PARAMETER;
+    uint64_t ReadHandle = 0, WriteHandle = 0;
+    SfStatus Status = SfCall(SFCALL_FILES_CREATE_PIPE, (uint64_t)&ReadHandle,
+                             (uint64_t)&WriteHandle);
+    if (SF_ERROR(Status))
+        return Status;
+    Status = NewFile(Status, ReadHandle, Read);
+    if (SF_ERROR(Status))
+    {
+        SfCall(SFCALL_CLOSE, WriteHandle);
+        return Status;
+    }
+    Status = NewFile(Status, WriteHandle, Write);
+    if (SF_ERROR(Status))
+        FileClose(*Read);
+    return Status;
+}

@@ -58,6 +58,8 @@ Its programs are written in C or C++.
   - FSInfo-based allocator
   - read and write by byte offset, truncate, rename
   - unlink of open files, volume dirty bit
+- Pipes: two ends sharing a 16 KiB buffer; a read waits for data, a
+  write for room, and either end learns when the other is gone
 
 ### SDK
 
@@ -72,7 +74,8 @@ How to write a program, and every table in detail:
 - The tables:
   - `Sys->Console`: text, cells and colours, keys, line or raw mode, the
     title, the clipboard
-  - `Sys->Files`: open, list, make, remove and rename files and folders
+  - `Sys->Files`: open, list, make, remove and rename files and folders;
+    pipes
   - `Sys->Memory`: pages and a heap
   - `Sys->Time`: the clock, the uptime, sleeping
   - `Sys->Process`: start other programs, wait for them, command lines
@@ -128,6 +131,9 @@ started again whenever it ends. `help` lists its commands.
     a program's output too
   - `a | b` hands it to the filters grep, head, tail and wc, or to a
     program, whose ReadLine reads it a line at a time
+  - programs next to each other in a pipe run at once, joined by kernel
+    pipes; the last one gets the keys, and when it ends, so do the
+    others
 - Typing:
   - a name or path with spaces goes in quotes ("my file.txt")
   - Up and Down bring back the last lines typed

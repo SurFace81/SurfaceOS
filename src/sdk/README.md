@@ -222,9 +222,9 @@ a handle to `Wait` on. The flags choose:
   it.
 
 File arguments go in `ArgFiles` and reach the new program as its `argN:`
-roots. With `SF_START_OUTPUT` what it prints goes into a file, and with
-`SF_START_INPUT` its `ReadLine` reads the lines of a file
-instead of the keys, `SF_END_OF_FILE` after the last: the console's `>`
+roots. With `SF_START_OUTPUT` what it prints goes into a file or a pipe
+(`Files->CreatePipe`), and with `SF_START_INPUT` its `ReadLine` reads the
+lines of a file or a pipe instead of the keys, `SF_END_OF_FILE` after the last: the console's `>`
 and `|`.
 
 `Sys->Thread->Create` runs a function on a new thread, and `Join` waits
@@ -344,6 +344,7 @@ Every path starts with a root and never leads above it.
 | `CreateDirectory(const char* Path)` | Makes a folder; `SF_ALREADY_EXISTS` when the name is taken. |
 | `Delete(const char* Path)` | Removes a file, or an empty folder (`SF_IN_USE` when it is not empty). |
 | `Rename(const char* OldPath, const char* NewPath)` | Moves a file or folder; `NewPath` must not exist, both on one volume (else `SF_ACCESS_DENIED`). |
+| `CreatePipe(SfFile** Read, SfFile** Write)` | A pipe: what is written into `Write` is read from `Read` while both programs run - hand the ends to `Start` with `SF_START_OUTPUT` / `SF_START_INPUT`. `Read` waits for something, 0 bytes once every holder of the write end closed it; `Write` waits while it is full, `SF_END_OF_FILE` once nobody holds the read end. No positions. |
 
 ### SfFile - from `Files->Open`, `sfos/file.h`
 
@@ -408,8 +409,8 @@ Every running program has a number, its Id.
 | `SF_START_GIVE_INPUT` | When this program owns the keys, the new one gets them until it ends. |
 | `SF_START_BACKGROUND` | Runs it on a hidden screen of its own, what it prints logged to `console_<date>_<time>.log` in its data folder. |
 | `SF_START_ADMIN` | With the admin right; only from a program that has it. |
-| `SF_START_OUTPUT` | `ArgFiles` has one entry more, a file open for writing: what it prints in line mode goes there (the console's `>`). |
-| `SF_START_INPUT` | `ArgFiles` has one entry more still, a file open for reading: `ReadLine` gives its lines (the console's `\|`). |
+| `SF_START_OUTPUT` | `ArgFiles` has one entry more, a file open for writing or a pipe's write end: what it prints in line mode goes there (the console's `>` and `\|`). |
+| `SF_START_INPUT` | `ArgFiles` has one entry more still, a file open for reading or a pipe's read end: `ReadLine` gives its lines (the console's `\|`). |
 
 ### SfThread - `Sys->Thread`, `sfos/thread.h`
 

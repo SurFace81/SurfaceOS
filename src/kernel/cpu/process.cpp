@@ -137,7 +137,8 @@ namespace process
         pid_t       input_giver;
         bool        console_raw;    // SF_CONSOLE_RAW (sfos/console.h)
         void*       line_history;   // ReadLine's earlier lines (sfconsole.cpp), kmalloc'ed
-        vnode*      out;            // SF_START_OUTPUT: where its printing goes, referenced
+        vnode*      out;            // SF_START_OUTPUT: where its printing goes (a file or
+                                    // a pipe), referenced
         uint64_t    out_off;
         vnode*      in;             // SF_START_INPUT: where ReadLine reads, referenced
         uint64_t    in_off;
@@ -831,14 +832,16 @@ namespace process
         if (!p || !p->in)
             return -1;
         // A chunk at a time up to the line break; what does not fit in buf
-        // is passed over.
+        // is passed over. From a pipe a byte at a time: what is read from
+        // it is gone, the next line too.
         char chunk[256];
+        uint64_t want = p->in->type == vtype::PIPE ? 1 : sizeof(chunk);
         uint64_t n = 0;
         bool any = false;
         for (;;)
         {
             uint64_t done = 0;
-            if (p->in->ops->read(p->in, p->in_off, chunk, sizeof(chunk), &done) != 0 || !done)
+            if (p->in->ops->read(p->in, p->in_off, chunk, want, &done) != 0 || !done)
                 break;
             any = true;
             uint64_t i = 0;
@@ -2477,7 +2480,8 @@ namespace process
         // new program's root arg<i+1>:. The caller keeps them open meanwhile.
         // SF_START_OUTPUT: one more, the file its printing goes to, from
         // that handle's position on. SF_START_INPUT: then one more still,
-        // the file its ReadLine reads, the same way.
+        // the file its ReadLine reads, the same way. Either may be the
+        // right end of a pipe instead.
         vnode* arg_roots[257] = {};
         vnode* io[2] = {};
         uint64_t io_off[2] = {};
@@ -2491,7 +2495,9 @@ namespace process
             file* f = regs->r9 && uaccess::copy_from_user(&h, regs->r9 + at++ * 8, 8) &&
                       h < HANDLE_TABLE_SIZE
                     ? filesys::fd_get(&current->handles, (sint32_t)h, &frc) : nullptr;
-            if (!f || f->vn->type != vtype::REG)
+            uint32_t acc = f ? f->flags & O_ACCMODE : 0;
+            if (!f || (f->vn->type != vtype::REG && f->vn->type != vtype::PIPE) ||
+                acc == (k ? O_WRONLY : O_RDONLY))
             {
                 regs->rax = SF_BAD_HANDLE;
                 return;

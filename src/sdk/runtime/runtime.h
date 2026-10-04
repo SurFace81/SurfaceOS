@@ -64,6 +64,7 @@ SfStatus FilesCreateUnique(SfFiles* This, SfFile** Out, char* Path, uint64_t Pat
 SfStatus FilesCreateDirectory(SfFiles* This, const char* Path);
 SfStatus FilesDelete(SfFiles* This, const char* Path);
 SfStatus FilesRename(SfFiles* This, const char* OldPath, const char* NewPath);
+SfStatus FilesCreatePipe(SfFiles* This, SfFile** Read, SfFile** Write);
 // The kernel's handle behind an SfFile.
 uint64_t FileHandle(SfFile* File);
 

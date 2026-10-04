@@ -3,6 +3,7 @@
 #include "../../include/cpu/sffile.h"
 #include "../../include/cpu/sfcall.h"
 #include "../../include/fs/fileio.h"
+#include "../../include/fs/pipe.h"
 #include "../../include/cpu/process.h"
 #include "../../include/cpu/uaccess.h"
 #include "../../include/fs/vfs.h"
@@ -38,6 +39,8 @@ namespace
             case -ENFILE:
             case -ENOSPC:   return SF_OUT_OF_RESOURCES;
             case -EBADF:    return SF_BAD_HANDLE;
+            case -EPIPE:    return SF_END_OF_FILE;      // nobody reads the pipe
+            case -EINTR:    return SF_ABORTED;
             case -ENOTEMPTY:
             case -EBUSY:    return SF_IN_USE;
             case -EFAULT:
@@ -560,6 +563,43 @@ namespace
         regs->rax = SF_SUCCESS;
     }
 
+    // (*Read, *Write): a new pipe, its ends as two handles.
+    void files_create_pipe(user_regs* regs, iret_frame*)
+    {
+        vnode* rd = nullptr;
+        vnode* wr = nullptr;
+        sint64_t rc = pipe::create(&rd, &wr);
+        if (rc != 0)
+        {
+            regs->rax = status(rc);
+            return;
+        }
+        sint64_t hr = fileio::open_vnode(rd, O_RDONLY);
+        sint64_t hw = fileio::open_vnode(wr, O_WRONLY);
+        vfs::unref(rd);                 // the handles hold them now
+        vfs::unref(wr);
+        if (hr < 0 || hw < 0)
+        {
+            if (hr >= 0)
+                filesys::fd_close(process::cur_handles(), (sint32_t)hr);
+            if (hw >= 0)
+                filesys::fd_close(process::cur_handles(), (sint32_t)hw);
+            regs->rax = status(hr < 0 ? hr : hw);
+            return;
+        }
+        SfStatus st = give_handle(hr, regs->rdi);
+        if (SF_ERROR(st))
+        {
+            filesys::fd_close(process::cur_handles(), (sint32_t)hw);
+            regs->rax = st;
+            return;
+        }
+        st = give_handle(hw, regs->rsi);
+        if (SF_ERROR(st))
+            filesys::fd_close(process::cur_handles(), (sint32_t)hr);
+        regs->rax = st;
+    }
+
     // Look up (and, when missing, create) directory `name` in `parent`.
     sint64_t subdir(vnode* parent, const char* name, vnode** out)
     {
@@ -640,5 +680,6 @@ namespace sffile
         sfcall::set_handler(SFCALL_FILES_CREATE_DIRECTORY, files_create_directory);
         sfcall::set_handler(SFCALL_FILES_DELETE, files_delete);
         sfcall::set_handler(SFCALL_FILES_RENAME, files_rename);
+        sfcall::set_handler(SFCALL_FILES_CREATE_PIPE, files_create_pipe);
     }
 }

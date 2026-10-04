@@ -71,12 +71,14 @@ struct SfProcess
 /// it.
 #define SF_START_ADMIN          0x4
 /// Start: ArgFiles is not null and has one entry more, a file open for
-/// writing: what the program prints in SF_CONSOLE_LINE goes there, from that
-/// file's position on, instead of to the screen (the console's `>`).
+/// writing or the write end of a pipe (files.h): what the program prints in
+/// SF_CONSOLE_LINE goes there, from that file's position on, instead of to
+/// the screen (the console's `>` and `|`).
 #define SF_START_OUTPUT         0x8
 /// Start: ArgFiles is not null and has one entry more still (after the
-/// output file, if any), a file open for reading: ReadLine gives its lines,
-/// from that file's position on, instead of what is typed (the console's `|`).
+/// output file, if any), a file open for reading or the read end of a pipe:
+/// ReadLine gives its lines, from that file's position on, instead of what
+/// is typed (the console's `|`).
 #define SF_START_INPUT          0x10
 
 #define SF_PROCESS_SIGNATURE    SF_SIGNATURE('S', 'F', 'P', 'R', 'O', 'C', 0, 0)

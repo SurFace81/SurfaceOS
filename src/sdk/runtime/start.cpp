@@ -228,6 +228,7 @@ const SfFiles SdkFiles =
     FilesCreateDirectory,
     FilesDelete,
     FilesRename,
+    FilesCreatePipe,
 };
 
 const SfMemory SdkMemory =
