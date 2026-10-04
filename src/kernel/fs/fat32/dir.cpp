@@ -846,6 +846,18 @@ namespace fatdir
         if (!valid_name(name))
             return -EINVAL;
 
+        // The name itself taken: the alias search below only sees 8.3
+        // names, and would give a long name a fresh ~N every time.
+        fat_dirent taken_rec;
+        uint32_t taken_slot = 0;
+        bool name_taken = false;
+        sint64_t frc = find(dir, name, &taken_rec, &taken_slot, &name_taken,
+                            nullptr, nullptr);
+        if (frc != 0)
+            return frc;
+        if (name_taken)
+            return -EEXIST;
+
         uint16_t u16[NAME_MAX + 1];
         uint32_t ucount = utf8_to_ucs2(name, u16, NAME_MAX);
 
