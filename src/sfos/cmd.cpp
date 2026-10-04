@@ -8,8 +8,8 @@
 // background instead. A word with spaces goes in quotes ("my file.txt").
 // What a command prints longer than the screen is shown a page at a time.
 // `> file` puts what the line prints into a file instead (`>>` adds it at
-// the end), and `a | b` gives what a prints to b - the filters grep,
-// head, tail and wc read it, a program through its ReadLine; programs
+// the end), and `a | b` gives what a prints to b - the filters head, tail
+// and wc read it, a program (grep, ...) through its ReadLine; programs
 // next to each other in a pipe run at once, joined by pipes. While a word
 // is typed, the rest of a command, program or name here that starts with
 // it shows dimmed; Tab takes it.
@@ -809,6 +809,30 @@ static void Shutdown(const char**, uint64_t)
 
 // --- running programs ------------------------------------------------------
 
+// The files OpenArg made for the programs on this screen, as whole-disk
+// paths: once they have ended, those still empty go - the word was text
+// that only looked like a name (grep 1.5 notes.txt).
+static const uint32_t MAX_NEW_ARGS = 16;
+static char     NewArgs[MAX_NEW_ARGS][PATH_SIZE + 8];
+static uint32_t NewArgCount;
+
+static void DropNewArgs()
+{
+    for (uint32_t i = 0; i < NewArgCount; i++)
+    {
+        SfFile* File = nullptr;
+        SfDirEntry Info;
+        bool Empty = Sys->Files->Open(Sys->Files, NewArgs[i], SF_FILE_READ, &File) ==
+                     SF_SUCCESS && File->GetInfo(File, &Info) == SF_SUCCESS && !Info.Size &&
+                     !(Info.Flags & SF_DIR_ENTRY_FOLDER);
+        if (File)
+            File->Close(File);
+        if (Empty)
+            Sys->Files->Delete(Sys->Files, NewArgs[i]);
+    }
+    NewArgCount = 0;
+}
+
 // A program this console follows: the one on its screen (Here) - started
 // here, or brought here with fg - and those it started that went elsewhere
 // (Away: `&`, bg, fg on another screen), to say how they end. Handle is 0
@@ -948,6 +972,7 @@ static void WaitHere()
         Here.Id = 0;
         Here.Paused = false;
         EndUpstream();
+        DropNewArgs();
         return;
     }
     if (P->Screen == MyScreen)
@@ -975,12 +1000,14 @@ static void WaitHere()
     for (uint32_t i = 0; i < UpstreamCount; i++)  // its pipe went with it
         SendAway(&Upstream[i]);
     UpstreamCount = 0;
+    NewArgCount = 0;                // still in use there
 }
 
 // What argument Arg names, for the program's argN: root: an existing file
 // or folder, or - when it looks like a file name (a '.' or a '/') and its
-// folder exists - a new empty file. nullptr when it is plain text.
-static SfFile* OpenArg(const char* Arg)
+// folder exists - a new empty file (noted in NewArgs when Note). nullptr
+// when it is plain text.
+static SfFile* OpenArg(const char* Arg, bool Note)
 {
     SfFile* File = nullptr;
     if (Open(Arg, SF_FILE_READ, &File) == SF_SUCCESS)
@@ -988,10 +1015,12 @@ static SfFile* OpenArg(const char* Arg)
     bool LooksLikeFile = false;
     for (const char* c = Arg; *c; c++)
         LooksLikeFile |= *c == '.' || *c == '/';
-    if (LooksLikeFile &&
-        Open(Arg, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE, &File) == SF_SUCCESS)
-        return File;
-    return nullptr;
+    if (!LooksLikeFile ||
+        Open(Arg, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE, &File) != SF_SUCCESS)
+        return nullptr;
+    if (Note && NewArgCount < MAX_NEW_ARGS)
+        DiskPath(Arg, NewArgs[NewArgCount++]);
+    return File;
 }
 
 // Run the program Words[0] with the rest as its arguments: here, or in
@@ -1014,7 +1043,7 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
     SfFile* Files[MaxArgs + 2] = {};
     uint64_t ArgCount = Count - 1 < MaxArgs ? Count - 1 : MaxArgs;
     for (uint64_t i = 0; i < ArgCount; i++)
-        Files[i] = OpenArg(Words[i + 1]);
+        Files[i] = OpenArg(Words[i + 1], !Background);
 
     if (!Background && Here.Id)
     {
@@ -1267,41 +1296,6 @@ static bool NextLine(uint64_t* At, const char** Line, uint64_t* Len)
     return true;
 }
 
-static char Lower(char C)
-{
-    return C >= 'A' && C <= 'Z' ? (char)(C - 'A' + 'a') : C;
-}
-
-static bool Contains(const char* Line, uint64_t Len, const char* Word)
-{
-    uint64_t WordLen = Length(Word);
-    for (uint64_t i = 0; i + WordLen <= Len; i++)
-    {
-        uint64_t j = 0;
-        while (j < WordLen && Lower(Line[i + j]) == Lower(Word[j]))
-            j++;
-        if (j == WordLen)
-            return true;
-    }
-    return false;
-}
-
-static void Grep(const char** Args, uint64_t Count)
-{
-    if (Count < 2)
-        return Print("Usage: grep <text> [file]\n");
-    if (!FilterInput("grep:", Count > 2 ? Args[2] : nullptr))
-        return;
-    uint64_t At = 0, Len;
-    const char* Line;
-    while (NextLine(&At, &Line, &Len))
-        if (Contains(Line, Len, Args[1]))
-        {
-            PrintPart(Line, Len);
-            Print("\n");
-        }
-}
-
 // head and tail: [lines] [file], 10 lines unless said.
 static bool LinesAndFile(const char* Name, const char** Args, uint64_t Count, uint64_t* Lines)
 {
@@ -1406,7 +1400,6 @@ static const struct
     { "usbinfo",  Usbinfo,  "<index>  one USB device" },
     { "acpi",     Acpi,     "ACPI tables" },
     { "dmesg",    Dmesg,    "the kernel's log" },
-    { "grep",     Grep,     "<text> [file]  the lines with the text in them" },
     { "head",     Head,     "[n] [file]  the first n lines (10)" },
     { "tail",     Tail,     "[n] [file]  the last n lines (10)" },
     { "wc",       Wc,       "[file]  count lines, words and bytes" },
@@ -1434,8 +1427,10 @@ static void Help(const char**, uint64_t)
           "                         & runs it in the background\n"
           "  \"a b\"                  a name or path with spaces\n"
           "  a > file, a >> file    what a prints into the file (>> adds at the end)\n"
-          "  a | b                  what a prints goes to b: grep, head, tail, wc,\n"
-          "                         or a program, which reads it line by line\n"
+          "  a | b                  what a prints goes to b: head, tail, wc, or a\n"
+          "                         program (grep...), which reads it line by line\n"
+          "  grep, find             programs: the lines that match, the files that do;\n"
+          "                         alone they tell their options\n"
           "  Tab                    take the dimmed rest of the word\n"
           "  Up/Down                the lines typed before\n"
           "  Ctrl+arrows            select on the screen; Ctrl+C copies, Esc drops it\n"
@@ -1769,7 +1764,10 @@ static void DoLine(char* Line)
         PipeIn = nullptr;
     }
     if (!Here.Id)
+    {
         EndUpstream();
+        DropNewArgs();
+    }
 }
 
 // The words ReadLine suggests (SetHints): the commands and the programs in

@@ -129,8 +129,8 @@ started again whenever it ends. `help` lists its commands.
 - Pipes and redirection:
   - `a > file` puts what a prints into the file (`>>` adds at the end) -
     a program's output too
-  - `a | b` hands it to the filters grep, head, tail and wc, or to a
-    program, whose ReadLine reads it a line at a time
+  - `a | b` hands it to the filters head, tail and wc, or to a program
+    (grep, ...), whose ReadLine reads it a line at a time
   - programs next to each other in a pipe run at once, joined by kernel
     pipes; the last one gets the keys, and when it ends, so do the
     others
@@ -159,6 +159,13 @@ started again whenever it ends. `help` lists its commands.
 - taskmgr (`sudo taskmgr`): memory, the load of every CPU and the running
   programs with their CPU share, CPU time, memory and threads, live; Del
   ends the chosen one
+- grep `[-i -v -n -c -l -w] <pattern> [file or folder ...]`: the lines
+  that match, in files, in everything in folders, or in what comes
+  through `|`; patterns with `. [a-z] [^a] * + ? ^ $ \`; a binary file
+  is only named
+- find `<folder ...> [-name -type -size -mtime -maxdepth -empty]`: the
+  files and folders below that pass every test; `-name` takes `* ? [a-z]`,
+  any case
 - hello: Console Print and ReadLine; hello_c: the same SDK from C
 - tcc: the C compiler, built in (Ports)
 - libctest: the SDK's libc

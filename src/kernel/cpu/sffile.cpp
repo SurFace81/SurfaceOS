@@ -554,9 +554,11 @@ namespace
             regs->rax = SF_BAD_HANDLE;
             return;
         }
-        if (f->vn->type != vtype::REG)
+        // A folder only back to its start: ReadDir lists it again.
+        bool folder_start = f->vn->type == vtype::DIR && regs->rsi == 0;
+        if (f->vn->type != vtype::REG && !folder_start)
         {
-            regs->rax = SF_UNSUPPORTED;     // a folder or a device
+            regs->rax = SF_UNSUPPORTED;     // a pipe, or within a folder
             return;
         }
         f->offset = regs->rsi;
