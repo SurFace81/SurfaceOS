@@ -50,7 +50,8 @@ folders in it (in path order), built into `<folder>/<name>.bin` unless
 there is an `-o`; the other arguments go to tcc as they are. Paths in the
 project are below its folder - `#include "../include/x.h"` from
 `gui/window.c` works, and messages read `gui/window.c:3: ...`.
-`ports/tcc/demo` is such a project; the image has it as `/demo`.
+`ports/tcc/demo` is such a project, a window of sfui; the image has it as
+`/demo`.
 
 What changed in `tinycc/`:
 

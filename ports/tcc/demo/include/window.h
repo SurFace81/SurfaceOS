@@ -1,9 +1,9 @@
 #ifndef WINDOW_H
 #define WINDOW_H
 
-#include <sfos.h>
+#include <sfui.h>
 
-/// Prints Title in a frame.
-void ShowWindow(SfConsole* Con, const char* Title);
+/// Puts Title and an OK button into the window.
+void ShowWindow(SfUi* Ui, const char* Title);
 
 #endif
