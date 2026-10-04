@@ -21,6 +21,7 @@ declaration.
   [SfSync](#sfsync-sfmutex-sfevent---sys-sync-sfossynch),
   [SfAdmin](#sfadmin---sys-admin-sfosadminh)
 - [libc](#libc): the plain C functions
+- [sfui](#sfui): full-screen programs of elements
 - [Where things are](#where-things-are)
 
 ## A program
@@ -498,6 +499,55 @@ needs more.
 
 `src/apps/libctest.c` checks them.
 
+## sfui
+
+`<sfui.h>` is for full-screen programs: the screen is made of elements -
+labels, frames, windows, lists, fields, buttons, check boxes, bars, a key
+bar - each set up with its properties (text, ink and paper, alignment) and
+its events (keys, chosen, drawn), and sfui draws them and hands out the
+keys. Like libc it is a library, `ui/`, built into `bin/sdk/libui.a`;
+every program is linked with it and gets only what it calls, tcc too.
+
+```c
+SfUi* Ui = SfUiOpen(Sys);                   // SF_CONSOLE_RAW, cells of the screen's size
+SfAddWindow(Ui, "Hello", 40, 8);
+SfAddLabel(Ui, 2, 1, 0, "A program of elements");
+SfElement* Box = SfAddCheckBox(Ui, 2, 3, "Check me", false);
+SfSetResult(SfAddButton(Ui, 2, -1, "Close"), 1);
+SfUiRun(Ui);                                // until a button with a result, or Esc
+bool Checked = SfGetChecked(Box);
+SfUiClose(Ui);
+```
+
+- **One list, no tree.** The elements are drawn in the order they were
+  added, the later on top, the whole screen every time. A window starts a
+  layer: what is added after it lies inside it, and only the top layer
+  takes keys. `SfRemove(Window)` closes it with all that came after it.
+- **Places.** X and Y count from the inside of the layer's window (or the
+  screen), negative ones from its right and bottom; a width or height of 0
+  reaches the edge, a negative one stops that many cells before it. So the
+  screen of any size is filled without a layout of its own.
+- **Keys.** The focused element's handler (`SfOnKey`) first, then the
+  element itself (a list moves its cursor, a field edits, Space turns a
+  check box over), then Tab and Shift+Tab move the focus, then the
+  program's handler (`SfUiOnKey`). In a window Esc ends `SfUiRun` with 0
+  and a letter presses the button it starts. No mouse.
+- **Looks.** A button is `[ Text ]`, a check box `[x] Text`; a window has
+  double lines and a shadow, two cells at its right and one row under it -
+  only windows have one.
+- **Drawing it yourself.** `SfAddCustom` with `SfOnPaint`, and a list's
+  rows with `SfOnDrawItem`, draw with `SfPut`, `SfText`, `SfTextIn`,
+  `SfFill` and `SfCaret`.
+- **Dialogs.** `SfMessage`, `SfConfirm`, `SfButtons`, `SfInput`, `SfMenu`
+  add a window, wait for the answer in an `SfUiRun` of their own, and take
+  it away; `SfProgress` is a window for a long job, which looks at
+  `SfUiEscape` to be stopped.
+- **Time.** `SfUiOnTimer` calls the program every so many milliseconds
+  while `SfUiRun` waits for keys.
+
+`src/apps/taskmgr.cpp` and `src/apps/mines.cpp` are built of elements,
+`src/apps/explorer/` of elements it draws itself, with sfui's dialogs.
+
 ## Where things are
 
 | Path                      | What is there |
@@ -506,11 +556,12 @@ needs more.
 | `include/abi/`            | What the runtime and the kernel share: call numbers and statuses (`sfcall.h`), the runtime's image (`sdkimage.h`). Programs never make calls by number. |
 | `runtime/`                | The code behind the tables. It is built into the kernel and mapped into every program at the same address, so programs do not link it. |
 | `libc/`                   | The C functions (`libc/include/`), built into `bin/sdk/libc.a`. |
+| `include/sfui.h`, `ui/`   | sfui, built into `bin/sdk/libui.a`. |
 | `sfos.ld`                 | The linker script for programs. |
 
 Example programs: `src/apps/hello.cpp` (the smallest), `src/apps/hello_c.c`
 (the same SDK from C),
-`src/apps/taskmgr.cpp` (a full-screen program: raw mode, one `Draw` per
-frame, keys read on a second thread), `src/sfos/cmd.cpp`
+`src/apps/taskmgr.cpp` (a full-screen program of sfui elements, with a
+timer), `src/sfos/cmd.cpp`
 (the console: files, programs, admin), `src/apps/sdkcheck.cpp` (a check of
 every table).

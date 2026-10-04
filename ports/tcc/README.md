@@ -29,14 +29,15 @@ tcc reaches the system (`sfport.h`). The plain C functions come from the
 SDK's libc. Built by the Makefile into `/apps/tcc`.
 
 What it builds are SDK programs too: static ELF files that start in
-`SfMain`, with `libtcc1.a` and the SDK's `libc.a` linked in. Its files are
-in its data folder `/files/tcc` (`data:/` to tcc), put there by the
+`SfMain`, with `libtcc1.a`, the SDK's `libui.a` (sfui) and its `libc.a`
+linked in. Its files are in its data folder `/files/tcc` (`data:/` to tcc), put there by the
 Makefile (`mkimg.py --tree`):
 
 | Path | What is there |
 |------|---------------|
 | `include/` | tcc's `stdarg.h`, `stdbool.h`, `float.h`, `varargs.h`; the SDK's libc headers; `sfos.h` and the SDK headers |
 | `lib/libtcc1.a` | `tinycc/lib`: what the code tcc makes calls (`va_arg`, `alloca`, long long conversions), built by gcc |
+| `lib/libui.a` | the SDK's sfui |
 | `lib/libc.a` | the SDK's libc |
 
 ```
@@ -63,8 +64,8 @@ What changed in `tinycc/`:
 - messages go to the console; an error ends tcc at once
   (`Process->Exit`) instead of `longjmp`;
 - `__DATE__` and `__TIME__` from `Sys->Time`;
-- programs: entry `SfMain` instead of `_start`, no `crt*.o`, `libtcc1.a`
-  and `libc.a` from `data:/lib` instead of `-lc`, always static;
+- programs: entry `SfMain` instead of `_start`, no `crt*.o`, `libtcc1.a`,
+  `libui.a` and `libc.a` from `data:/lib` instead of `-lc`, always static;
 - `__SURFACEOS__` instead of `__unix__`; `size_t` is `unsigned long long`
   as in the SDK, so `include/stddef.h` is the SDK libc's (tcc's is gone);
 - for the SDK headers: `_Static_assert`, `__builtin_offsetof`;

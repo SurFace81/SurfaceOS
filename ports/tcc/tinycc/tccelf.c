@@ -1193,9 +1193,10 @@ ST_FUNC void tcc_add_runtime(TCCState *s1)
 {
     tcc_add_bcheck(s1);
     tcc_add_pragma_libs(s1);
-    /* SurfaceOS: libtcc1.a, then the SDK's libc, which it calls */
+    /* SurfaceOS: libtcc1.a, the SDK's sfui, then its libc, which they call */
     if (!s1->nostdlib) {
         tcc_add_support(s1, TCC_LIBTCC1);
+        tcc_add_support(s1, "libui.a");
         tcc_add_support(s1, "libc.a");
     }
 }
