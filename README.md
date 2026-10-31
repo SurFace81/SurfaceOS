@@ -58,6 +58,8 @@ Its programs are written in C or C++.
   - FSInfo-based allocator
   - read and write by byte offset, truncate, rename
   - unlink of open files, volume dirty bit
+- Pipes: two ends sharing a 16 KiB buffer; a read waits for data, a
+  write for room, and either end learns when the other is gone
 
 ### SDK
 
@@ -72,7 +74,8 @@ How to write a program, and every table in detail:
 - The tables:
   - `Sys->Console`: text, cells and colours, keys, line or raw mode, the
     title, the clipboard
-  - `Sys->Files`: open, list, make, remove and rename files and folders
+  - `Sys->Files`: open, list, make, remove and rename files and folders;
+    pipes
   - `Sys->Memory`: pages and a heap
   - `Sys->Time`: the clock, the uptime, sleeping
   - `Sys->Process`: start other programs, wait for them, command lines
@@ -101,7 +104,8 @@ How to write a program, and every table in detail:
   - Ctrl+Alt+C ends every program on the shown screen
   - Ctrl+Alt+Z pauses them and hands the keys to the console (again: they
     go on)
-  - Print Screen saves the screen as a BMP in /files/screenshots
+  - Print Screen saves the screen as a BMP in /files/screenshots: the
+    kernel starts /sfos/SHOT.BIN, which takes the picture and writes it
 
 ### The console (CMD.BIN)
 
@@ -109,6 +113,8 @@ Every screen runs /sfos/CMD.BIN: a program in ring 3 with the admin right,
 started again whenever it ends. `help` lists its commands.
 
 - Files: ls, cat, xxd, write, cp, mv, rm, mkdir, rmdir, cd
+- A name starting with '.' is hidden: `ls -a` shows it, and explorer
+  with Ctrl+H
 - Volumes: mount <dev> (partitions go to /mount/<dev>pN), umount
   <dev|dir>, sync
 - Time and power: time, settime, uptime, reboot, shutdown
@@ -126,8 +132,11 @@ started again whenever it ends. `help` lists its commands.
 - Pipes and redirection:
   - `a > file` puts what a prints into the file (`>>` adds at the end) -
     a program's output too
-  - `a | b` hands it to the filters grep, head, tail and wc, or to a
-    program, whose ReadLine reads it a line at a time
+  - `a | b` hands it to the filters head, tail and wc, or to a program
+    (grep, ...), whose ReadLine reads it a line at a time
+  - programs next to each other in a pipe run at once, joined by kernel
+    pipes; the last one gets the keys, and when it ends, so do the
+    others
 - Typing:
   - a name or path with spaces goes in quotes ("my file.txt")
   - Up and Down bring back the last lines typed
@@ -149,10 +158,18 @@ started again whenever it ends. `help` lists its commands.
   - volumes mounted and unmounted from a menu
   - files found by name and content, quick view, bookmarks, folders
     compared
+  - hidden names ('.' first) on and off with Ctrl+H
   - F1 lists the keys
 - taskmgr (`sudo taskmgr`): memory, the load of every CPU and the running
   programs with their CPU share, CPU time, memory and threads, live; Del
   ends the chosen one
+- grep `[-i -v -n -c -l -w] <pattern> [file or folder ...]`: the lines
+  that match, in files, in everything in folders, or in what comes
+  through `|`; patterns with `. [a-z] [^a] * + ? ^ $ \`; a binary file
+  is only named
+- find `<folder ...> [-name -type -size -mtime -maxdepth -empty]`: the
+  files and folders below that pass every test; `-name` takes `* ? [a-z]`,
+  any case
 - hello: Console Print and ReadLine; hello_c: the same SDK from C
 - tcc: the C compiler, built in (Ports)
 - libctest: the SDK's libc
@@ -205,7 +222,8 @@ src/
                 runtime and the kernel share), runtime/ (the code behind
                 the SDK tables), libc/ (the C functions), sfos.ld
                 (program link script)
-  sfos/       — cmd.cpp: the console, /sfos/CMD.BIN
+  sfos/       — the system's programs: cmd.cpp the console (/sfos/CMD.BIN),
+                shot.cpp the screenshot (/sfos/SHOT.BIN)
   apps/       — programs: <name>.cpp or <name>.c is one program,
                 <name>/ is one program of all the .cpp and .c files in it
 ports/

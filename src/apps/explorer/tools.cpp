@@ -9,7 +9,7 @@ static Panel* Here() { return &Panels[Active]; }
 // --- kept between runs -----------------------------------------------------
 
 // data:/explorer.cfg, a line each: left=<folder>, right=<folder>,
-// mark=<folder> for every bookmark.
+// mark=<folder> for every bookmark, hidden=1 when hidden names show.
 static const char* const CONFIG = "data:/explorer.cfg";
 
 char     Bookmarks[32][PATH_SIZE];
@@ -48,6 +48,8 @@ void LoadConfig()
             Copy(Panels[0].Path, Rest, PATH_SIZE);
         else if (StartsWith(Line, "right=", &Rest))
             Copy(Panels[1].Path, Rest, PATH_SIZE);
+        else if (StartsWith(Line, "hidden=", &Rest))
+            ShowHidden = Rest[0] == '1';
         else if (StartsWith(Line, "mark=", &Rest) && BookmarkCount < 32)
             Copy(Bookmarks[BookmarkCount++], Rest, PATH_SIZE);
     }
@@ -60,7 +62,7 @@ void SaveConfig()
     p = Append(p, Panels[0].Path);
     p = Append(p, "\nright=");
     p = Append(p, Panels[1].Path);
-    p = Append(p, "\n");
+    p = Append(p, ShowHidden ? "\nhidden=1\n" : "\n");
     for (uint32_t i = 0; i < BookmarkCount; i++)
     {
         p = Append(p, "mark=");

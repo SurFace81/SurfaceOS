@@ -228,6 +228,7 @@ const SfFiles SdkFiles =
     FilesCreateDirectory,
     FilesDelete,
     FilesRename,
+    FilesCreatePipe,
 };
 
 const SfMemory SdkMemory =
@@ -342,6 +343,18 @@ static SfStatus AdminGetProcessInfo(SfAdmin*, uint64_t Id, SfProcessStats* Info)
     return SfCall(SFCALL_ADMIN_GET_PROCESS_INFO, Id, (uint64_t)Info);
 }
 
+static SfStatus AdminCaptureScreen(SfAdmin*, void* Buffer, uint64_t* Size, uint32_t* Width,
+                                   uint32_t* Height)
+{
+    return SfCall(SFCALL_ADMIN_CAPTURE_SCREEN, (uint64_t)Buffer, (uint64_t)Size,
+                  (uint64_t)Width, (uint64_t)Height);
+}
+
+static SfStatus AdminSetStatus(SfAdmin*, const char* Text, uint64_t Milliseconds)
+{
+    return SfCall(SFCALL_ADMIN_SET_STATUS, (uint64_t)Text, Milliseconds);
+}
+
 static const SfAdmin SdkAdmin =
 {
     { SF_ADMIN_SIGNATURE, sizeof(SfAdmin) },
@@ -358,6 +371,8 @@ static const SfAdmin SdkAdmin =
     AdminBackground,
     AdminGetSystemInfo,
     AdminGetProcessInfo,
+    AdminCaptureScreen,
+    AdminSetStatus,
 };
 
 // Filled in by SdkStart from the start info.

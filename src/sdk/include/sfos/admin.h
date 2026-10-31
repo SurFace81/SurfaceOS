@@ -135,6 +135,17 @@ struct SfAdmin
     ///
     /// SF_NOT_FOUND for no such program.
     SfStatus (*GetProcessInfo)(SfAdmin* This, uint64_t Id, SfProcessStats* Info);
+
+    /// What the screen shows now - the title bar and the text - into
+    /// Buffer: *Width by *Height pixels, rows from the top, 3 bytes a
+    /// pixel in blue, green, red order. *Size in: Buffer's size; out: the
+    /// bytes it takes (SF_BUFFER_TOO_SMALL when it does not fit).
+    SfStatus (*CaptureScreen)(SfAdmin* This, void* Buffer, uint64_t* Size, uint32_t* Width,
+                              uint32_t* Height);
+
+    /// Text on the title bar of the screen shown, in place of the clock,
+    /// for Milliseconds (0: until other text replaces it). "" takes it away.
+    SfStatus (*SetStatus)(SfAdmin* This, const char* Text, uint64_t Milliseconds);
 };
 
 #define SF_ADMIN_SIGNATURE      SF_SIGNATURE('S', 'F', 'A', 'D', 'M', 'I', 'N', 0)
@@ -144,6 +155,7 @@ SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, ListProcesses) == 16, "SfAdmin layout");
 SF_STATIC_ASSERT(sizeof(SfSystemInfo) == 1096, "SfSystemInfo layout");
 SF_STATIC_ASSERT(sizeof(SfProcessStats) == 80, "SfProcessStats layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, GetSystemInfo) == 104, "SfAdmin layout");
-SF_STATIC_ASSERT(sizeof(SfAdmin) == 120, "SfAdmin layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfAdmin, CaptureScreen) == 120, "SfAdmin layout");
+SF_STATIC_ASSERT(sizeof(SfAdmin) == 136, "SfAdmin layout");
 
 #endif // SFOS_ADMIN_H

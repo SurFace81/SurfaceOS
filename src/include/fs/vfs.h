@@ -31,6 +31,7 @@ enum class vtype : uint8_t
 {
     REG,        // regular file
     DIR,        // directory
+    PIPE,       // an end of a pipe (fs/pipe.h)
 };
 
 struct vnode;

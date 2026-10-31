@@ -121,6 +121,8 @@ struct Panel
 
 extern Panel    Panels[2];
 extern uint32_t Active;
+// Names starting with '.' are hidden; Ctrl+H shows them (kept in the config).
+extern bool     ShowHidden;
 
 // Show folder Path in P, the cursor on Focus (a name) when it is there.
 void GoTo(Panel* P, const char* Path, const char* Focus = nullptr);

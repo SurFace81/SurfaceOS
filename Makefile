@@ -85,6 +85,7 @@ SOURCES		=  	bin/kernel/kernel.o \
 				bin/kernel/cpu/sfsync.o \
 				bin/kernel/cpu/apic.o \
 				bin/kernel/fs/fileio.o \
+				bin/kernel/fs/pipe.o \
 				bin/kernel/cpu/percpu.o \
 				bin/kernel/cpu/spinlock.o \
 				bin/kernel/cpu/smp.o \
@@ -322,20 +323,23 @@ $(TCC_FILES)/.stamp: $(TCC_HEADERS) $(LIBC) $(LIBUI) $(LIBTCC1)
 	cp $(LIBC) $(LIBUI) $(LIBTCC1) $(TCC_FILES)/lib/
 	touch $@
 
-# The console of screens 2..9, /sfos/CMD.BIN: built like a program, kept
-# out of /apps.
-CMD_BIN = bin/sfos/cmd.bin
+# The programs of the system, /sfos/<NAME>.BIN - the console of every
+# screen (cmd), the screenshot (shot): built like programs, kept out of
+# /apps.
+SFOS_SRC  = $(wildcard src/sfos/*.cpp)
+SFOS_OBJS = $(patsubst src/sfos/%.cpp,bin/sfos/%.o,$(SFOS_SRC))
+SFOS_BINS = $(patsubst src/sfos/%.cpp,bin/sfos/%.bin,$(SFOS_SRC))
 
-bin/sfos/cmd.o: src/sfos/cmd.cpp
+bin/sfos/%.o: src/sfos/%.cpp
 	mkdir -p $(dir $@)
 	$(GPP) $(SDK_FLAGS) $(DEPFLAGS) -o $@ $<
 
-$(CMD_BIN): bin/sfos/cmd.o src/sdk/sfos.ld $(LIBC)
+bin/sfos/%.bin: bin/sfos/%.o src/sdk/sfos.ld $(LIBC)
 	$(LD) $(APP_LDFLAGS) -o $@ $< $(LIBC)
 
 # Keep the objects: they are intermediate files of the pattern rule, which
 # make would otherwise delete and rebuild every time.
-.SECONDARY: $(APP_OBJS) bin/sfos/cmd.o $(TCC_OBJS) $(LIBTCC1_OBJS)
+.SECONDARY: $(APP_OBJS) $(SFOS_OBJS) $(TCC_OBJS) $(LIBTCC1_OBJS)
 
 
 # Generating version
@@ -361,13 +365,13 @@ bin/kernel/kernel.bin: bin/kernel/kentry.o $(SOURCES)
 # Disk image: GPT with one FAT32 EFI System Partition, built by
 # tools/mkimg.py (pyfatfs, no sudo). IMG_SIZE_MIB=64. Apps land in
 # /apps/<name> (LFN).
-$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(CMD_BIN) $(APP_BINS) $(PORT_BINS) \
+$(DISK_IMG): bin/boot/efi/BOOTX64.EFI bin/kernel/kernel.bin bin/kernel/data/stdfont.fnt $(SFOS_BINS) $(APP_BINS) $(PORT_BINS) \
 			 $(TCC_FILES)/.stamp $(wildcard ports/tcc/demo/*.* ports/tcc/demo/*/*.*)
 	python3 tools/mkimg.py $(DISK_IMG) \
 		bin/boot/efi/BOOTX64.EFI \
 		bin/kernel/kernel.bin \
 		bin/kernel/data/stdfont.fnt \
-		$(CMD_BIN) \
+		$(SFOS_BINS) \
 		$(APP_BINS) \
 		$(PORT_BINS) \
 		--tree=$(TCC_FILES):/files/tcc \
@@ -400,4 +404,4 @@ clean:
 
 # Header dependencies written by -MMD (see DEPFLAGS).
 -include $(patsubst %.o,%.d,$(filter %.o,$(SOURCES))) bin/kernel/kernel.d \
-         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(LIBUI_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d
+         $(RUNTIME_OBJS:.o=.d) $(LIBC_OBJS:.o=.d) $(LIBUI_OBJS:.o=.d) $(APP_OBJS:.o=.d) $(SFOS_OBJS:.o=.d) $(TCC_OBJS:.o=.d) $(LIBTCC1_OBJS:.o=.d) bin/boot/efi/main_efi.d

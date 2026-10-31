@@ -8,8 +8,9 @@
 // background instead. A word with spaces goes in quotes ("my file.txt").
 // What a command prints longer than the screen is shown a page at a time.
 // `> file` puts what the line prints into a file instead (`>>` adds it at
-// the end), and `a | b` gives what a prints to b - the filters grep,
-// head, tail and wc read it, a program through its ReadLine. While a word
+// the end), and `a | b` gives what a prints to b - the filters head, tail
+// and wc read it, a program (grep, ...) through its ReadLine; programs
+// next to each other in a pipe run at once, joined by pipes. While a word
 // is typed, the rest of a command, program or name here that starts with
 // it shows dimmed; Tab takes it.
 //
@@ -42,12 +43,14 @@ static bool     Gather;
 // Piped says there is some. Output: the file a program Run starts prints
 // into instead of the screen (`>`, or a part before a `|`), or null.
 // Input: the file it reads its lines from instead of the keys (a part
-// after a `|`), or null.
+// after a `|`), or null. PipeIn: the read end of the pipe the program
+// just started prints into, when the next part is a program too.
 static char     In[OUT_SIZE];
 static uint64_t InLength;
 static bool     Piped;
 static SfFile*  Output;
 static SfFile*  Input;
+static SfFile*  PipeIn;
 
 static void Put(char C)
 {
@@ -386,8 +389,12 @@ static void PrintEntry(const SfDirEntry* E)
     Print("\n");
 }
 
+// ls [-a] [path]: a name starting with '.' is hidden, -a shows it too.
 static void Ls(const char** Args, uint64_t Count)
 {
+    bool All = Count > 1 && Same(Args[1], "-a");
+    if (All)
+        Args++, Count--;
     const char* Path = Count > 1 ? Args[1] : ".";
     SfFile* Dir = nullptr;
     SfStatus Status = Open(Path, SF_FILE_READ, &Dir);
@@ -404,7 +411,8 @@ static void Ls(const char** Args, uint64_t Count)
     {
         SfDirEntry Entry;
         while ((Status = Dir->ReadDir(Dir, &Entry)) == SF_SUCCESS)
-            PrintEntry(&Entry);
+            if (All || Entry.Name[0] != '.')
+                PrintEntry(&Entry);
         if (Status != SF_END_OF_FILE)
             Fail("ls:", Path, Status);
     }
@@ -806,6 +814,30 @@ static void Shutdown(const char**, uint64_t)
 
 // --- running programs ------------------------------------------------------
 
+// The files OpenArg made for the programs on this screen, as whole-disk
+// paths: once they have ended, those still empty go - the word was text
+// that only looked like a name (grep 1.5 notes.txt).
+static const uint32_t MAX_NEW_ARGS = 16;
+static char     NewArgs[MAX_NEW_ARGS][PATH_SIZE + 8];
+static uint32_t NewArgCount;
+
+static void DropNewArgs()
+{
+    for (uint32_t i = 0; i < NewArgCount; i++)
+    {
+        SfFile* File = nullptr;
+        SfDirEntry Info;
+        bool Empty = Sys->Files->Open(Sys->Files, NewArgs[i], SF_FILE_READ, &File) ==
+                     SF_SUCCESS && File->GetInfo(File, &Info) == SF_SUCCESS && !Info.Size &&
+                     !(Info.Flags & SF_DIR_ENTRY_FOLDER);
+        if (File)
+            File->Close(File);
+        if (Empty)
+            Sys->Files->Delete(Sys->Files, NewArgs[i]);
+    }
+    NewArgCount = 0;
+}
+
 // A program this console follows: the one on its screen (Here) - started
 // here, or brought here with fg - and those it started that went elsewhere
 // (Away: `&`, bg, fg on another screen), to say how they end. Handle is 0
@@ -819,6 +851,11 @@ struct Job
 };
 static Job      Here;
 static Job      Away[16];
+// The programs before Here in its pipe (a | b | here), running at once:
+// they go with it, and once it has ended, so do they.
+static const uint32_t MAX_UPSTREAM = 8;
+static Job      Upstream[MAX_UPSTREAM];
+static uint32_t UpstreamCount;
 static uint32_t MyScreen;       // 1..9
 
 static const uint64_t MAX_PROGRAMS = 64;
@@ -850,13 +887,16 @@ static void PrintJob(const Job* J)
 }
 
 // J has ended: how, when it did not go well (or always, for one Away).
-static void Ended(Job* J, bool Always)
+// Ended short is how a program before the last in a pipe ends when its
+// output is not read to the end: not worth saying for those (Quiet).
+static void Ended(Job* J, bool Always, bool Quiet = false)
 {
     SfStatus Result = SF_SUCCESS;
     if (J->Handle)
         Sys->Process->Wait(Sys->Process, J->Handle, &Result);
     // A crash the kernel has told of on this screen already.
-    if ((Result == SF_SUCCESS || Result == SF_CRASHED) && !Always)
+    if ((Result == SF_SUCCESS || Result == SF_CRASHED || (Quiet && Result == SF_ABORTED)) &&
+        !Always)
         return;
     if (!Always && !J->Paused)
         Print("\n");                   // its output may not have ended the line
@@ -901,6 +941,19 @@ static Job* FindAway(uint64_t Id)
     return nullptr;
 }
 
+// Here has ended: the programs before it in its pipe end as well - what
+// they still print has nobody to read it.
+static void EndUpstream()
+{
+    for (uint32_t i = 0; i < UpstreamCount; i++)
+    {
+        if (FindProgram(Upstream[i].Id))
+            Admin->EndProcess(Admin, Upstream[i].Id);
+        Ended(&Upstream[i], false, true);
+    }
+    UpstreamCount = 0;
+}
+
 // Say how the programs that went elsewhere ended, those that did.
 static void CheckAway()
 {
@@ -923,6 +976,8 @@ static void WaitHere()
         Ended(&Here, false);
         Here.Id = 0;
         Here.Paused = false;
+        EndUpstream();
+        DropNewArgs();
         return;
     }
     if (P->Screen == MyScreen)
@@ -947,12 +1002,17 @@ static void WaitHere()
     else
         Print(": runs in the background\n");
     SendAway(&Here);
+    for (uint32_t i = 0; i < UpstreamCount; i++)  // its pipe went with it
+        SendAway(&Upstream[i]);
+    UpstreamCount = 0;
+    NewArgCount = 0;                // still in use there
 }
 
 // What argument Arg names, for the program's argN: root: an existing file
 // or folder, or - when it looks like a file name (a '.' or a '/') and its
-// folder exists - a new empty file. nullptr when it is plain text.
-static SfFile* OpenArg(const char* Arg)
+// folder exists - a new empty file (noted in NewArgs when Note). nullptr
+// when it is plain text.
+static SfFile* OpenArg(const char* Arg, bool Note)
 {
     SfFile* File = nullptr;
     if (Open(Arg, SF_FILE_READ, &File) == SF_SUCCESS)
@@ -960,15 +1020,19 @@ static SfFile* OpenArg(const char* Arg)
     bool LooksLikeFile = false;
     for (const char* c = Arg; *c; c++)
         LooksLikeFile |= *c == '.' || *c == '/';
-    if (LooksLikeFile &&
-        Open(Arg, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE, &File) == SF_SUCCESS)
-        return File;
-    return nullptr;
+    if (!LooksLikeFile ||
+        Open(Arg, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE, &File) != SF_SUCCESS)
+        return nullptr;
+    if (Note && NewArgCount < MAX_NEW_ARGS)
+        DiskPath(Arg, NewArgs[NewArgCount++]);
+    return File;
 }
 
 // Run the program Words[0] with the rest as its arguments: here, or in
-// the background (`&` before it).
-static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Background)
+// the background (`&` before it). Here, it gets the keys unless NoKeys
+// (a program before another in a pipe).
+static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Background,
+                bool NoKeys = false)
 {
     // A name with a slash is a path; a plain one is looked up in /apps.
     char Program[PATH_SIZE + 8];
@@ -984,7 +1048,7 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
     SfFile* Files[MaxArgs + 2] = {};
     uint64_t ArgCount = Count - 1 < MaxArgs ? Count - 1 : MaxArgs;
     for (uint64_t i = 0; i < ArgCount; i++)
-        Files[i] = OpenArg(Words[i + 1]);
+        Files[i] = OpenArg(Words[i + 1], !Background);
 
     if (!Background && Here.Id)
     {
@@ -994,7 +1058,7 @@ static void Run(const char** Words, uint64_t Count, bool AsAdmin, bool Backgroun
         return Print("A paused program is on this screen: fg, bg or kill it first\n");
     }
 
-    uint64_t Flags = (Background ? SF_START_BACKGROUND : SF_START_GIVE_INPUT) |
+    uint64_t Flags = (Background ? SF_START_BACKGROUND : NoKeys ? 0 : SF_START_GIVE_INPUT) |
                      (AsAdmin ? SF_START_ADMIN : 0);
     // The kernel takes them after the arguments, the output first.
     uint64_t At = ArgCount;
@@ -1237,41 +1301,6 @@ static bool NextLine(uint64_t* At, const char** Line, uint64_t* Len)
     return true;
 }
 
-static char Lower(char C)
-{
-    return C >= 'A' && C <= 'Z' ? (char)(C - 'A' + 'a') : C;
-}
-
-static bool Contains(const char* Line, uint64_t Len, const char* Word)
-{
-    uint64_t WordLen = Length(Word);
-    for (uint64_t i = 0; i + WordLen <= Len; i++)
-    {
-        uint64_t j = 0;
-        while (j < WordLen && Lower(Line[i + j]) == Lower(Word[j]))
-            j++;
-        if (j == WordLen)
-            return true;
-    }
-    return false;
-}
-
-static void Grep(const char** Args, uint64_t Count)
-{
-    if (Count < 2)
-        return Print("Usage: grep <text> [file]\n");
-    if (!FilterInput("grep:", Count > 2 ? Args[2] : nullptr))
-        return;
-    uint64_t At = 0, Len;
-    const char* Line;
-    while (NextLine(&At, &Line, &Len))
-        if (Contains(Line, Len, Args[1]))
-        {
-            PrintPart(Line, Len);
-            Print("\n");
-        }
-}
-
 // head and tail: [lines] [file], 10 lines unless said.
 static bool LinesAndFile(const char* Name, const char** Args, uint64_t Count, uint64_t* Lines)
 {
@@ -1351,7 +1380,7 @@ static const struct
 } Commands[] = {
     { "help",     Help,     "this list" },
     { "cls",      Cls,      "clear the screen" },
-    { "ls",       Ls,       "[path]  what is in a folder" },
+    { "ls",       Ls,       "[-a] [path]  what is in a folder; -a: .names too" },
     { "cd",       Cd,       "[folder]  go there (alone: where you are)" },
     { "cat",      Cat,      "<file>  show a text file" },
     { "xxd",      Xxd,      "<file>  show a file in hex" },
@@ -1376,7 +1405,6 @@ static const struct
     { "usbinfo",  Usbinfo,  "<index>  one USB device" },
     { "acpi",     Acpi,     "ACPI tables" },
     { "dmesg",    Dmesg,    "the kernel's log" },
-    { "grep",     Grep,     "<text> [file]  the lines with the text in them" },
     { "head",     Head,     "[n] [file]  the first n lines (10)" },
     { "tail",     Tail,     "[n] [file]  the last n lines (10)" },
     { "wc",       Wc,       "[file]  count lines, words and bytes" },
@@ -1404,8 +1432,10 @@ static void Help(const char**, uint64_t)
           "                         & runs it in the background\n"
           "  \"a b\"                  a name or path with spaces\n"
           "  a > file, a >> file    what a prints into the file (>> adds at the end)\n"
-          "  a | b                  what a prints goes to b: grep, head, tail, wc,\n"
-          "                         or a program, which reads it line by line\n"
+          "  a | b                  what a prints goes to b: head, tail, wc, or a\n"
+          "                         program (grep...), which reads it line by line\n"
+          "  grep, find             programs: the lines that match, the files that do;\n"
+          "                         alone they tell their options\n"
           "  Tab                    take the dimmed rest of the word\n"
           "  Up/Down                the lines typed before\n"
           "  Ctrl+arrows            select on the screen; Ctrl+C copies, Esc drops it\n"
@@ -1497,23 +1527,36 @@ static void PipeName(char* Name, const char* Kind)
     Name[n] = '\0';
 }
 
-// The input file Run handed on (Input), when there is one: closed, and its
-// name gone - the program keeps what it has open.
+// The input Run handed on (Input), when there is one: closed, and the
+// file's name (Name, null for a pipe) gone - the program keeps what it has
+// open.
 static void DropInput(const char* Name)
 {
     if (!Input)
         return;
     Input->Close(Input);
     Input = nullptr;
+    if (!Name)
+        return;
     char Full[PATH_SIZE + 8];
     DiskPath(Name, Full);
     Sys->Files->Delete(Sys->Files, Full);
 }
 
+static bool IsCommand(const char* Name)
+{
+    for (const auto& c : Commands)
+        if (Same(Name, c.Name))
+            return true;
+    return false;
+}
+
 // One part of a pipe: a command of the console, or a program. What it
-// prints ends up in Out, or - Dest given - in Dest. False when the pipe
-// cannot go on.
-static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, bool First)
+// prints ends up in Out, or - Dest given - in Dest; a program before
+// another program (ToProgram) prints into a pipe the next one reads
+// (PipeIn), and both run at once. False when the pipe cannot go on.
+static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, bool First,
+                    bool ToProgram)
 {
     for (const auto& c : Commands)
         if (Same(Word[0], c.Name))
@@ -1538,11 +1581,19 @@ static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, 
         return false;
     }
 
-    // After a |: what came through is its input, a file in /tmp it reads
-    // its lines from. Its name goes once the program has it open.
+    // After a |: what came through is its input - the pipe from the
+    // program before it, or what a command printed, in a file in /tmp it
+    // reads its lines from. The file's name goes once the program has it
+    // open.
     char InPipe[24];
     PipeName(InPipe, "pipein");
-    if (!First)
+    const char* InName = PipeIn ? nullptr : InPipe;
+    if (PipeIn)
+    {
+        Input  = PipeIn;
+        PipeIn = nullptr;
+    }
+    else if (!First)
     {
         SfStatus Status = Open(InPipe, SF_FILE_READ | SF_FILE_WRITE | SF_FILE_CREATE |
                                        SF_FILE_TRUNCATE, &Input);
@@ -1554,7 +1605,7 @@ static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, 
         if (SF_ERROR(Status))
         {
             Fail("cmd:", InPipe, Status);
-            DropInput(InPipe);
+            DropInput(InName);
             return false;
         }
     }
@@ -1564,7 +1615,36 @@ static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, 
         Output = Dest;
         Run(Word, Count, false, Background);
         Output = nullptr;
-        DropInput(InPipe);
+        DropInput(InName);
+        return true;
+    }
+
+    // Before a program: it prints into a pipe and runs on, without the
+    // keys, while the next one starts.
+    if (ToProgram)
+    {
+        SfFile* Write = nullptr;
+        SfStatus Status = UpstreamCount < MAX_UPSTREAM
+                        ? Sys->Files->CreatePipe(Sys->Files, &PipeIn, &Write)
+                        : SF_OUT_OF_RESOURCES;
+        if (SF_ERROR(Status))
+        {
+            Print("cmd: cannot make a pipe: ");
+            Print(Why(Status));
+            Print("\n");
+            DropInput(InName);
+            return false;
+        }
+        uint64_t Paused = Here.Id;      // Run starts nothing while one is
+        Output = Write;
+        Run(Word, Count, false, false, true);
+        Output = nullptr;
+        Write->Close(Write);
+        DropInput(InName);
+        if (!Here.Id || Here.Id == Paused)
+            return false;               // it did not start
+        Upstream[UpstreamCount++] = Here;
+        Here.Id = 0;
         return true;
     }
 
@@ -1576,14 +1656,14 @@ static bool RunPart(const char** Word, uint64_t Count, SfFile* Dest, bool Last, 
     if (SF_ERROR(Status))
     {
         Fail("cmd:", Pipe, Status);
-        DropInput(InPipe);
+        DropInput(InName);
         return false;
     }
     Output = File;
     Run(Word, Count, false, false);
     Output = nullptr;
     File->Close(File);
-    DropInput(InPipe);
+    DropInput(InName);
 
     Gather = false;                     // how it ended goes to the screen
     WaitHere();
@@ -1664,7 +1744,9 @@ static void DoLine(char* Line)
         while (End < Count && !Same(Word[End], "|"))
             End++;
         bool Last = End == Count;
-        if (!RunPart(Word + Start, End - Start, Last ? File : nullptr, Last, Start == 0))
+        bool ToProgram = !Last && !IsCommand(Word[End + 1]);
+        if (!RunPart(Word + Start, End - Start, Last ? File : nullptr, Last, Start == 0,
+                     ToProgram))
             break;
         if (Last)
             break;
@@ -1679,6 +1761,18 @@ static void DoLine(char* Line)
     if (File)
         File->Close(File);
     Piped = false;
+    // A pipe that stopped short: nobody reads what the programs started
+    // before print.
+    if (PipeIn)
+    {
+        PipeIn->Close(PipeIn);
+        PipeIn = nullptr;
+    }
+    if (!Here.Id)
+    {
+        EndUpstream();
+        DropNewArgs();
+    }
 }
 
 // The words ReadLine suggests (SetHints): the commands and the programs in

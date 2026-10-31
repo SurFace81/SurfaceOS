@@ -222,9 +222,9 @@ a handle to `Wait` on. The flags choose:
   it.
 
 File arguments go in `ArgFiles` and reach the new program as its `argN:`
-roots. With `SF_START_OUTPUT` what it prints goes into a file, and with
-`SF_START_INPUT` its `ReadLine` reads the lines of a file
-instead of the keys, `SF_END_OF_FILE` after the last: the console's `>`
+roots. With `SF_START_OUTPUT` what it prints goes into a file or a pipe
+(`Files->CreatePipe`), and with `SF_START_INPUT` its `ReadLine` reads the
+lines of a file or a pipe instead of the keys, `SF_END_OF_FILE` after the last: the console's `>`
 and `|`.
 
 `Sys->Thread->Create` runs a function on a new thread, and `Join` waits
@@ -252,6 +252,8 @@ gets `Sys->Admin` and the roots `disk:/` and `mount:/`. With them it can:
 - see the memory, the load of each CPU and what each program uses
   (`GetSystemInfo`, `GetProcessInfo`);
 - mount and unmount volumes;
+- capture the screen and put a note on the title bar (`CaptureScreen`,
+  `SetStatus`);
 - set the clock;
 - restart and power off;
 - read the kernel's reports (`lspci`, `dmesg`, ...).
@@ -344,6 +346,7 @@ Every path starts with a root and never leads above it.
 | `CreateDirectory(const char* Path)` | Makes a folder; `SF_ALREADY_EXISTS` when the name is taken. |
 | `Delete(const char* Path)` | Removes a file, or an empty folder (`SF_IN_USE` when it is not empty). |
 | `Rename(const char* OldPath, const char* NewPath)` | Moves a file or folder; `NewPath` must not exist, both on one volume (else `SF_ACCESS_DENIED`). |
+| `CreatePipe(SfFile** Read, SfFile** Write)` | A pipe: what is written into `Write` is read from `Read` while both programs run - hand the ends to `Start` with `SF_START_OUTPUT` / `SF_START_INPUT`. `Read` waits for something, 0 bytes once every holder of the write end closed it; `Write` waits while it is full, `SF_END_OF_FILE` once nobody holds the read end. No positions. |
 
 ### SfFile - from `Files->Open`, `sfos/file.h`
 
@@ -408,8 +411,8 @@ Every running program has a number, its Id.
 | `SF_START_GIVE_INPUT` | When this program owns the keys, the new one gets them until it ends. |
 | `SF_START_BACKGROUND` | Runs it on a hidden screen of its own, what it prints logged to `console_<date>_<time>.log` in its data folder. |
 | `SF_START_ADMIN` | With the admin right; only from a program that has it. |
-| `SF_START_OUTPUT` | `ArgFiles` has one entry more, a file open for writing: what it prints in line mode goes there (the console's `>`). |
-| `SF_START_INPUT` | `ArgFiles` has one entry more still, a file open for reading: `ReadLine` gives its lines (the console's `\|`). |
+| `SF_START_OUTPUT` | `ArgFiles` has one entry more, a file open for writing or a pipe's write end: what it prints in line mode goes there (the console's `>` and `\|`). |
+| `SF_START_INPUT` | `ArgFiles` has one entry more still, a file open for reading or a pipe's read end: `ReadLine` gives its lines (the console's `\|`). |
 
 ### SfThread - `Sys->Thread`, `sfos/thread.h`
 
@@ -474,6 +477,8 @@ every call. Such a program also has the roots `disk:/` and `mount:/`.
 | `Background(uint64_t Id)` | The same, onto a hidden screen of its own, its output logged as with `SF_START_BACKGROUND`. |
 | `GetSystemInfo(SfSystemInfo* Info)` | *out*: the memory and the CPUs now. A CPU's load over a time is how much its `CpuBusy` grew against its `CpuTotal`. |
 | `GetProcessInfo(uint64_t Id, SfProcessStats* Info)` | *out*: what program `Id` uses. `SF_NOT_FOUND`. |
+| `CaptureScreen(void* Buffer, uint64_t* Size, uint32_t* Width, uint32_t* Height)` | What the screen shows now, title bar included: *out* `Width` x `Height` pixels, rows from the top, 3 bytes a pixel (blue, green, red). *in/out* `Size`: Buffer's size / the bytes it takes; `SF_BUFFER_TOO_SMALL`. |
+| `SetStatus(const char* Text, uint64_t Milliseconds)` | `Text` on the title bar of the screen shown, in place of the clock, for `Milliseconds` (0: until replaced); `""` takes it away. |
 
 | Type | What it holds |
 |------|---------------|

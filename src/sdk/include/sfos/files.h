@@ -49,6 +49,16 @@ struct SfFiles
     /// Moves OldPath to NewPath, which must not exist; both on the same
     /// volume (SF_ACCESS_DENIED otherwise - copy instead).
     SfStatus (*Rename)(SfFiles* This, const char* OldPath, const char* NewPath);
+
+    /// Creates a pipe: what is written into *Write is read from *Read, in
+    /// order, while both programs run - hand the ends to Start with
+    /// SF_START_OUTPUT and SF_START_INPUT (process.h).
+    ///
+    /// A Read waits until there is something, then gets what there is; 0
+    /// bytes once every holder of the write end has closed it. A Write
+    /// waits while the pipe is full; SF_END_OF_FILE once nobody holds the
+    /// read end. Positions do not apply.
+    SfStatus (*CreatePipe)(SfFiles* This, SfFile** Read, SfFile** Write);
 };
 
 #define SF_FILES_SIGNATURE  SF_SIGNATURE('S', 'F', 'F', 'I', 'L', 'E', 'S', 0)
@@ -56,6 +66,7 @@ struct SfFiles
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, Open) == 16, "SfFiles layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, CreateUnique) == 24, "SfFiles layout");
 SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, Rename) == 48, "SfFiles layout");
-SF_STATIC_ASSERT(sizeof(SfFiles) == 56, "SfFiles layout");
+SF_STATIC_ASSERT(SF_OFFSET_OF(SfFiles, CreatePipe) == 56, "SfFiles layout");
+SF_STATIC_ASSERT(sizeof(SfFiles) == 64, "SfFiles layout");
 
 #endif // SFOS_FILES_H

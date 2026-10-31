@@ -29,6 +29,7 @@
 #define EFBIG           27   // File too large
 #define ENOSPC          28   // No space left on device
 #define EROFS           30   // Read-only file system
+#define EPIPE           32   // Broken pipe
 #define ERANGE          34   // Math result not representable
 #define ENAMETOOLONG    36   // File name too long
 #define ENOTEMPTY       39   // Directory not empty
