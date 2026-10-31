@@ -104,7 +104,7 @@ How to write a program, and every table in detail:
   - Ctrl+Alt+C ends every program on the shown screen
   - Ctrl+Alt+Z pauses them and hands the keys to the console (again: they
     go on)
-  - Print Screen saves the screen as a BMP in /files/screenshots: the
+  - Print Screen saves the screen as a BMP in /files/shots: the
     kernel starts /sfos/SHOT.BIN, which takes the picture and writes it
 
 ### The console (CMD.BIN)

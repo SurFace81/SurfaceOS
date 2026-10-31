@@ -2,7 +2,7 @@
 // Screen is pressed, with the admin right, on the screen shown.
 //
 // It takes the picture at once, then writes it as a BMP file to
-// /files/screenshots/shot_<date>_<time>.bmp a piece at a time, the title
+// /files/shots/shot_<date>_<time>.bmp a piece at a time, the title
 // bar counting the megabytes, and says there how it went.
 
 #include <sfos.h>
@@ -107,9 +107,9 @@ SfStatus SfMain(SfApp*, SfSystem* System)
     char Name[48], Path[96];
     snprintf(Name, sizeof(Name), "shot_%04u-%02u-%02u_%02u-%02u-%02u.bmp", T.Year, T.Month,
              T.Day, T.Hour, T.Minute, T.Second);
-    snprintf(Path, sizeof(Path), "disk:/files/screenshots/%s", Name);
+    snprintf(Path, sizeof(Path), "disk:/files/shots/%s", Name);
 
-    Sys->Files->CreateDirectory(Sys->Files, "disk:/files/screenshots");
+    Sys->Files->CreateDirectory(Sys->Files, "disk:/files/shots");
     SfFile* Out = nullptr;
     if (SF_ERROR(Sys->Files->Open(Sys->Files, Path,
                                   SF_FILE_WRITE | SF_FILE_CREATE | SF_FILE_TRUNCATE, &Out)))

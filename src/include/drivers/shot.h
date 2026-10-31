@@ -2,7 +2,7 @@
 #define SHOT_H
 
 // Screenshots: Print Screen saves what the panel shows as a BMP in
-// /files/screenshots, named by the date and time. The key only asks
+// /files/shots, named by the date and time. The key only asks
 // (kbd.cpp, in an interrupt); the "shot" kernel process starts the program
 // /sfos/SHOT.BIN (src/sfos/shot.cpp), which takes the picture and writes
 // the file.
