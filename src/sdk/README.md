@@ -533,8 +533,9 @@ SfUiClose(Ui);
   reaches the edge, a negative one stops that many cells before it. So the
   screen of any size is filled without a layout of its own.
 - **Keys.** The focused element's handler (`SfOnKey`) first, then the
-  element itself (a list moves its cursor, a field edits, Space turns a
-  check box over), then Tab and Shift+Tab move the focus, then the
+  element itself (a list moves its cursor, a field edits - Ctrl+C and
+  Ctrl+X take its line to the clipboard, Ctrl+V types the clipboard -
+  Space turns a check box over), then Tab and Shift+Tab move the focus, then the
   program's handler (`SfUiOnKey`). In a window Esc ends `SfUiRun` with 0
   and a letter presses the button it starts. No mouse.
 - **Looks.** A button is `[ Text ]`, a check box `[x] Text`; a window has

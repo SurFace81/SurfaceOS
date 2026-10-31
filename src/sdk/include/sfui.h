@@ -121,6 +121,8 @@ SfElement* SfAddList(SfUi* Ui, sint32_t X, sint32_t Y, sint32_t Width, sint32_t 
 
 /// A line to edit, Width cells; SfSetText gives it what to offer. The
 /// first character typed replaces that, an arrow keeps it to be changed.
+/// Ctrl+C and Ctrl+X put the whole line on the clipboard (Ctrl+X empties
+/// it), Ctrl+V types what the clipboard holds.
 SfElement* SfAddField(SfUi* Ui, sint32_t X, sint32_t Y, sint32_t Width, uint64_t Size);
 
 /// A button: "[ Text ]".

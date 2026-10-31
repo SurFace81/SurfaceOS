@@ -547,6 +547,34 @@ static bool ListKey(SfElement* E, SfKey K)
     return false;
 }
 
+// Ctrl+V: what the clipboard holds goes in at the caret, its line breaks as
+// spaces and other control characters left out, as much as fits.
+static void FieldPaste(SfElement* E)
+{
+    SfConsole* Con = E->Ui->Con;
+    uint64_t Count = 0;
+    if (Con->GetClipboard(Con, NULL, &Count) != SF_BUFFER_TOO_SMALL)
+        return;
+    char* Clip = (char*)UiAlloc(E->Ui, Count);
+    if (!Clip)
+        return;
+    if (!SF_ERROR(Con->GetClipboard(Con, Clip, &Count)))
+    {
+        if (E->Fresh)
+            E->Len = E->Cur = 0;
+        for (uint64_t i = 0; i < Count && E->Len + 1 < E->Size; i++)
+        {
+            char C = Clip[i] == '\n' ? ' ' : Clip[i];
+            if ((uint8_t)C < 32 || C == 127)
+                continue;
+            memmove(E->Text + E->Cur + 1, E->Text + E->Cur, E->Len - E->Cur);
+            E->Text[E->Cur++] = C;
+            E->Len++;
+        }
+    }
+    UiFree(E->Ui, Clip);
+}
+
 static bool FieldKey(SfElement* E, SfKey K)
 {
     if (IsEnter(K))
@@ -554,8 +582,21 @@ static bool FieldKey(SfElement* E, SfKey K)
         UiChoose(E);
         return true;
     }
+    // The clipboard: a field has no selection, so Ctrl+C and Ctrl+X take
+    // the whole line.
+    SfConsole* Con = E->Ui->Con;
+    bool Ctrl = (K.Mods & SF_MOD_CTRL) && !(K.Mods & SF_MOD_ALT);
+    bool Clipboard = SF_HAS_FIELD(Con, SfConsole, GetClipboard);
     bool Used = true;
-    if (Typed(K))
+    if (Ctrl && Clipboard && (K.Char == 3 || K.Char == 24))     // Ctrl+C, Ctrl+X
+    {
+        Con->SetClipboard(Con, E->Text, E->Len);
+        if (K.Char == 24)
+            E->Len = E->Cur = 0;
+    }
+    else if (Ctrl && Clipboard && K.Char == 22)                 // Ctrl+V
+        FieldPaste(E);
+    else if (Typed(K))
     {
         if (E->Fresh)
             E->Len = E->Cur = 0;
